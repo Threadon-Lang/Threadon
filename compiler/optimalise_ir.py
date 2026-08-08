@@ -322,6 +322,8 @@ class IROptimizer:
                             for a in old_args:
                                 if isinstance(a, SSAValue) and instr in a.users:
                                     a.users.remove(instr)
+                            if isinstance(instr, IRPhi):
+                                instr.incoming = []
                             changed = True
 
         return changed
