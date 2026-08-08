@@ -167,18 +167,6 @@ def test_struct_init_and_field_access_breaks(code):
 EXPR_SNIPPETS = [
 
     """
-def f(x: Int32, y: Int32) -> Int32
-    z: Int32 = -(x + y * 2)
-    return z
-""",
-
-    """
-def f(x: Int32, y: Int32) -> Int32
-    z: Int32 = ((x + (y)))
-    return z
-""",
-
-    """
 def f(x: Int32, y: Int32) -> Bool
     b: Bool = x < y and y < x or x == y
     return b

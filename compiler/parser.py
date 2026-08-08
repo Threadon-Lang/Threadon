@@ -547,6 +547,24 @@ class Parser:
             if tok.type in (TokenType.AND, TokenType.OR):
                 self.give_error(f"Boolean operator '{tok.value}' is not supported")
 
+        def find_op(ts, op_types, last=True, skip_prefix_unary=False):
+            idx = None
+            depth = 0
+            start = 0
+            if skip_prefix_unary and ts and ts[0].type in (TokenType.MINUS, TokenType.PLUS):
+                start = 1
+            for k, tok in enumerate(ts):
+                if k < start:
+                    continue
+                if tok.type == TokenType.LPAREN:
+                    depth += 1
+                elif tok.type == TokenType.RPAREN:
+                    depth -= 1
+                elif depth == 0 and tok.type in op_types:
+                    if last or idx is None:
+                        idx = k
+            return idx
+
         def parse_field_access(ts):
             if len(ts) < 3:
                 return None
@@ -629,13 +647,11 @@ class Parser:
             self.give_error("Invalid expression")
 
         def unary(ts):
-            if ts and ts[0].type == TokenType.NOT:
-                return UnaryExpr("not", unary(ts[1:]))
             if ts and ts[0].type == TokenType.MINUS:
                 return UnaryExpr("-", unary(ts[1:]))
             if ts and ts[0].type == TokenType.PLUS:
                 return UnaryExpr("+", unary(ts[1:]))
-            return comparison(ts)
+            return power(ts)
 
         def comparison(ts):
             ops = {
@@ -646,51 +662,56 @@ class Parser:
                 TokenType.EQ: "==",
                 TokenType.NEQ: "!=",
             }
-            for i, tok in enumerate(ts):
-                if tok.type in ops:
-                    left = add_sub(ts[:i])
-                    right = add_sub(ts[i+1:])
-                    return BinaryExpr(left, ops[tok.type], right)
+            i = find_op(ts, tuple(ops))
+            if i is not None:
+                left = add_sub(ts[:i])
+                right = add_sub(ts[i+1:])
+                return BinaryExpr(left, ops[ts[i].type], right)
             return add_sub(ts)
 
+        def not_expr(ts):
+            if ts and ts[0].type == TokenType.NOT:
+                return UnaryExpr("not", not_expr(ts[1:]))
+            return comparison(ts)
+
         def add_sub(ts):
-            for i, tok in enumerate(ts):
-                if tok.type in (TokenType.PLUS, TokenType.MINUS):
-                    left = mul_div(ts[:i])
-                    right = mul_div(ts[i+1:])
-                    return BinaryExpr(left, tok.value, right)
+            i = find_op(ts, (TokenType.PLUS, TokenType.MINUS), skip_prefix_unary=True)
+            if i is not None:
+                left = add_sub(ts[:i])
+                right = mul_div(ts[i+1:])
+                return BinaryExpr(left, ts[i].value, right)
             return mul_div(ts)
 
         def power(ts):
-            for i, tok in enumerate(ts):
-                if tok.type == TokenType.POWER:
-                    left = factor(ts[:i])
-                    right = power(ts[i+1:])
-                    if type(right).__name__ == "BinaryExpr" and right.op == "**":
-                        self.give_error("Chained '**' is not allowed")
-                    return BinaryExpr(left, "**", right)
+            i = find_op(ts, (TokenType.POWER,), last=False)
+            if i is not None:
+                left = unary(ts[:i])
+                right = power(ts[i+1:])
+                if type(right).__name__ == "BinaryExpr" and right.op == "**":
+                    self.give_error("Chained '**' is not allowed")
+                return BinaryExpr(left, "**", right)
             return factor(ts)
 
         def mul_div(ts):
-            for i, tok in enumerate(ts):
-                if tok.type in (TokenType.MUL, TokenType.DIV, TokenType.MOD):
-                    left = power(ts[:i])
-                    right = power(ts[i+1:])
-                    return BinaryExpr(left, tok.value, right)
-            return power(ts)
+            i = find_op(ts, (TokenType.MUL, TokenType.DIV, TokenType.MOD, TokenType.FLOORDIV))
+            if i is not None:
+                left = mul_div(ts[:i])
+                right = unary(ts[i+1:])
+                return BinaryExpr(left, ts[i].value, right)
+            return unary(ts)
 
         def bool_ops(ts):
-            for i, tok in enumerate(ts):
-                if tok.type == TokenType.OR:
-                    left = bool_ops(ts[:i])
-                    right = bool_ops(ts[i+1:])
-                    return BinaryExpr(left, "or", right)
-            for i, tok in enumerate(ts):
-                if tok.type == TokenType.AND:
-                    left = bool_ops(ts[:i])
-                    right = bool_ops(ts[i+1:])
-                    return BinaryExpr(left, "and", right)
-            return unary(ts)
+            i = find_op(ts, (TokenType.OR,))
+            if i is not None:
+                left = bool_ops(ts[:i])
+                right = bool_ops(ts[i+1:])
+                return BinaryExpr(left, "or", right)
+            i = find_op(ts, (TokenType.AND,))
+            if i is not None:
+                left = bool_ops(ts[:i])
+                right = bool_ops(ts[i+1:])
+                return BinaryExpr(left, "and", right)
+            return not_expr(ts)
 
         return bool_ops(tokens)
 

@@ -1,5 +1,7 @@
 from collections import defaultdict, deque
 
+from .to_high_ir import IRBlock, IRInstr, IRPhi, SSAValue
+
 
 class IROptimizer:
 
@@ -115,12 +117,13 @@ class IROptimizer:
         if old_val is new_val:
             return
         for user in list(old_val.users):
-            if isinstance(user, IRInstr):
-                user.args = [new_val if a is old_val else a for a in user.args]
-            elif isinstance(user, IRPhi):
+            if isinstance(user, IRPhi):
                 user.incoming = [
                     (blk, new_val if v is old_val else v) for blk, v in user.incoming
                 ]
+                user.args = [new_val if a is old_val else a for a in user.args]
+            elif isinstance(user, IRInstr):
+                user.args = [new_val if a is old_val else a for a in user.args]
             if isinstance(new_val, SSAValue):
                 new_val.users.append(user)
         old_val.users.clear()
@@ -320,19 +323,6 @@ class IROptimizer:
                                 if isinstance(a, SSAValue) and instr in a.users:
                                     a.users.remove(instr)
                             changed = True
-
-        reachable = {to for fr, to in edge_exec}
-        if None in reachable:
-            reachable.remove(None)
-        to_remove = [b for b in self.func.blocks if b.label not in reachable and b.label != entry]
-        for block in to_remove:
-            for instr in list(block.instructions):
-                if isinstance(instr.result, SSAValue):
-                    instr.result.users.clear()
-                    instr.result.def_instr = None
-            block.instructions.clear()
-            block.terminator = None
-            changed = True
 
         return changed
 
@@ -747,6 +737,7 @@ class IROptimizer:
         changed = False
         for block in self.func.blocks:
             i = 0
+            fresh = set()
             while i < len(block.instructions):
                 instr = block.instructions[i]
                 if instr.op == "const":
@@ -755,10 +746,11 @@ class IROptimizer:
                 new_args = list(instr.args)
                 replaced = False
                 for j, a in enumerate(instr.args):
-                    if isinstance(a, SSAValue) and a.def_instr and a.def_instr.op == "const":
+                    if isinstance(a, SSAValue) and a.def_instr and a.def_instr.op == "const" and a not in fresh:
                         const_val = a.def_instr.args[0]
                         new_c = self._make_const_instr(const_val, a.type, block, i)
                         new_args[j] = new_c
+                        fresh.add(new_c)
                         replaced = True
                 if replaced:
                     for a in instr.args:
@@ -769,6 +761,7 @@ class IROptimizer:
                         if isinstance(a, SSAValue):
                             a.users.append(instr)
                     changed = True
+                    i += 1
                     continue
                 i += 1
         return changed
@@ -814,6 +807,7 @@ class IROptimizer:
 
     def _gvn(self):
         changed = False
+        self.func.build_cfg()
         dom = self.func.compute_dominators()
         children = defaultdict(list)
         entry = self.func.blocks[0].label
@@ -1150,6 +1144,22 @@ class IROptimizer:
             target = self.func.block_map.get(target_label)
             if not target:
                 continue
+            duplicate = False
+            for pred_label in list(block.predecessors):
+                pred = self.func.block_map[pred_label]
+                t = pred.terminator
+                if not t:
+                    continue
+                if t.op == "br":
+                    if t.args[0] == target_label:
+                        duplicate = True
+                        break
+                elif t.op == "cond_br":
+                    if target_label in (t.args[1], t.args[2]):
+                        duplicate = True
+                        break
+            if duplicate:
+                continue
             for pred_label in list(block.predecessors):
                 pred = self.func.block_map[pred_label]
                 self._replace_terminator_target(pred, block.label, target_label)
@@ -1251,6 +1261,7 @@ class IROptimizer:
 
     def _licm(self):
         changed = False
+        self.func.build_cfg()
         dom = self.func.compute_dominators()
         back_edges = []
         for block in self.func.blocks:
@@ -1344,6 +1355,7 @@ class IROptimizer:
 
     def _loop_unrolling(self):
         changed = False
+        self.func.build_cfg()
         dom = self.func.compute_dominators()
         back_edges = []
         for block in self.func.blocks:
@@ -1495,8 +1507,23 @@ class IROptimizer:
 
             if old_block.terminator:
                 old_term = old_block.terminator
-                new_args = [map_val(a) for a in old_term.args]
-                new_term = IRInstr(old_term.op, new_args)
+                if old_term.op == "br":
+                    new_term = IRInstr("br", [map_label(old_term.args[0])])
+                elif old_term.op == "cond_br":
+                    new_term = IRInstr(
+                        "cond_br",
+                        [
+                            map_val(old_term.args[0]),
+                            map_label(old_term.args[1]),
+                            map_label(old_term.args[2]),
+                        ],
+                    )
+                elif old_term.op == "ret_void":
+                    new_term = IRInstr("ret_void", [])
+                else:
+                    new_term = IRInstr(
+                        old_term.op, [map_val(a) for a in old_term.args]
+                    )
                 new_block.set_terminator(new_term)
 
         call_args = call_instr.args[1:]
@@ -1504,8 +1531,7 @@ class IROptimizer:
             entry_new = new_block_map[map_label(callee.blocks[0].label)]
             for instr in entry_new.instructions:
                 if instr.op == "param" and instr.args[0] == pname:
-                    mapped = map_val(instr.result)
-                    self._replace_value(mapped, arg)
+                    self._replace_value(instr.result, arg)
                     break
 
         ret_block = None

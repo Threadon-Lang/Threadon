@@ -342,6 +342,8 @@ class UnusedVariableChecker:
         elif t == "BinaryExpr":
             self.visit_expr(expr.left, used)
             self.visit_expr(expr.right, used)
+        elif t == "UnaryExpr":
+            self.visit_expr(expr.expr, used)
         elif t == "CallExpr":
             for a in expr.args:
                 self.visit_expr(a, used)
@@ -413,6 +415,9 @@ class DeadStoreChecker:
         elif t == "BinaryExpr":
             self.walk_expr(expr.left, reads)
             self.walk_expr(expr.right, reads)
+
+        elif t == "UnaryExpr":
+            self.walk_expr(expr.expr, reads)
 
         elif t == "CallExpr":
             for a in expr.args:

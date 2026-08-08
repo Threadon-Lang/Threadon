@@ -61,13 +61,10 @@ class IRInstr:
         return f"{self.op} {args}"
 
 
-class IRPhi:
+class IRPhi(IRInstr):
     def __init__(self, result, incoming):
-        self.result = result
         self.incoming = incoming
-        self.result.def_instr = self
-        for _, v in incoming:
-            v.users.append(self)
+        super().__init__("phi", [v for _, v in incoming], result=result)
 
     def __str__(self):
         parts = ", ".join(f"{blk}: {val.name}" for blk, val in self.incoming)
