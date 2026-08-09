@@ -515,3 +515,85 @@ VARIANT_BODIES = [
 def test_generated_variants(body):
     code = BASE_TEMPLATE.format(body=body)
     parse_fail(code)
+
+
+def test_nested_struct_chain_parses():
+    parse_ok(
+        """
+struct Z:
+    z: Int32
+struct P:
+    x: Int32
+    z: Z
+def f() -> Int32
+    p: P = P(x=1, z=Z(z=2))
+    return p.z.z
+"""
+    )
+
+
+def test_float_arithmetic_parses():
+    parse_ok(
+        """
+def f(a: Float32, b: Float32, c: Float32) -> Float32
+    return (a + b + c) / 3.0
+"""
+    )
+
+
+def test_multiple_calls_parse():
+    parse_ok(
+        """
+def add(a: Int32, b: Int32) -> Int32
+    return a + b
+def run() -> Int32
+    x: Int32 = add(1, 2)
+    return add(x, 3)
+"""
+    )
+
+
+def test_unary_neg_in_return_parses():
+    parse_ok(
+        """
+def f(x: Int32) -> Int32
+    return -x
+"""
+    )
+
+
+def test_missing_arrow_fails():
+    parse_fail(
+        """
+def f(x: Int32) Int32
+    return x
+"""
+    )
+
+
+def test_return_missing_value_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    return
+"""
+    )
+
+
+def test_trailing_comma_param_fails():
+    parse_fail(
+        """
+def f(x: Int32,) -> Int32
+    return x
+"""
+    )
+
+
+def test_assign_before_declaration_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    y = 1
+    return y
+"""
+    )

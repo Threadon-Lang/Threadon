@@ -335,3 +335,277 @@ def f(x: Int32) -> Int32
     f = get_func(module, "f")
     phis = [i for b in f.blocks for i in b.instructions if isinstance(i, IRPhi)]
     assert phis == []
+
+
+def test_nested_struct_chain():
+    module = build_module(
+        """
+struct Z:
+    z: Int32
+struct Point:
+    x: Int32
+    y: Z
+def f() -> Int32
+    p: Point = Point(x=1, y=Z(z=2))
+    return p.y.z + p.x
+"""
+    )
+    f = get_func(module, "f")
+    inits = [i for i in f.block_map["entry"].instructions if i.op == "struct_init"]
+    assert len(inits) == 2
+    assert inits[0].args[0] == "Z"
+    assert inits[1].args[0] == "Point"
+    assert inits[1].args[4] == inits[0].result
+
+    fields = [i for i in f.block_map["entry"].instructions if i.op == "field"]
+    assert len(fields) == 3
+    outer, inner, xfield = fields
+    assert outer.args[1] == "y"
+    assert outer.result.type == "Z"
+    assert inner.args[0] == outer.result
+    assert inner.args[1] == "z"
+    assert xfield.args[1] == "x"
+
+
+def test_condition_value_reused_across_elif():
+    module = build_module(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        r: Int32 = 1
+    elif x > 0:
+        r: Int32 = 2
+    else:
+        r: Int32 = 3
+    return r
+"""
+    )
+    f = get_func(module, "f")
+    cmp_ops = [i.op for b in f.blocks for i in b.instructions]
+    assert cmp_ops.count("cmp_gt") == 2
+
+
+def test_param_value_is_returned_directly():
+    module = build_module(
+        """
+def f(x: Int32) -> Int32
+    return x
+"""
+    )
+    f = get_func(module, "f")
+    params = entry_instrs(f, "param")
+    assert len(params) == 1
+    assert f.block_map["entry"].terminator.args[0] == params[0].result
+
+
+def test_bool_true_and_false_constants():
+    module = build_module(
+        """
+def f() -> Bool
+    return True
+def g() -> Bool
+    return False
+"""
+    )
+    f = get_func(module, "f")
+    g = get_func(module, "g")
+    f_consts = entry_instrs(f, "const")
+    g_consts = entry_instrs(g, "const")
+    assert f_consts[0].args == ["True"]
+    assert g_consts[0].args == ["False"]
+    assert f_consts[0].result.type == "Bool"
+
+
+def test_negative_number_literal():
+    module = build_module(
+        """
+def f() -> Int32
+    a: Int32 = -3
+    return a
+"""
+    )
+    f = get_func(module, "f")
+    ops = [i.op for i in f.block_map["entry"].instructions]
+    assert ops == ["const", "neg"]
+    neg = [i for i in f.block_map["entry"].instructions if i.op == "neg"][0]
+    assert neg.args[0].def_instr.op == "const"
+
+
+def test_float_constant_emitted():
+    module = build_module(
+        """
+def f() -> Float32
+    a: Float32 = 2.5
+    return a
+"""
+    )
+    f = get_func(module, "f")
+    consts = entry_instrs(f, "const")
+    assert consts[0].args == ["2.5"]
+    assert consts[0].result.type == "Float32"
+
+
+def test_call_with_multiple_arguments():
+    module = build_module(
+        """
+def add3(a: Int32, b: Int32, c: Int32) -> Int32
+    return a + b + c
+def run() -> Int32
+    return add3(1, 2, 3)
+"""
+    )
+    run = get_func(module, "run")
+    calls = entry_instrs(run, "call")
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.args[0] == "add3"
+    assert [a.name for a in call.args[1:]] == ["%t0", "%t1", "%t2"]
+
+
+def test_call_result_used_in_arithmetic():
+    module = build_module(
+        """
+def g(x: Int32) -> Int32
+    return x
+def h(x: Int32) -> Int32
+    return g(x) + 1
+"""
+    )
+    h = get_func(module, "h")
+    ops = [i.op for i in h.block_map["entry"].instructions]
+    assert ops == ["param", "call", "const", "add"]
+    add = [i for i in h.block_map["entry"].instructions if i.op == "add"][0]
+    assert add.args[0].def_instr.op == "call"
+
+
+def test_module_function_order_preserved():
+    module = build_module(
+        """
+def first() -> Int32
+    return 1
+def second() -> Int32
+    return 2
+def third() -> Int32
+    return 3
+"""
+    )
+    assert [f.name for f in module.funcs] == ["first", "second", "third"]
+
+
+def test_parameter_types():
+    module = build_module(
+        """
+def f(x: Int32, y: Float32, b: Bool) -> Float32
+    return y
+"""
+    )
+    f = get_func(module, "f")
+    params = entry_instrs(f, "param")
+    assert [(p.args[0], p.result.type) for p in params] == [
+        ("x", "Int32"),
+        ("y", "Float32"),
+        ("b", "Bool"),
+    ]
+
+
+def test_elif_else_chain_structure():
+    module = build_module(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        r: Int32 = 1
+    elif x < 0:
+        r: Int32 = 2
+    else:
+        r: Int32 = 3
+    return r
+"""
+    )
+    f = get_func(module, "f")
+    assert [b.label for b in f.blocks] == [
+        "entry",
+        "merge",
+        "ifcond0",
+        "ifbody0",
+        "ifcond1",
+        "ifbody1",
+        "elsebody",
+    ]
+    ifcond0 = f.block_map["ifcond0"]
+    assert ifcond0.terminator.op == "cond_br"
+    assert ifcond0.terminator.args[2] == "ifcond1"
+    merge = f.block_map["merge"]
+    phis = [i for i in merge.instructions if isinstance(i, IRPhi)]
+    assert len(phis) == 1
+    assert [blk for blk, _ in phis[0].incoming] == ["ifbody0", "ifbody1", "elsebody"]
+
+
+def test_return_of_comparison():
+    module = build_module(
+        """
+def f(x: Int32) -> Bool
+    return x > 0
+"""
+    )
+    f = get_func(module, "f")
+    entry = f.block_map["entry"]
+    term = entry.terminator
+    assert term.op == "ret"
+    assert term.args[0].def_instr.op == "cmp_gt"
+
+
+def test_ref_copy_instruction_in_declaration():
+    module = build_module(
+        """
+def f(x: Int32) -> Int32
+    r: Int32 = x^
+    return r
+"""
+    )
+    f = get_func(module, "f")
+    copies = entry_instrs(f, "ref_copy")
+    assert len(copies) == 1
+    assert copies[0].args[0].name == "%t0"
+
+
+def test_dominators_for_if_blocks():
+    module = build_module(
+        """
+def max2(a: Int32, b: Int32) -> Int32
+    if a > b:
+        r: Int32 = a
+    else:
+        r: Int32 = b
+    return r
+"""
+    )
+    f = get_func(module, "max2")
+    f.build_cfg()
+    dom = f.compute_dominators()
+    assert dom["ifbody0"] == {"entry", "ifcond0", "ifbody0"}
+    assert dom["elsebody"] == {"entry", "ifcond0", "elsebody"}
+    assert dom["merge"] == {"entry", "ifcond0", "merge"}
+
+
+def test_liveness_keys_are_block_labels():
+    module = build_module(
+        """
+def max2(a: Int32, b: Int32) -> Int32
+    if a > b:
+        r: Int32 = a
+    else:
+        r: Int32 = b
+    return r
+"""
+    )
+    f = get_func(module, "max2")
+    f.build_cfg()
+    live_in, live_out = f.compute_liveness()
+    labels = {b.label for b in f.blocks}
+    assert set(live_in.keys()) == labels
+    assert set(live_out.keys()) == labels
+    merge = f.block_map["merge"]
+    phis = [i for i in merge.instructions if isinstance(i, IRPhi)]
+    assert len(phis) == 1
+    phi_result = phis[0].result
+    assert phi_result.name in live_in["merge"]

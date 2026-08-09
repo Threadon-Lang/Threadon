@@ -79,9 +79,6 @@ def assert_float_output(source, expected, inline_threshold=30):
     assert result.stdout == expected
 
 
-# --- structural tests --------------------------------------------------------
-
-
 def test_emit_target_declaration():
     llvm = compile_unoptimized("def run() -> Int32\n    return 2 ** 8\n")
     assert "declare i32 @llvm.pow.i32" in llvm
@@ -136,9 +133,6 @@ def run() -> Int32
 def test_float_pow_intrinsic_emitted():
     llvm = compile_unoptimized("def run() -> Float32\n    return 2.0 ** 3.0\n")
     assert "@llvm.pow.f64" in llvm
-
-
-# --- execution tests ---------------------------------------------------------
 
 
 def test_arithmetic_expression():

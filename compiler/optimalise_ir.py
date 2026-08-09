@@ -1132,6 +1132,7 @@ class IROptimizer:
 
     def _remove_empty_blocks(self):
         changed = False
+        self.func.build_cfg()
         to_remove = []
         for block in self.func.blocks:
             if block.label == "entry":
@@ -1189,6 +1190,7 @@ class IROptimizer:
 
     def _merge_blocks(self):
         changed = False
+        self.func.build_cfg()
         i = 0
         while i < len(self.func.blocks):
             block = self.func.blocks[i]
@@ -1436,6 +1438,7 @@ class IROptimizer:
 
     def _inline_module(self, module):
         changed = True
+        self._inline_counter = 0
         while changed:
             changed = False
             func_map = {f.name: f for f in module.funcs}
@@ -1462,7 +1465,8 @@ class IROptimizer:
                         i = 0
 
     def _inline_call(self, caller, block, idx, call_instr, callee):
-        suffix = f"_inl{idx}_{block.label}"
+        suffix = f"_inl{self._inline_counter}"
+        self._inline_counter += 1
         value_map = {}
         label_map = {}
 

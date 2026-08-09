@@ -312,3 +312,64 @@ def test_multiple_newlines():
     types = [t.type for t in tokens]
 
     assert types.count(TokenType.NEWLINE) >= 3
+
+
+def test_compound_assignment_tokens():
+    code = "a += 1\nb -= 2\nc *= 3\nd /= 4\ne //= 5\nf %= 6"
+    tokens = lex(code)
+    types = [t.type for t in tokens]
+
+    assert TokenType.PLUS_ASSIGN in types
+    assert TokenType.MINUS_ASSIGN in types
+    assert TokenType.MUL_ASSIGN in types
+    assert TokenType.DIV_ASSIGN in types
+    assert TokenType.FLOORDIV_ASSIGN in types
+    assert TokenType.MOD_ASSIGN in types
+
+
+def test_floordiv_token():
+    tokens = lex("10 // 3")
+    assert tokens[0].type == TokenType.NUMBER
+    assert tokens[1].type == TokenType.FLOORDIV
+    assert tokens[1].value == "//"
+
+
+def test_power_token():
+    tokens = lex("2 ** 8")
+    assert tokens[1].type == TokenType.POWER
+    assert tokens[1].value == "**"
+
+
+def test_boolean_literals():
+    tokens = lex("True False")
+    assert tokens[0].type == TokenType.TRUE
+    assert tokens[0].value == "True"
+    assert tokens[1].type == TokenType.FALSE
+    assert tokens[1].value == "False"
+
+
+def test_arrow_and_caret():
+    tokens = lex("a -> b ^ c")
+    assert tokens[1].type == TokenType.ARROW
+    assert tokens[3].type == TokenType.CARET
+
+
+def test_string_tab_escape():
+    tokens = lex('"tab\\tend"')
+    assert tokens[0].type == TokenType.STRING
+    assert tokens[0].value == "tab\tend"
+
+
+def test_nonetype_token():
+    tokens = lex("NoneType")
+    assert tokens[0].type == TokenType.TYPE
+    assert tokens[0].value == "NoneType"
+
+
+def test_lex_lines_groups_tokens():
+    from compiler.lexer import lex_lines
+
+    lines = lex_lines("a: Int32 = 1\nb: Int32 = 2")
+    assert len(lines) == 2
+    assert [t.value for t in lines[0]] == ["a", ":", "Int32", "=", "1"]
+    assert [t.value for t in lines[1]] == ["b", ":", "Int32", "=", "2"]
