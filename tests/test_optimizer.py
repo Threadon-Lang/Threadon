@@ -679,3 +679,131 @@ def f(x: Int32) -> Int32
     ret_val = f.block_map["entry"].terminator.args[0]
     assert ret_val.def_instr.op == "const"
     assert int(ret_val.def_instr.args[0]) == 10
+
+
+def test_inline_multiple_calls_to_same_function():
+    module = optimize(
+        """
+def add(a: Int32, b: Int32) -> Int32
+    return a + b
+def run() -> Int32
+    x: Int32 = add(1, 2)
+    y: Int32 = add(3, 4)
+    return x + y
+""",
+        inline_threshold=10,
+    )
+    run = module.funcs[1]
+    calls = [i for b in run.blocks for i in b.instructions if i.op == "call"]
+    assert calls == []
+    assert [b.label for b in run.blocks] == ["entry"]
+    ret_val = run.blocks[0].terminator.args[0]
+    assert ret_val.def_instr.op == "const"
+    assert int(ret_val.def_instr.args[0]) == 10
+
+
+def test_inlining_threshold_boundary():
+    source = """
+def callee(x: Int32) -> Int32
+    a: Int32 = x + 1
+    b: Int32 = a + 1
+    return b
+def run() -> Int32
+    z: Int32 = callee(1)
+    return z
+"""
+    inlined = optimize(source, inline_threshold=5)
+    run = inlined.funcs[1]
+    calls = [i for b in run.blocks for i in b.instructions if i.op == "call"]
+    assert calls == []
+
+    not_inlined = optimize(source, inline_threshold=4)
+    run = not_inlined.funcs[1]
+    calls = [i for b in run.blocks for i in b.instructions if i.op == "call"]
+    assert len(calls) == 1
+
+
+def test_no_cse_for_reordered_operands():
+    module = optimize(
+        """
+def f(a: Int32, b: Int32) -> Int32
+    c: Int32 = a + b
+    d: Int32 = b + a
+    return c + d
+"""
+    )
+    f = module.funcs[0]
+    adds = [i for b in f.blocks for i in b.instructions if i.op == "add"]
+    assert len(adds) == 3
+
+
+def test_comparison_constant_folding():
+    module = optimize(
+        """
+def f() -> Bool
+    return 1 < 2
+"""
+    )
+    f = module.funcs[0]
+    ops = block_ops(f, "entry")
+    assert ops == ["const"]
+    ret_val = f.block_map["entry"].terminator.args[0]
+    assert ret_val.def_instr.op == "const"
+    assert ret_val.def_instr.args[0] is True
+
+
+def test_float_comparison_constant_folding():
+    module = optimize(
+        """
+def f() -> Bool
+    return 1.5 > 1.0
+"""
+    )
+    f = module.funcs[0]
+    ops = block_ops(f, "entry")
+    assert ops == ["const"]
+    ret_val = f.block_map["entry"].terminator.args[0]
+    assert ret_val.def_instr.op == "const"
+    assert ret_val.def_instr.args[0] is True
+
+
+def test_augmented_assignment_constant_folding():
+    module = optimize(
+        """
+def run() -> Int32
+    x: Int32 = 5
+    x += 3
+    return x
+"""
+    )
+    f = module.funcs[0]
+    ops = block_ops(f, "entry")
+    assert ops == ["const"]
+    ret_val = f.block_map["entry"].terminator.args[0]
+    assert ret_val.def_instr.op == "const"
+    assert int(ret_val.def_instr.args[0]) == 8
+
+
+@pytest.mark.parametrize(
+    "expr,expected",
+    [
+        ("2 + 3", 5),
+        ("10 - 4", 6),
+        ("3 * 5", 15),
+        ("20 // 4", 5),
+        ("2 ** 5", 32),
+        ("17 % 5", 2),
+        ("(2 + 3) * 4", 20),
+    ],
+)
+def test_constant_folding_arithmetic(expr, expected):
+    module = optimize(
+        f"""
+def f() -> Int32
+    return {expr}
+"""
+    )
+    f = module.funcs[0]
+    ret_val = f.block_map["entry"].terminator.args[0]
+    assert ret_val.def_instr.op == "const"
+    assert int(ret_val.def_instr.args[0]) == expected

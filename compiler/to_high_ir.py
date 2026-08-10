@@ -6,6 +6,7 @@ from .nodes import (
     VarDecl,
     Assign,
     ReturnStmt,
+    ExprStmt,
     StructInitExpr,
     BinaryExpr,
     CallExpr,
@@ -16,6 +17,7 @@ from .nodes import (
     RefExpr,
 )
 from .checker import CombinedChecker
+from .builtins import BUILTIN_SIGS
 
 from collections import defaultdict
 
@@ -286,6 +288,7 @@ class SSABuilder:
         self.module.add_func(f)
         self.current_func = f
         self.temp_counter = 0
+        self._if_seq = 0
 
         entry = IRBlock("entry")
         f.add_block(entry)
@@ -313,6 +316,8 @@ class SSABuilder:
             self.emit_return(node)
         elif isinstance(node, IfStmt):
             self.emit_if(node)
+        elif isinstance(node, ExprStmt):
+            self.emit_expr(node.expr)
         else:
             pass
 
@@ -345,7 +350,10 @@ class SSABuilder:
 
     def emit_if(self, node: IfStmt):
         parent_env = self.env_stack[-1].copy()
-        merge = IRBlock("merge")
+        seq = self._if_seq
+        self._if_seq += 1
+        suffix = f"{seq}_" if seq else ""
+        merge = IRBlock(f"merge{suffix}")
         self.current_func.add_block(merge)
 
         branches = [(node.condition, node.body)] + list(node.elif_blocks)
@@ -355,18 +363,18 @@ class SSABuilder:
         cond_blocks = []
         body_blocks = []
         for i in range(n):
-            cb = IRBlock(f"ifcond{i}")
-            bb = IRBlock(f"ifbody{i}")
+            cb = IRBlock(f"ifcond{suffix}{i}")
+            bb = IRBlock(f"ifbody{suffix}{i}")
             cond_blocks.append(cb)
             body_blocks.append(bb)
             self.current_func.add_block(cb)
             self.current_func.add_block(bb)
 
         if has_else:
-            else_block = IRBlock("elsebody")
+            else_block = IRBlock(f"elsebody{suffix}")
             self.current_func.add_block(else_block)
         else:
-            fallthrough = IRBlock("fallthrough")
+            fallthrough = IRBlock(f"fallthrough{suffix}")
             self.current_func.add_block(fallthrough)
 
         self.current_block.set_terminator(IRInstr("br", [cond_blocks[0].label]))
@@ -444,8 +452,6 @@ class SSABuilder:
         if isinstance(expr, LiteralExpr):
             t = expr.type
             val = expr.value.value
-            if t == "String":
-                val = f'"{val}"'
             v = self.new_temp(t)
             self.current_block.add_instr(IRInstr("const", [val], result=v))
             return v
@@ -486,13 +492,17 @@ class SSABuilder:
                 "%": "mod",
             }
             op = op_map.get(expr.op, expr.op)
-            v = self.new_temp(left.type)
+            vtype = "Bool" if op.startswith("cmp_") else left.type
+            v = self.new_temp(vtype)
             self.current_block.add_instr(IRInstr(op, [left, right], result=v))
             return v
 
         if isinstance(expr, CallExpr):
             args = [self.emit_expr(a) for a in expr.args]
-            v = self.new_temp(self.func_returns.get(expr.func_name, "Unknown"))
+            ret_type = self.func_returns.get(expr.func_name)
+            if ret_type is None:
+                ret_type = BUILTIN_SIGS.get(expr.func_name, ("", "Unknown"))[1]
+            v = self.new_temp(ret_type)
             self.current_block.add_instr(IRInstr("call", [expr.func_name] + args, result=v))
             return v
 

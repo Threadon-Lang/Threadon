@@ -1,4 +1,5 @@
 from .to_high_ir import SSAValue
+from .builtins import BUILTIN_SIGS
 
 
 
@@ -9,6 +10,8 @@ class LLVMIRCompiler:
         self.module = None
         self.struct_field_indices = {}
         self.used_intrinsics = set()
+        self.used_c_runtime = set()
+        self.string_globals = {}
         self.out = []
 
 
@@ -16,6 +19,8 @@ class LLVMIRCompiler:
         self.module = module
         self.struct_field_indices = {}
         self.used_intrinsics = set()
+        self.used_c_runtime = set()
+        self.string_globals = {}
         self.out = []
 
         for name, fields in module.types.items():
@@ -49,6 +54,25 @@ class LLVMIRCompiler:
                     self.out.append("declare double @llvm.ceil.f64(double) #0")
             self.out.append("")
             self.out.append('attributes #0 = { nounwind readnone speculatable willreturn }')
+
+        if self.string_globals:
+            self.out.append("")
+            for content, gname in self.string_globals.items():
+                raw = content.encode("utf-8", "replace")
+                escaped = "".join(f"\\{b:02x}" for b in raw) + "\\00"
+                size = len(raw) + 1
+                self.out.append(f'{gname} = private unnamed_addr constant [{size} x i8] c"{escaped}"')
+
+        if self.used_c_runtime:
+            self.out.append("")
+            if "printf" in self.used_c_runtime:
+                self.out.append("declare i32 @printf(i8*, ...)")
+            if "scanf" in self.used_c_runtime:
+                self.out.append("declare i32 @scanf(i8*, ...)")
+            if "fflush" in self.used_c_runtime:
+                self.out.append("declare i32 @fflush(i8*)")
+                self.out.append("@stdout = external global i8*")
+            self.out.append("")
 
         return "\n".join(self.out)
 
@@ -172,20 +196,33 @@ class LLVMIRCompiler:
 
 
     def _emit_const(self, res, rtype, val):
-        if isinstance(val, bool):
-            vstr = "1" if val else "0"
+        if rtype == "i1":
+            vstr = "1" if str(val).lower() in ("true", "1") else "0"
             return f"{res} = add i1 0, {vstr}"
+        if rtype == "i8*":
+            return self._emit_string_const(res, val)
         if isinstance(val, float):
             return f"{res} = fadd double 0.0, {val}"
         if isinstance(val, int):
             return f"{res} = add {rtype} 0, {val}"
         if isinstance(val, str):
-            if val.startswith('"'):
-                return f"; string literal {val}\n  {res} = add i8* null, null"
             if '.' in val:
                 return f"{res} = fadd double 0.0, {val}"
             return f"{res} = add {rtype} 0, {val}"
         return f"{res} = add {rtype} 0, 0"
+
+    def _emit_string_const(self, res, val):
+        gname = self._string_global(val)
+        size = len(val.encode("utf-8", "replace")) + 1
+        return (
+            f"{res} = getelementptr inbounds "
+            f"[{size} x i8], [{size} x i8]* {gname}, i64 0, i64 0"
+        )
+
+    def _string_global(self, content):
+        if content not in self.string_globals:
+            self.string_globals[content] = f"@.str.{len(self.string_globals)}"
+        return self.string_globals[content]
 
     def _emit_undef(self, res, rtype):
         if rtype.startswith("%struct"):
@@ -284,6 +321,8 @@ class LLVMIRCompiler:
 
     def _emit_call(self, res, instr):
         fname = instr.args[0]
+        if fname in BUILTIN_SIGS:
+            return self._emit_builtin(res, fname, instr.args[1:])
         args = instr.args[1:]
         arg_strs = []
         for a in args:
@@ -295,6 +334,87 @@ class LLVMIRCompiler:
         if ret_type == "void":
             return f"call {ret_type} @{fname}({args_str})"
         return f"{res} = call {ret_type} @{fname}({args_str})"
+
+    def _emit_builtin(self, res, fname, args):
+        if fname == "print":
+            return self._emit_print(res, args[0])
+        if fname == "input":
+            return self._emit_input(res, args[0])
+        if fname == "to_int":
+            return self._emit_to_int(res, args[0])
+        if fname == "to_float":
+            return self._emit_to_float(res, args[0])
+        if fname == "to_bool":
+            return self._emit_to_bool(res, args[0])
+        return f"; unknown builtin {fname}"
+
+    def _emit_print(self, res, arg):
+        self.used_c_runtime.add("printf")
+        atype = self.to_llvm_type(arg.type)
+        formats = {"i32": "%d\n", "double": "%f\n", "i1": "%d\n", "i8*": "%s\n"}
+        fmt = formats[atype]
+        fmt_global = self._string_global(fmt)
+        size = len(fmt.encode("utf-8")) + 1
+        ptr = f"{res}_fmt"
+        lines = [
+            f"{ptr} = getelementptr inbounds "
+            f"[{size} x i8], [{size} x i8]* {fmt_global}, i64 0, i64 0"
+        ]
+        val = self.operand(arg)
+        spec = atype
+        if atype == "i1":
+            val = f"{res}_b"
+            lines.append(f"{val} = zext i1 {self.operand(arg)} to i32")
+            spec = "i32"
+        lines.append(f"call i32 (i8*, ...) @printf(i8* {ptr}, {spec} {val})")
+        return lines
+
+    def _emit_input(self, res, arg):
+        self.used_c_runtime.update(["printf", "scanf", "fflush"])
+        fmt = "%d"
+        fmt_global = self._string_global(fmt)
+        size = len(fmt.encode("utf-8")) + 1
+        pfmt = "%s"
+        pfmt_global = self._string_global(pfmt)
+        psize = len(pfmt.encode("utf-8")) + 1
+        buf = f"{res}_buf"
+        ptr = f"{res}_fmt"
+        tmp = f"{res}_ret"
+        so = f"{res}_stdout"
+        fl = f"{res}_flush"
+        pp = f"{res}_pfmt"
+        return [
+            f"{pp} = getelementptr inbounds "
+            f"[{psize} x i8], [{psize} x i8]* {pfmt_global}, i64 0, i64 0",
+            f"call i32 (i8*, ...) @printf(i8* {pp}, i8* {self.operand(arg)})",
+            f"{so} = load i8*, i8** @stdout",
+            f"{fl} = call i32 @fflush(i8* {so})",
+            f"{buf} = alloca i32",
+            f"{ptr} = getelementptr inbounds "
+            f"[{size} x i8], [{size} x i8]* {fmt_global}, i64 0, i64 0",
+            f"{tmp} = call i32 (i8*, ...) @scanf(i8* {ptr}, i32* {buf})",
+            f"{res} = load i32, i32* {buf}",
+        ]
+
+    def _emit_to_int(self, res, arg):
+        atype = self.to_llvm_type(arg.type)
+        val = self.operand(arg)
+        if atype == "double":
+            return f"{res} = fptosi double {val} to i32"
+        if atype == "i1":
+            return f"{res} = zext i1 {val} to i32"
+        return f"{res} = add i32 0, 0"
+
+    def _emit_to_float(self, res, arg):
+        val = self.operand(arg)
+        return f"{res} = sitofp i32 {val} to double"
+
+    def _emit_to_bool(self, res, arg):
+        atype = self.to_llvm_type(arg.type)
+        val = self.operand(arg)
+        if atype == "double":
+            return f"{res} = fcmp une double {val}, 0.0"
+        return f"{res} = icmp ne i32 {val}, 0"
 
     def _emit_tailcall(self, res, instr):
         fname = instr.args[0]

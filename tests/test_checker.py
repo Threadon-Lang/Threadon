@@ -388,3 +388,68 @@ def f(a: Int32) -> Int32
     UnusedVariableChecker().check(source)
     out = capsys.readouterr().out
     assert "Variable 'b' in function 'f' declared but never used" in out
+
+
+def test_missing_return_when_function_has_no_return():
+    check_error(
+        MissingReturnChecker,
+        """
+def f() -> Int32
+    x: Int32 = 1
+""",
+    )
+
+
+def test_combined_rejects_variable_missing_from_else_branch():
+    check_error(
+        CombinedChecker,
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        v: Int32 = x
+        r: Int32 = v
+    else:
+        r: Int32 = x
+    return r
+""",
+    )
+
+
+def test_param_shadowing_in_branches_rejected():
+    check_error(
+        ShadowChecker,
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        x: Int32 = 1
+    else:
+        x: Int32 = 2
+    return x
+""",
+    )
+
+
+def test_if_returns_without_else_is_reachable():
+    check_ok(
+        UnreachableChecker,
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        return 1
+    return 0
+""",
+    )
+
+
+def test_unreachable_block_when_both_branches_return():
+    check_error(
+        UnreachableChecker,
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        return 1
+    else:
+        return 2
+    return 0
+""",
+    )

@@ -1,0 +1,11 @@
+struct Point:
+    x: Int32
+    y: Int32
+
+def length_sq(p: Point) -> Int32
+    return p.x * p.x + p.y * p.y
+
+def main() -> Int32
+    p: Point = Point(x=3, y=4)
+    print(length_sq(p))
+    return 0

@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from compiler.parser import Parser
 from compiler.checker import CombinedChecker
+from compiler.compiler import compile_source
+from compiler.importer import Importer
 from compiler.to_high_ir import SSABuilder
 from compiler.optimalise_ir import IROptimizer
 from compiler.to_llvm_ir import LLVMIRCompiler
@@ -128,12 +130,14 @@ def patch_llvm(llvm):
     return llvm + "\n" + HARNESS_MAIN + "\n"
 
 
-def run_llvm(llvm):
+def run_llvm(llvm, input=None):
     with tempfile.NamedTemporaryFile("w", suffix=".ll", delete=False) as f:
         f.write(llvm)
         path = f.name
     try:
-        result = subprocess.run(["lli", path], capture_output=True, text=True, timeout=60)
+        result = subprocess.run(
+            ["lli", path], capture_output=True, text=True, timeout=60, input=input
+        )
     finally:
         Path(path).unlink(missing_ok=True)
     return result
@@ -157,7 +161,84 @@ def test_complex_program_inlined():
     assert result.stdout == "-134\n8.000000\n"
 
 
+def compile_stdlib_run(source, inline_threshold=0, input=None):
+    llvm = compile_source(source, importer=Importer(), inline_threshold=inline_threshold)
+    return run_llvm(llvm, input=input)
+
+
+def test_builtin_print_and_conversions():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    print("hello world")
+    print(42)
+    print(3.14)
+    print(True)
+    print(to_int(3.7))
+    print(to_int(True))
+    print(to_float(5))
+    print(to_bool(7))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "hello world\n42\n3.140000\n1\n3\n1\n5.000000\n1\n"
+
+
+def test_builtin_input():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    n: Int32 = input("Give a number: ")
+    print(n)
+    return 0
+""",
+        input="21\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Give a number: 21\n"
+
+
+def test_expr_statement():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    print(to_int(2.5) + 1)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3\n"
+
+
+def test_stdlib_helpers():
+    source = """
+def add(a: Int32, b: Int32) -> Int32
+    return a + b
+
+def main() -> Int32
+    print(abs(-7))
+    print(max(3, 9))
+    print(min(2, 8))
+    print(clamp(150, 0, 100))
+    print(clamp(-5, 0, 100))
+    print(is_even(4))
+    print(is_even(5))
+    print(is_odd(7))
+    print(add(add(1, 2), 3))
+    return 0
+"""
+    for threshold in (0, 10000):
+        result = compile_stdlib_run(source, inline_threshold=threshold)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "7\n9\n2\n100\n0\n1\n0\n1\n6\n"
+
+
 if __name__ == "__main__":
     test_complex_program_runs()
     test_complex_program_inlined()
+    test_builtin_print_and_conversions()
+    test_builtin_input()
+    test_expr_statement()
+    test_stdlib_helpers()
     print("compile_test OK")

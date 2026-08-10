@@ -373,3 +373,92 @@ def test_lex_lines_groups_tokens():
     assert len(lines) == 2
     assert [t.value for t in lines[0]] == ["a", ":", "Int32", "=", "1"]
     assert [t.value for t in lines[1]] == ["b", ":", "Int32", "=", "2"]
+
+
+def test_double_left_shift_lexes_as_two_less_than():
+    tokens = lex("<<")
+    assert [t.type for t in tokens][:2] == [TokenType.LT, TokenType.LT]
+
+
+def test_left_right_shift_sequence():
+    tokens = lex("<<>>")
+    assert [t.type for t in tokens][:4] == [
+        TokenType.LT,
+        TokenType.LT,
+        TokenType.GT,
+        TokenType.GT,
+    ]
+
+
+def test_triple_right_shift_lexes_as_three_greater_than():
+    tokens = lex(">>>")
+    assert [t.type for t in tokens][:3] == [TokenType.GT, TokenType.GT, TokenType.GT]
+
+
+def test_escaped_quote_in_string():
+    tokens = lex('"\\""')
+    assert tokens[0].type == TokenType.STRING
+    assert tokens[0].value == '"'
+
+
+def test_backslash_escape_in_string():
+    tokens = lex('"a\\\\b"')
+    assert tokens[0].type == TokenType.STRING
+    assert tokens[0].value == "a\\b"
+
+
+def test_unknown_escape_passes_through():
+    tokens = lex('"\\q"')
+    assert tokens[0].type == TokenType.STRING
+    assert tokens[0].value == "q"
+
+
+def test_dot_token():
+    tokens = lex("a.b.c")
+    assert [t.type for t in tokens] == [
+        TokenType.IDENT,
+        TokenType.DOT,
+        TokenType.IDENT,
+        TokenType.DOT,
+        TokenType.IDENT,
+        TokenType.EOF,
+    ]
+
+
+def test_single_assign_is_not_eq():
+    tokens = lex("x = 1")
+    assert tokens[1].type == TokenType.ASSIGN
+    assert tokens[1].value == "="
+
+
+def test_double_eq_is_comparison():
+    tokens = lex("x == 1")
+    assert tokens[1].type == TokenType.EQ
+    assert tokens[1].value == "=="
+
+
+def test_floordiv_assign_token():
+    tokens = lex("a //= b")
+    assert tokens[1].type == TokenType.FLOORDIV_ASSIGN
+    assert tokens[1].value == "//="
+
+
+def test_bool_type_token():
+    tokens = lex("Bool")
+    assert tokens[0].type == TokenType.TYPE
+    assert tokens[0].value == "Bool"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["1.", "1e", "123_", "1__2", "1.2.3", "1e2e3"],
+)
+def test_invalid_number_literal(bad):
+    with pytest.raises(SyntaxError):
+        lex(bad)
+
+
+@pytest.mark.parametrize("bad", ["@", "$", ";", "&"])
+def test_unrecognized_token(bad):
+    with pytest.raises(SyntaxError):
+        lex(bad)

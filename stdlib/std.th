@@ -1,0 +1,40 @@
+# Threadon standard library
+#
+# This module is imported automatically into every program; you never need
+# to write `import std` yourself.  Its functions are available by their
+# plain name, e.g. `clamp(n, 0, 100)`.
+#
+# The following runtime builtins are also always available:
+#   print(value) - print an Int32, Float32, Bool or String, then a newline
+#   input()      - read an Int32 from standard input
+#   to_int(x)    - convert a Float32 or Bool to an Int32
+#   to_float(x)  - convert an Int32 to a Float32
+#   to_bool(x)   - convert an Int32 or Float32 to a Bool
+
+def abs(x: Int32) -> Int32
+    if x < 0:
+        return -x
+    return x
+
+def max(a: Int32, b: Int32) -> Int32
+    if a > b:
+        return a
+    return b
+
+def min(a: Int32, b: Int32) -> Int32
+    if a < b:
+        return a
+    return b
+
+def clamp(x: Int32, lo: Int32, hi: Int32) -> Int32
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+def is_even(n: Int32) -> Bool
+    return n % 2 == 0
+
+def is_odd(n: Int32) -> Bool
+    return n % 2 != 0

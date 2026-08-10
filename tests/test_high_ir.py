@@ -609,3 +609,141 @@ def max2(a: Int32, b: Int32) -> Int32
     assert len(phis) == 1
     phi_result = phis[0].result
     assert phi_result.name in live_in["merge"]
+
+
+def test_string_constant_emitted():
+    module = build_module(
+        """
+def f() -> String
+    s: String = "hi"
+    return s
+"""
+    )
+    f = get_func(module, "f")
+    consts = entry_instrs(f, "const")
+    assert len(consts) == 1
+    assert consts[0].args[0] == "hi"
+
+
+def test_uninitialized_declaration_emits_undef():
+    module = build_module(
+        """
+def f() -> Int32
+    x: Int32
+    return x
+"""
+    )
+    f = get_func(module, "f")
+    ops = block_ops(f, "entry")
+    assert ops == ["undef"]
+    ret_val = f.block_map["entry"].terminator.args[0]
+    assert ret_val.def_instr.op == "undef"
+
+
+def test_phi_incoming_values_match_branch_definitions():
+    module = build_module(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        r: Int32 = 1
+    else:
+        r: Int32 = 2
+    return r
+"""
+    )
+    f = get_func(module, "f")
+    merge = f.block_map["merge"]
+    phis = [i for i in merge.instructions if isinstance(i, IRPhi)]
+    assert len(phis) == 1
+    incoming = [(blk, value.name) for blk, value in phis[0].incoming]
+    assert incoming == [("ifbody0", "%t3"), ("elsebody", "%t4")]
+
+
+def test_temp_counter_resets_per_function():
+    module = build_module(
+        """
+def f() -> Int32
+    return 1
+def g() -> Int32
+    return 2
+"""
+    )
+    f = get_func(module, "f")
+    g = get_func(module, "g")
+    f_consts = entry_instrs(f, "const")
+    g_consts = entry_instrs(g, "const")
+    assert f_consts[0].result.name == "%t0"
+    assert g_consts[0].result.name == "%t0"
+
+
+def test_multiple_phis_for_multi_statement_branches():
+    module = build_module(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        a: Int32 = x + 1
+        b: Int32 = x + 2
+        r: Int32 = a + b
+    else:
+        a: Int32 = x
+        b: Int32 = x
+        r: Int32 = a + b
+    return r
+"""
+    )
+    f = get_func(module, "f")
+    merge = f.block_map["merge"]
+    phis = [i for i in merge.instructions if isinstance(i, IRPhi)]
+    assert len(phis) == 3
+    ifbody = f.block_map["ifbody0"]
+    assert [i.op for i in ifbody.instructions] == ["const", "add", "const", "add", "add"]
+
+
+def test_augmented_assign_emits_binary_expression():
+    module = build_module(
+        """
+def run() -> Int32
+    x: Int32 = 5
+    x += 3
+    return x
+"""
+    )
+    f = get_func(module, "run")
+    ops = block_ops(f, "entry")
+    assert ops == ["const", "const", "add"]
+    instrs = f.block_map["entry"].instructions
+    add = instrs[-1]
+    assert add.op == "add"
+    assert add.args[0].name == "%t0"
+    assert add.args[1].name == "%t1"
+    assert f.block_map["entry"].terminator.args[0].name == "%t2"
+
+
+def test_unary_pos_emission():
+    module = build_module(
+        """
+def f(a: Int32) -> Int32
+    b: Int32 = +a
+    return b
+"""
+    )
+    f = get_func(module, "f")
+    poss = entry_instrs(f, "pos")
+    assert len(poss) == 1
+    assert poss[0].args[0].name == "%t0"
+
+
+def test_call_with_no_arguments():
+    module = build_module(
+        """
+def f() -> Int32
+    return 5
+def g() -> Int32
+    return f()
+"""
+    )
+    f = get_func(module, "g")
+    calls = entry_instrs(f, "call")
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.args == ["f"]

@@ -1540,19 +1540,11 @@ class IROptimizer:
                     self._replace_value(instr.result, arg)
                     break
 
-        ret_block = None
-        ret_val = None
+        ret_infos = []
         for old_block, new_block in new_blocks:
-            if new_block.terminator and new_block.terminator.op == "ret":
-                ret_block = new_block
-                if len(new_block.terminator.args) > 0:
-                    ret_val = new_block.terminator.args[0]
-                break
-
-        if ret_val is not None and isinstance(call_instr.result, SSAValue):
-            self._replace_value(call_instr.result, ret_val)
-        elif isinstance(call_instr.result, SSAValue) and not call_instr.result.users:
-            pass
+            t = new_block.terminator
+            if t and t.op == "ret":
+                ret_infos.append((new_block, t.args[0] if len(t.args) > 0 else None))
 
         block.instructions.pop(idx)
         for a in call_instr.args:
@@ -1572,10 +1564,18 @@ class IROptimizer:
         entry_new = new_block_map[inlined_entry_label]
         entry_new.predecessors = [block.label]
 
-        if ret_block:
-            ret_block.terminator = IRInstr("br", [after_label])
-            ret_block.successors = [after_label]
-            after_block.predecessors.append(ret_block.label)
+        if ret_infos:
+            incoming = []
+            for rb, rv in ret_infos:
+                rb.terminator = IRInstr("br", [after_label])
+                rb.successors = [after_label]
+                after_block.predecessors.append(rb.label)
+                if rv is not None:
+                    incoming.append((rb.label, rv))
+            call_result = call_instr.result
+            if isinstance(call_result, SSAValue) and incoming:
+                phi = IRPhi(call_result, incoming)
+                after_block.instructions.insert(0, phi)
 
         for instr in after_block.instructions:
             if isinstance(instr, IRPhi):
@@ -1583,18 +1583,6 @@ class IROptimizer:
                     (after_label if blk == block.label else blk, val)
                     for blk, val in instr.incoming
                 ]
-
-        for b in caller.blocks:
-            if b is block or b is after_block:
-                continue
-            if b.terminator:
-                if b.terminator.op == "br" and b.terminator.args[0] == block.label:
-                    b.terminator.args[0] = after_label
-                elif b.terminator.op == "cond_br":
-                    if b.terminator.args[1] == block.label:
-                        b.terminator.args[1] = after_label
-                    if b.terminator.args[2] == block.label:
-                        b.terminator.args[2] = after_label
 
         for old_block, new_block in new_blocks:
             new_block.instructions = [i for i in new_block.instructions if not (i.op == "param" and i.result.users == [])]

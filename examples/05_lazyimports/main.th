@@ -1,0 +1,5 @@
+lazyfrom math import abs
+
+def main() -> Int32
+    print(abs(-7))
+    return 0

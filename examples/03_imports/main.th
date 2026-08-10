@@ -1,0 +1,9 @@
+from math import abs, clamp
+import math
+
+def main() -> Int32
+    a: Int32 = abs(-5)
+    b: Int32 = math.clamp(99, 0, 50)
+    c: Int32 = math.abs(-9)
+    print(a + b + c)
+    return 0

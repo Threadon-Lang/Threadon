@@ -1,5 +1,7 @@
 from .lexer import lex_lines, TokenType, Token
 from .nodes import *
+from .builtins import BUILTIN_SIGS, builtin_return_type
+from .importer import Importer, ImporterError
 
 
 def strip_indent_tokens(line_tokens):
@@ -110,7 +112,9 @@ def print_ast(ast, indent=0):
 
 
 class Parser:
-    def __init__(self):
+    def __init__(self, importer=None, module_name=""):
+        self.importer = importer or Importer()
+        self.module_name = module_name
         self.lexed_lines = []
         self.line_number = 1
         self.current_line_number = 0
@@ -124,6 +128,12 @@ class Parser:
         self.struct_defs = {}
         self.current_indent_col = 0
         self.aliases = {}
+        self.qfunc = {}
+        self.qstruct = {}
+        self.func_import_aliases = {}
+        self.struct_import_aliases = {}
+        self.module_aliases = {}
+        self.lazy_imports = {}
 
 
     def give_error(self, msg, line_num=None):
@@ -260,6 +270,14 @@ class Parser:
 
         first = self.current_line[0].type
 
+        if first in (
+            TokenType.IMPORT,
+            TokenType.FROM,
+            TokenType.LAZYIMPORT,
+            TokenType.LAZYFROM,
+        ):
+            return self.parse_import()
+
         if first == TokenType.DEF:
             return self.parse_function()
 
@@ -288,8 +306,259 @@ class Parser:
             ):
                 return self.parse_augmented_assign()
 
+        if first == TokenType.IDENT and len(self.current_line) > 1:
+            if self.current_line[1].type == TokenType.LPAREN:
+                expr = self.parse_expr(self.current_line)
+                self.detect_expr_type(expr)
+                return ExprStmt(expr)
+
         self.give_error("What for random things where you doing there")
         return None
+
+    def qualify(self, name):
+        return f"{self.module_name}.{name}" if self.module_name else name
+
+    def _load_module(self, module_path):
+        try:
+            return self.importer.load(module_path)
+        except ImporterError as e:
+            self.give_error(str(e))
+
+    def bind_import(self, mod, module_path, name, bound):
+        qmember = f"{module_path}.{name}" if module_path else name
+
+        if name in mod.func_exports:
+            self.func_import_aliases[bound] = qmember
+            self.func_sigs[qmember] = mod.func_sigs[qmember]
+        elif name in mod.struct_exports:
+            self.struct_import_aliases[bound] = qmember
+            self.struct_defs[qmember] = mod.struct_defs[qmember]
+        elif name in mod.var_exports:
+            self.give_error(
+                f"Cannot import variable '{name}' from module '{module_path}'"
+                f" (only functions and structs can be imported)"
+            )
+        else:
+            self.give_error(f"Module '{module_path}' has no member '{name}'")
+
+    def handle_import_module(self, module_path, bound, lazy):
+        self.module_aliases[bound] = module_path
+        if not lazy:
+            self._load_module(module_path)
+
+    def handle_from_import(self, module_path, names, lazy):
+        if lazy:
+            for name, alias in names:
+                bound = alias or name
+                self.lazy_imports[bound] = (module_path, name)
+            return
+
+        mod = self._load_module(module_path)
+        for name, alias in names:
+            bound = alias or name
+            self.bind_import(mod, module_path, name, bound)
+
+    def _split_call_args(self, ts, start):
+        args = []
+        depth = 0
+        current = []
+        j = start
+        while j < len(ts):
+            tok = ts[j]
+            if tok.type == TokenType.LPAREN:
+                depth += 1
+                current.append(tok)
+            elif tok.type == TokenType.RPAREN:
+                if depth == 0:
+                    break
+                depth -= 1
+                current.append(tok)
+            elif tok.type == TokenType.COMMA and depth == 0:
+                args.append(self.parse_expr(current))
+                current = []
+            else:
+                current.append(tok)
+            j += 1
+        if current:
+            args.append(self.parse_expr(current))
+        return args
+
+    def parse_import(self):
+        tokens = self.current_line
+        first = tokens[0].type
+        lazy = first in (TokenType.LAZYIMPORT, TokenType.LAZYFROM)
+        is_from = first in (TokenType.FROM, TokenType.LAZYFROM)
+
+        if len(tokens) < 2:
+            self.give_error("Invalid import statement")
+
+        i = 1
+        parts = []
+        if tokens[i].type != TokenType.IDENT:
+            self.give_error("Expected module name in import")
+        parts.append(tokens[i].value)
+        i += 1
+
+        while i < len(tokens) and tokens[i].type == TokenType.DOT:
+            i += 1
+            if i >= len(tokens) or tokens[i].type != TokenType.IDENT:
+                self.give_error("Expected module name after '.'")
+            parts.append(tokens[i].value)
+            i += 1
+
+        module_path = ".".join(parts)
+
+        if is_from:
+            if i >= len(tokens) or tokens[i].type != TokenType.IMPORT:
+                self.give_error("Expected 'import' after module name")
+
+            i += 1
+            names = []
+            while i < len(tokens):
+                if tokens[i].type == TokenType.MUL:
+                    self.give_error("Wildcard imports (*) are not allowed")
+                if tokens[i].type != TokenType.IDENT:
+                    self.give_error("Expected name to import")
+                name = tokens[i].value
+                i += 1
+
+                alias = None
+                if i < len(tokens) and tokens[i].type == TokenType.AS:
+                    i += 1
+                    if i >= len(tokens) or tokens[i].type != TokenType.IDENT:
+                        self.give_error("Expected alias name after 'as'")
+                    alias = tokens[i].value
+                    i += 1
+
+                names.append((name, alias))
+
+                if i < len(tokens):
+                    if tokens[i].type != TokenType.COMMA:
+                        self.give_error("Unexpected token in import statement")
+                    i += 1
+                    if i >= len(tokens):
+                        self.give_error("Trailing comma in import is not allowed")
+
+            if not names:
+                self.give_error("Expected at least one name to import")
+
+            self.handle_from_import(module_path, names, lazy)
+            return ImportStmt(module_path, names, lazy, True)
+
+        bound = parts[0]
+        if i < len(tokens):
+            if tokens[i].type != TokenType.AS:
+                self.give_error("Unexpected token after module name")
+            i += 1
+            if i >= len(tokens) or tokens[i].type != TokenType.IDENT:
+                self.give_error("Expected alias name after 'as'")
+            bound = tokens[i].value
+            i += 1
+
+        if i < len(tokens):
+            self.give_error("Unexpected token at end of import statement")
+
+        self.handle_import_module(module_path, bound, lazy)
+        return ImportStmt(module_path, [(None, bound)], lazy, False)
+
+    def resolve_func_name(self, name):
+        if name in self.qfunc:
+            return self.qfunc[name]
+        if name in self.func_import_aliases:
+            return self.func_import_aliases[name]
+        if name in self.lazy_imports:
+            module_path, member = self.lazy_imports[name]
+            mod = self._load_module(module_path)
+            qmember = f"{module_path}.{member}" if module_path else member
+
+            if member in mod.func_exports:
+                self.func_import_aliases[name] = qmember
+                self.func_sigs[qmember] = mod.func_sigs[qmember]
+                del self.lazy_imports[name]
+                return qmember
+            if member in mod.struct_exports:
+                self.give_error(f"'{name}' is a type, not a function")
+            self.give_error(f"Module '{module_path}' has no member '{member}'")
+        return name
+
+    def resolve_type(self, name, strict=True):
+        if name in self.qstruct:
+            return self.qstruct[name]
+        if name in self.struct_import_aliases:
+            return self.struct_import_aliases[name]
+        if name in self.lazy_imports:
+            module_path, member = self.lazy_imports[name]
+            mod = self._load_module(module_path)
+            qmember = f"{module_path}.{member}" if module_path else member
+
+            if member in mod.struct_exports:
+                self.struct_import_aliases[name] = qmember
+                self.struct_defs[qmember] = mod.struct_defs[qmember]
+                del self.lazy_imports[name]
+                return qmember
+            if member in mod.func_exports:
+                if strict:
+                    self.give_error(f"'{name}' is a function, not a type")
+                return name
+            self.give_error(f"Module '{module_path}' has no member '{member}'")
+
+        if "." in name:
+            segments = name.split(".")
+            if segments[0] in self.module_aliases:
+                qname, kind = self.resolve_qualified(segments)
+                if kind == "struct":
+                    return qname
+                if strict:
+                    self.give_error(f"'{name}' is a function, not a type")
+                return name
+        return name
+
+    def parse_type_token(self, tok, ctx):
+        if tok is None:
+            self.give_error(f"Expected a type in {ctx}")
+        if tok.type == TokenType.TYPE:
+            return tok.value
+        if tok.type == TokenType.IDENT:
+            resolved = self.resolve_type(tok.value)
+            if resolved in self.struct_defs:
+                return resolved
+            self.give_error(f"Unknown type '{tok.value}' in {ctx}")
+        self.give_error(f"Expected a type in {ctx}")
+
+    def import_member(self, module_path, member):
+        mod = self._load_module(module_path)
+        qmember = f"{module_path}.{member}" if module_path else member
+
+        if member in mod.func_exports:
+            self.func_sigs[qmember] = mod.func_sigs[qmember]
+            return qmember, "func"
+        if member in mod.struct_exports:
+            self.struct_defs[qmember] = mod.struct_defs[qmember]
+            return qmember, "struct"
+        if member in mod.var_exports:
+            self.give_error(
+                f"Module '{module_path}' has no function or type '{member}'"
+            )
+        self.give_error(f"Module '{module_path}' has no member '{member}'")
+        return None, None
+
+    def resolve_qualified(self, parts):
+        bound = parts[0]
+        if bound not in self.module_aliases:
+            self.give_error(f"Module '{bound}' is not imported")
+
+        base = self.module_aliases[bound]
+        base_segments = base.split(".")
+        member = parts[-1]
+
+        full_segments = base_segments[:]
+        for segment in parts[1:-1]:
+            if full_segments and full_segments[-1] == segment:
+                continue
+            full_segments.append(segment)
+
+        usage_path = ".".join(full_segments)
+        return self.import_member(usage_path, member)
 
     def parse(self, code: str):
         self.line_number = 1
@@ -302,6 +571,12 @@ class Parser:
         self.struct_defs = {}
         self.func_sigs = {}
         self.aliases = {}
+        self.qfunc = {}
+        self.qstruct = {}
+        self.func_import_aliases = {}
+        self.struct_import_aliases = {}
+        self.module_aliases = {}
+        self.lazy_imports = {}
 
         self.scopes = []
         self.push_scope()
@@ -311,6 +586,9 @@ class Parser:
         except SyntaxError as e:
             self.give_error(f"Lexical error: {e}")
 
+        if not self.module_name:
+            self._auto_import_stdlib()
+
         while self.line_number <= len(self.lexed_lines):
             self.read_line()
             node = self.parse_line()
@@ -318,6 +596,20 @@ class Parser:
                 self.ast.append(node)
 
         return self.ast
+
+    def _auto_import_stdlib(self):
+        """Implicitly import the standard library into the main module."""
+        if not self.importer or self.importer.find_source("std") is None:
+            return
+        mod = self._load_module("std")
+        for name in sorted(mod.func_exports):
+            qname = f"std.{name}"
+            self.func_import_aliases[name] = qname
+            self.func_sigs[qname] = mod.func_sigs[qname]
+        for name in sorted(mod.struct_exports):
+            qname = f"std.{name}"
+            self.struct_import_aliases[name] = qname
+            self.struct_defs[qname] = mod.struct_defs[qname]
     def parse_struct(self):
         if self.return_type is not None:
             self.give_error("Struct must be declared at the top level")
@@ -328,6 +620,8 @@ class Parser:
             self.give_error("Struct must have a name")
 
         name = tokens[1].value
+        qname = self.qualify(name)
+        self.qstruct[name] = qname
         parent_indent = self.current_indent
 
         fields = []
@@ -358,9 +652,9 @@ class Parser:
                 self.give_error("Struct body may only contain variable declarations")
 
         self.pop_scope()
-        self.struct_defs[name] = fields
+        self.struct_defs[qname] = fields
 
-        return StructDef(name, fields)
+        return StructDef(qname, fields)
 
     def parse_if(self):
         tokens = self.current_line
@@ -485,9 +779,7 @@ class Parser:
                 self.give_error("Expected ':' after parameter name")
             i += 1
 
-            if tokens[i].type != TokenType.TYPE:
-                self.give_error("Expected type after ':'")
-            param_type = tokens[i].value
+            param_type = self.parse_type_token(tokens[i], "function signature")
             i += 1
 
             params.append((param_name, param_type))
@@ -505,11 +797,17 @@ class Parser:
             self.give_error("Expected '->' after ')'")
         i += 1
 
-        if i >= len(tokens) or tokens[i].type != TokenType.TYPE:
-            self.give_error("Expected return type after '->'")
-        return_type = tokens[i].value
+        return_type = self.parse_type_token(
+            tokens[i] if i < len(tokens) else None, "return type"
+        )
+        i += 1
 
-        self.func_sigs[func_name] = (params, return_type)
+        func_name_q = self.qualify(func_name)
+        params = [(pname, self.resolve_type(ptype)) for pname, ptype in params]
+        return_type = self.resolve_type(return_type)
+
+        self.qfunc[func_name] = func_name_q
+        self.func_sigs[func_name_q] = (params, return_type)
 
         self.push_scope()
         for pname, ptype in params:
@@ -523,7 +821,7 @@ class Parser:
         if return_type != "NoneType" and not self.all_paths_return(func_body):
             self.give_error("Function must return a value on all code paths")
 
-        return FunctionDef(func_name, params, return_type, func_body)
+        return FunctionDef(func_name_q, params, return_type, func_body)
 
     def all_paths_return(self, stmts):
         if not stmts:
@@ -584,15 +882,45 @@ class Parser:
                 i += 2
 
             return expr
+        def parse_qualified_call(ts):
+            if len(ts) < 5:
+                return None
+            if ts[0].type != TokenType.IDENT or ts[1].type != TokenType.DOT:
+                return None
+
+            parts = [ts[0].value]
+            i = 1
+            while i + 1 < len(ts) and ts[i].type == TokenType.DOT and ts[i + 1].type == TokenType.IDENT:
+                parts.append(ts[i + 1].value)
+                i += 2
+
+            if i >= len(ts) or ts[i].type != TokenType.LPAREN:
+                return None
+
+            qname, kind = self.resolve_qualified(parts)
+
+            if kind == "struct":
+                return self.parse_struct_init(qname, ts[i + 1:-1])
+
+            if ts[-1].type != TokenType.RPAREN:
+                self.give_error("Unmatched '(' in call")
+
+            args = self._split_call_args(ts, i + 1)
+            return CallExpr(qname, args)
+
         def factor(ts):
             fa = parse_field_access(ts)
             if fa is not None:
                 return fa
 
+            qualified = parse_qualified_call(ts)
+            if qualified is not None:
+                return qualified
+
             if not ts:
                 self.give_error("Empty expression")
             if len(ts) >= 3 and ts[0].type == TokenType.IDENT and ts[1].type == TokenType.LPAREN:
-                struct_name = ts[0].value
+                struct_name = self.resolve_type(ts[0].value, strict=False)
 
                 if struct_name in self.struct_defs:
                     return self.parse_struct_init(struct_name, ts[2:-1])
@@ -617,17 +945,8 @@ class Parser:
                 self.give_error("Unmatched '('")
 
             if len(ts) >= 3 and ts[0].type == TokenType.IDENT and ts[1].type == TokenType.LPAREN:
-                func_name = ts[0].value
-                args = []
-                i = 2
-                while i < len(ts) and ts[i].type != TokenType.RPAREN:
-                    arg_tokens = []
-                    while i < len(ts) and ts[i].type not in (TokenType.COMMA, TokenType.RPAREN):
-                        arg_tokens.append(ts[i])
-                        i += 1
-                    args.append(self.parse_expr(arg_tokens))
-                    if i < len(ts) and ts[i].type == TokenType.COMMA:
-                        i += 1
+                func_name = self.resolve_func_name(ts[0].value)
+                args = self._split_call_args(ts, 2)
                 return CallExpr(func_name, args)
 
             if len(ts) == 1:
@@ -765,6 +1084,9 @@ class Parser:
         if t == "VarExpr":
             name = expr.name
 
+            if name in self.module_aliases:
+                self.give_error(f"Module '{name}' cannot be used as a value")
+
             for scope in reversed(self.scopes):
                 if name in scope:
                     return scope[name]
@@ -798,6 +1120,13 @@ class Parser:
 
         if t == "CallExpr":
             func_name = expr.func_name
+
+            if func_name in BUILTIN_SIGS:
+                arg_types = [self.detect_expr_type(a) for a in expr.args]
+                try:
+                    return builtin_return_type(func_name, arg_types)
+                except ValueError as e:
+                    self.give_error(str(e))
 
             if func_name not in self.func_sigs:
                 self.give_error(f"Unknown function '{func_name}'")
@@ -871,16 +1200,24 @@ class Parser:
         tokens = self.current_line
 
         name = tokens[0].value
-        var_type = tokens[2].value
+
+        i = 2
+        type_parts = [tokens[i].value]
+        i += 1
+        while i + 1 < len(tokens) and tokens[i].type == TokenType.DOT and tokens[i + 1].type == TokenType.IDENT:
+            type_parts.append(tokens[i + 1].value)
+            i += 2
+
+        var_type = self.resolve_type(".".join(type_parts))
 
         if var_type == "NoneType":
             self.give_error("Variables cannot have type NoneType")
 
-        if len(tokens) <= 3:
+        if i >= len(tokens):
             self.declare_var(name, var_type)
             return VarDecl(name, var_type, None)
 
-        expr_tokens = tokens[4:]
+        expr_tokens = tokens[i + 1:]
 
         if (
             len(expr_tokens) == 2
@@ -888,7 +1225,7 @@ class Parser:
             and expr_tokens[1].type == TokenType.CARET
         ):
             expr = RefExpr(VarExpr(expr_tokens[0].value))
-        elif tokens[3].type in (
+        elif tokens[i].type in (
             TokenType.PLUS_ASSIGN,
             TokenType.MINUS_ASSIGN,
             TokenType.MUL_ASSIGN,
@@ -896,7 +1233,7 @@ class Parser:
             TokenType.MOD_ASSIGN,
             TokenType.FLOORDIV_ASSIGN,
         ):
-            op = tokens[3].value[:-1]
+            op = tokens[i].value[:-1]
             expr = BinaryExpr(VarExpr(name), op, self.parse_expr(expr_tokens))
         else:
             expr = self.parse_expr(expr_tokens)

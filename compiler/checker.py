@@ -117,6 +117,9 @@ class UnreachableChecker:
             for b in prev_blocks:
                 b["succ"].append(merge_block["name"])
 
+            if not stmt.else_body:
+                current_block["succ"].append(merge_block["name"])
+
             return merge_block
 
         current_block["stmts"].append((stmt, True))
@@ -318,6 +321,9 @@ class UnusedVariableChecker:
             declared.add(stmt.name)
             used.add(stmt.name)
 
+        elif t == "ExprStmt":
+            self.visit_expr(stmt.expr, used)
+
         elif t == "ReturnStmt":
             if stmt.value:
                 self.visit_expr(stmt.value, used)
@@ -504,6 +510,9 @@ class AliasChecker:
             declared.add(stmt.name)
             if isinstance(stmt.expr, RefExpr):
                 self.check_ref_decl(stmt, declared)
+
+        elif t == "ExprStmt":
+            pass
 
         elif t == "IfStmt":
             for s in stmt.body:

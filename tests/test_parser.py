@@ -597,3 +597,334 @@ def f(x: Int32) -> Int32
     return y
 """
     )
+
+
+def test_non_bool_if_condition_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    if 5:
+        r: Int32 = 1
+    else:
+        r: Int32 = 2
+    return r
+"""
+    )
+
+
+def test_type_mismatch_in_declaration_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    s: String = 5
+    return 0
+"""
+    )
+
+
+def test_type_mismatch_in_return_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    return "abc"
+"""
+    )
+
+
+def test_use_before_declaration_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    y: Int32 = x + 1
+    x: Int32 = 0
+    return y
+"""
+    )
+
+
+def test_if_missing_colon_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    if x > 0
+        r: Int32 = 1
+    return r
+"""
+    )
+
+
+def test_elif_misindented_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        r: Int32 = 1
+      elif x < 0:
+        r: Int32 = 2
+    else:
+        r: Int32 = 3
+    return r
+"""
+    )
+
+
+def test_else_misindented_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        r: Int32 = 1
+      else:
+        r: Int32 = 2
+    return r
+"""
+    )
+
+
+def test_else_without_if_fails():
+    parse_fail(
+        """
+else:
+    x: Int32 = 1
+"""
+    )
+
+
+def test_elif_without_if_fails():
+    parse_fail(
+        """
+elif x > 0:
+    x: Int32 = 1
+"""
+    )
+
+
+def test_elif_missing_colon_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        r: Int32 = 1
+    elif x < 0
+        r: Int32 = 2
+    else:
+        r: Int32 = 3
+    return r
+"""
+    )
+
+
+def test_double_else_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        r: Int32 = 1
+    else:
+        r: Int32 = 2
+    else:
+        r: Int32 = 3
+    return r
+"""
+    )
+
+
+def test_and_operator_unsupported_fails():
+    parse_fail(
+        """
+def f() -> Bool
+    b: Bool = True and False
+    return b
+"""
+    )
+
+
+def test_not_on_non_bool_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    b: Bool = not x
+    return 0
+"""
+    )
+
+
+def test_neg_on_bool_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    b: Bool = -True
+    return 0
+"""
+    )
+
+
+def test_pos_on_bool_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    b: Bool = +True
+    return 0
+"""
+    )
+
+
+def test_unknown_function_call_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    return unknown(1)
+"""
+    )
+
+
+def test_comparison_type_mismatch_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    if 1 > True:
+        r: Int32 = 1
+    else:
+        r: Int32 = 2
+    return r
+"""
+    )
+
+
+def test_arithmetic_type_mismatch_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    x: Int32 = 1 + "a"
+    return x
+"""
+    )
+
+
+def test_return_outside_function_fails():
+    parse_fail(
+        """
+return 5
+"""
+    )
+
+
+def test_nonetype_variable_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    x: NoneType = None
+    return 0
+"""
+    )
+
+
+def test_field_access_on_primitive_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    y: Int32 = x.z
+    return y
+"""
+    )
+
+
+def test_missing_struct_field_fails():
+    parse_fail(
+        """
+struct P:
+    x: Int32
+def f() -> Int32
+    p: P = P(x=1)
+    return p.z
+"""
+    )
+
+
+def test_struct_field_type_mismatch_fails():
+    parse_fail(
+        """
+struct P:
+    x: Int32
+def f() -> Int32
+    p: P = P(x=True)
+    return p.x
+"""
+    )
+
+
+def test_call_argument_type_mismatch_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    return x
+def g() -> Int32
+    return f("a")
+"""
+    )
+
+
+def test_division_by_zero_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    return 1 / 0
+"""
+    )
+
+
+def test_empty_expression_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    x: Int32 =
+    return x
+"""
+    )
+
+
+def test_unmatched_parenthesis_fails():
+    parse_fail(
+        """
+def f() -> Int32
+    x: Int32 = (1
+    return x
+"""
+    )
+
+
+def test_invalid_parameter_name_fails():
+    parse_fail(
+        """
+def f(1) -> Int32
+    return 1
+"""
+    )
+
+
+def test_missing_parameter_colon_fails():
+    parse_fail(
+        """
+def f(x Int32) -> Int32
+    return x
+"""
+    )
+
+
+def test_missing_return_type_fails():
+    parse_fail(
+        """
+def f() ->
+    return 1
+"""
+    )
+
+
+def test_missing_return_on_some_paths_fails():
+    parse_fail(
+        """
+def f(x: Int32) -> Int32
+    if x > 0:
+        return 1
+"""
+    )

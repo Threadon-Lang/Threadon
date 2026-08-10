@@ -1,0 +1,9 @@
+from geom import Point, dot, scale, origin
+import geom
+
+def main() -> Int32
+    p: Point = geom.Point(x=3, y=4)
+    q: Point = scale(2, p)
+    o: Point = origin()
+    print(dot(p, q) + o.x)
+    return 0

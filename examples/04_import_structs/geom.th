@@ -1,0 +1,12 @@
+struct Point:
+    x: Int32
+    y: Int32
+
+def dot(a: Point, b: Point) -> Int32
+    return a.x * b.x + a.y * b.y
+
+def scale(s: Int32, p: Point) -> Point
+    return Point(x=s * p.x, y=s * p.y)
+
+def origin() -> Point
+    return Point(x=0, y=0)

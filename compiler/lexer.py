@@ -59,6 +59,9 @@ class TokenType(Enum):
 
     IMPORT = auto()
     FROM = auto()
+    LAZYIMPORT = auto()
+    LAZYFROM = auto()
+    AS = auto()
 
     DOT = auto()
     CARET = auto()
@@ -90,6 +93,9 @@ KEYWORDS = {
     "False": TokenType.FALSE,
     "import": TokenType.IMPORT,
     "from": TokenType.FROM,
+    "lazyimport": TokenType.LAZYIMPORT,
+    "lazyfrom": TokenType.LAZYFROM,
+    "as": TokenType.AS,
 }
 
 TYPES = {

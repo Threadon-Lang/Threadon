@@ -50,6 +50,10 @@ class CallExpr(Expr):
     args: list
 
 @dataclass
+class ExprStmt(Node):
+    expr: Expr
+
+@dataclass
 class BinaryExpr(Expr):
     left: Expr
     op: str
@@ -84,3 +88,10 @@ class StructInitExpr:
 @dataclass
 class RefExpr(Expr):
     inner: Expr
+
+@dataclass
+class ImportStmt(Node):
+    module: str
+    names: list
+    lazy: bool = False
+    is_from: bool = True

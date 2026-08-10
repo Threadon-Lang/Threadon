@@ -1,0 +1,8 @@
+def abs(x: Int32) -> Int32
+    result: Int32 = x
+    if x < 0:
+        result *= -1
+    return result
+
+def square(x: Int32) -> Int32
+    return x * x
