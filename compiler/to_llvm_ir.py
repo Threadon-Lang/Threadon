@@ -50,10 +50,21 @@ class LLVMIRCompiler:
         if self.debug_mode:
             self.used_c_runtime.add("fprintf")
             self.used_c_runtime.add("exit")
+
+            err_fmt = (
+                "\x1b[1;31m[RUNTIME ERROR]\x1b[0m\n"
+                "\x1b[33m│\x1b[0m \x1b[1m%s\x1b[0m\n"
+                "\x1b[33m├─>\x1b[0m \x1b[90mLocation:\x1b[0m \x1b[36m%s\x1b[0m\n"
+                "\x1b[33m└─>\x1b[0m \x1b[90mProcess terminated with exit code 1\x1b[0m\n"
+            )
+            fmt_g = self._string_global(err_fmt)
+            fmt_sz = len(err_fmt.encode("utf-8")) + 1
+
             self.out.append("")
-            self.out.append("define void @__threadon_debug_error(i8* %msg) {")
+            self.out.append("define void @__threadon_debug_error(i8* %msg, i8* %ctx) {")
             self.out.append("  %se = load i8*, i8** @stderr")
-            self.out.append("  call i32 (i8*, i8*, ...) @fprintf(i8* %se, i8* %msg)")
+            self.out.append(f"  %fmt = getelementptr inbounds [{fmt_sz} x i8], [{fmt_sz} x i8]* {fmt_g}, i64 0, i64 0")
+            self.out.append("  call i32 (i8*, i8*, ...) @fprintf(i8* %se, i8* %fmt, i8* %msg, i8* %ctx)")
             self.out.append("  call void @exit(i32 1)")
             self.out.append("  unreachable")
             self.out.append("}")
@@ -200,6 +211,7 @@ class LLVMIRCompiler:
                 
                 lines = []
                 
+                
                 if self.debug_mode:
                     self.used_c_runtime.add("exit")
                     msg = "Error: Invalid integer conversion\n"
@@ -214,8 +226,8 @@ class LLVMIRCompiler:
                         f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
                         f"",
                         f"{bad_label}:",
-                        f"  %emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %emsg)",
+                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
                         f"  unreachable",
                         f"",
                         f"{ok_label}:",
@@ -254,8 +266,8 @@ class LLVMIRCompiler:
                         f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
                         f"",
                         f"{bad_label}:",
-                        f"  %emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %emsg)",
+                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
                         f"  unreachable",
                         f"",
                         f"{ok_label}:",
@@ -539,7 +551,7 @@ class LLVMIRCompiler:
             is_zero = f"{res}_iszero"
             bad_label = f"{res.lstrip('%')}_divzero"
             ok_label = f"{res.lstrip('%')}_divok"
-            msg = "Error: Division by zero\\n"
+            msg = "Error: Division by zero\n"
             msg_global = self._string_global(msg)
             msg_size = len(msg.encode("utf-8")) + 1
             return [
@@ -547,8 +559,8 @@ class LLVMIRCompiler:
                 f"br i1 {is_zero}, label %{bad_label}, label %{ok_label}",
                 f"",
                 f"{bad_label}:",
-                f"  %emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                f"  call void @__threadon_debug_error(i8* %emsg)",
+                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
                 f"  unreachable",
                 f"",
                 f"{ok_label}:",
