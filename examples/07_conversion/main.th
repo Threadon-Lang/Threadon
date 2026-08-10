@@ -1,0 +1,15 @@
+# Demonstrates the type conversion builtins:
+#   to_float(x) - convert an Int32 to a Float32
+#   to_int(x)   - convert a Float32 or Bool to an Int32
+#   to_bool(x)  - convert an Int32 or Float32 to a Bool
+
+def main() -> Int32
+    x: Int32 = 7
+    print(to_float(x))
+    f: Float32 = 3.7
+    print(to_int(f))
+    print(to_int(True))
+    b: Bool = to_bool(x)
+    print(b)
+    print(to_bool(0.0))
+    return 0
