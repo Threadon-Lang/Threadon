@@ -166,6 +166,27 @@ def compile_stdlib_run(source, inline_threshold=0, input=None):
     return run_llvm(llvm, input=input)
 
 
+def test_multi_arg_print():
+    result = compile_stdlib_run(
+        """
+struct Point:
+    x: Int32
+    y: Int32
+
+def main() -> Int32
+    p: Point = Point(x=3, y=4)
+    print("x =", p.x)
+    print("sum =", p.x + p.y)
+    print("flag =", p.x < p.y)
+    print()
+    print("text", 5, 2.5, True)
+    return 0
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "x = 3\nsum = 7\nflag = 1\n\ntext 5 2.500000 1\n"
+
+
 def test_builtin_print_and_conversions():
     result = compile_stdlib_run(
         """
@@ -260,6 +281,32 @@ def main() -> Int32
     assert result.stdout == "Give a name: \n"
 
 
+def test_field_assign():
+    result = compile_stdlib_run(
+        """
+struct Point:
+    x: Int32
+    y: Int32
+
+def main() -> Int32
+    p: Point = Point(x=0, y=0)
+    print(p.x)
+    print(p.y)
+    p.x = 3
+    p.y = p.x + 1
+    print(p.x)
+    print(p.y)
+    if p.x < 5:
+        p.x = 10
+    print(p.x)
+    print(p.y)
+    return 0
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "0\n0\n3\n4\n10\n4\n"
+
+
 def test_expr_statement():
     result = compile_stdlib_run(
         """
@@ -299,11 +346,13 @@ if __name__ == "__main__":
     test_complex_program_runs()
     test_complex_program_inlined()
     test_builtin_print_and_conversions()
+    test_multi_arg_print()
     test_string_conversions()
     test_string_conversion_invalid_errors()
     test_int_and_string_zero_constants_distinct()
     test_builtin_input()
     test_input_empty_on_eof()
+    test_field_assign()
     test_expr_statement()
     test_stdlib_helpers()
     print("compile_test OK")

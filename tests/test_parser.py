@@ -394,6 +394,80 @@ def test_reference_decl_breaks(code):
     parse_fail(code)
 
 
+FIELD_ASSIGN_OK_SNIPPETS = [
+
+    """
+struct A:
+    x: Int32
+def f() -> Int32
+    p: A = A(x=1)
+    p.x = 5
+    return p.x
+""",
+
+    """
+struct A:
+    x: Int32
+    y: Int32
+def f() -> Int32
+    p: A = A(x=1, y=2)
+    p.x = p.y + 1
+    return p.x
+""",
+
+    """
+struct A:
+    x: Int32
+def f() -> Int32
+    p: A = A(x=1)
+    if p.x < 5:
+        p.x = 10
+    else:
+        p.x = 20
+    return p.x
+""",
+]
+
+
+@pytest.mark.parametrize("code", FIELD_ASSIGN_OK_SNIPPETS)
+def test_field_assign_ok(code):
+    parse_ok(code)
+
+
+FIELD_ASSIGN_BREAK_SNIPPETS = [
+
+    """
+struct A:
+    x: Int32
+def f() -> Int32
+    p: A = A(x=1)
+    p.z = 5
+    return p.x
+""",
+
+    """
+struct A:
+    x: Int32
+def f() -> Int32
+    p: A = A(x=1)
+    p.x = "hi"
+    return p.x
+""",
+
+    """
+def f() -> Int32
+    n: Int32 = 1
+    n.x = 5
+    return n
+""",
+]
+
+
+@pytest.mark.parametrize("code", FIELD_ASSIGN_BREAK_SNIPPETS)
+def test_field_assign_breaks(code):
+    parse_fail(code)
+
+
 FUNC_SIG_SNIPPETS = [
 
     """

@@ -74,6 +74,10 @@ def print_ast(ast, indent=0):
             print(f"{pad}Assign {node.name} = {print_expr(node.expr)}")
             continue
 
+        if t == "FieldAssign":
+            print(f"{pad}FieldAssign {node.name}.{node.field} = {print_expr(node.expr)}")
+            continue
+
         if t == "ReturnStmt":
             if node.value is None:
                 print(f"{pad}return")
@@ -305,6 +309,15 @@ class Parser:
                 TokenType.FLOORDIV_ASSIGN,
             ):
                 return self.parse_augmented_assign()
+
+        if (
+            first == TokenType.IDENT
+            and len(self.current_line) > 4
+            and self.current_line[1].type == TokenType.DOT
+            and self.current_line[2].type == TokenType.IDENT
+            and self.current_line[3].type == TokenType.ASSIGN
+        ):
+            return self.parse_field_assign()
 
         if first == TokenType.IDENT and len(self.current_line) > 1:
             if self.current_line[1].type == TokenType.LPAREN:
@@ -1299,6 +1312,37 @@ class Parser:
         full_expr = BinaryExpr(VarExpr(name), op, rhs)
 
         return Assign(name, full_expr)
+
+    def parse_field_assign(self):
+        tokens = self.current_line
+
+        name = tokens[0].value
+        field = tokens[2].value
+
+        base_type = self.lookup_var(name)
+
+        if base_type not in self.struct_defs:
+            self.give_error(
+                f"'{name}' is not a struct, cannot assign to field '{field}'"
+            )
+
+        ftype = None
+        for decl in self.struct_defs[base_type]:
+            if decl.name == field:
+                ftype = decl.var_type
+                break
+        if ftype is None:
+            self.give_error(f"Struct '{base_type}' has no field '{field}'")
+
+        rhs = self.parse_expr(tokens[4:])
+        rhs_type = self.detect_expr_type(rhs)
+
+        if ftype != rhs_type:
+            self.give_error(
+                f"Field '{name}.{field}' expects type {ftype}, got {rhs_type}"
+            )
+
+        return FieldAssign(name, field, rhs)
 
 if __name__ == "__main__":
     code = """

@@ -321,6 +321,10 @@ class UnusedVariableChecker:
             declared.add(stmt.name)
             used.add(stmt.name)
 
+        elif t == "FieldAssign":
+            used.add(stmt.name)
+            self.visit_expr(stmt.expr, used)
+
         elif t == "ExprStmt":
             self.visit_expr(stmt.expr, used)
 
@@ -398,6 +402,10 @@ class DeadStoreChecker:
                 reads.add(stmt.name)
 
                 writes.setdefault(stmt.name, []).append((stmt, None))
+
+            elif t == "FieldAssign":
+                self.walk_expr(stmt.expr, reads)
+                reads.add(stmt.name)
 
             elif t == "ReturnStmt":
                 if stmt.value:

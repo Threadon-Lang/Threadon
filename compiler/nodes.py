@@ -73,6 +73,11 @@ class Assign:
     name: str
     expr: List[Expr]
 @dataclass
+class FieldAssign:
+    name: str
+    field: str
+    expr: Expr
+@dataclass
 class StructDef:
     name: str
     fields: any

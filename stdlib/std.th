@@ -5,7 +5,7 @@
 # plain name, e.g. `clamp(n, 0, 100)`.
 #
 # The following runtime builtins are also always available:
-#   print(value) - print an Int32, Float32, Bool or String, then a newline
+#   print(a, b, ...) - print values (separated by spaces), then a newline
 #   input(prompt) - show `prompt`, then read a line of text as a String
 #   to_int(x)    - convert a Float32, Bool or String to an Int32
 #   to_float(x)  - convert an Int32 or String to a Float32

@@ -5,6 +5,7 @@ from .nodes import (
     IfStmt,
     VarDecl,
     Assign,
+    FieldAssign,
     ReturnStmt,
     ExprStmt,
     StructInitExpr,
@@ -247,6 +248,7 @@ class SSABuilder:
         self.env_stack = []
         self.temp_counter = 0
         self.func_returns = {}
+        self.aliases = {}
 
     def new_temp(self, type_):
         name = f"%t{self.temp_counter}"
@@ -259,14 +261,33 @@ class SSABuilder:
     def pop_env(self):
         self.env_stack.pop()
 
-    def set_var(self, name, value: SSAValue):
-        self.env_stack[-1][name] = value
+    def _resolve_alias(self, name):
+        seen = set()
+        while name in self.aliases and name not in seen:
+            seen.add(name)
+            name = self.aliases[name]
+        return name
 
     def get_var(self, name):
+        name = self._resolve_alias(name)
+        if name in self.ptr_vars:
+            ptr = self.ptr_vars[name]
+            elem_type = ptr.type[:-1]
+            loaded = self.new_temp(elem_type)
+            self.current_block.add_instr(IRInstr("load", [ptr], result=loaded))
+            return loaded
         for env in reversed(self.env_stack):
             if name in env:
                 return env[name]
         raise Exception(f"Unknown variable {name}")
+
+    def set_var(self, name, value: SSAValue):
+        name = self._resolve_alias(name)
+        if name in self.ptr_vars:
+            ptr = self.ptr_vars[name]
+            self.current_block.add_instr(IRInstr("store", [value, ptr], result=None))
+            return
+        self.env_stack[-1][name] = value
 
     def build_from_ast(self, ast):
         for node in ast:
@@ -282,13 +303,74 @@ class SSABuilder:
             if isinstance(node, FunctionDef):
                 self.emit_function(node)
         return self.module
+    def collect_ref_vars(self, func_ast: FunctionDef):
+        ref_vars = set()
 
+        def walk_expr(expr):
+            if expr is None:
+                return
+            t = type(expr).__name__
+            if t == "RefExpr":
+                inner = expr.inner
+                if type(inner).__name__ == "VarExpr":
+                    ref_vars.add(inner.name)
+                walk_expr(inner)
+            elif t == "BinaryExpr":
+                walk_expr(expr.left)
+                walk_expr(expr.right)
+            elif t == "UnaryExpr":
+                walk_expr(expr.expr)
+            elif t == "CallExpr":
+                for a in expr.args:
+                    walk_expr(a)
+            elif t == "FieldAccessExpr":
+                walk_expr(expr.obj)
+            elif t == "StructInitExpr":
+                for v in expr.fields.values():
+                    walk_expr(v)
+
+        def walk_stmt(stmt):
+            t = type(stmt).__name__
+            if t == "VarDecl":
+                walk_expr(stmt.expr)
+            elif t == "Assign":
+                walk_expr(stmt.expr)
+            elif t == "FieldAssign":
+                walk_expr(stmt.expr)
+            elif t == "ReturnStmt":
+                walk_expr(stmt.value)
+            elif t == "ExprStmt":
+                walk_expr(stmt.expr)
+            elif t == "IfStmt":
+                walk_expr(stmt.condition)
+                for s in stmt.body:
+                    walk_stmt(s)
+                for cond, body in stmt.elif_blocks:
+                    walk_expr(cond)
+                    for s in body:
+                        walk_stmt(s)
+                if stmt.else_body is not None:
+                    for s in stmt.else_body:
+                        walk_stmt(s)
+
+        for stmt in func_ast.body:
+            walk_stmt(stmt)
+
+        return ref_vars
+    def _promote_to_alloca(self, name, var_type, init_val):
+        ptr = self.new_temp(f"{var_type}*")
+        self.current_block.add_instr(IRInstr("alloca", [var_type], result=ptr))
+        self.current_block.add_instr(IRInstr("store", [init_val, ptr], result=None))
+        self.ptr_vars[self._resolve_alias(name)] = ptr
     def emit_function(self, func_ast: FunctionDef):
         f = IRFunction(func_ast.name, func_ast.params, func_ast.return_type)
         self.module.add_func(f)
         self.current_func = f
         self.temp_counter = 0
         self._if_seq = 0
+        self.aliases = {}
+        self.ref_vars = self.collect_ref_vars(func_ast)
+        self.ptr_vars = {}
 
         entry = IRBlock("entry")
         f.add_block(entry)
@@ -299,6 +381,8 @@ class SSABuilder:
             val = self.new_temp(ptype)
             self.set_var(pname, val)
             entry.add_instr(IRInstr("param", [pname], result=val))
+            if pname in self.ref_vars:
+                self._promote_to_alloca(pname, ptype, val)
 
         for stmt in func_ast.body:
             self.emit_stmt(stmt)
@@ -306,12 +390,14 @@ class SSABuilder:
         self.pop_env()
         self.current_func = None
         self.current_block = None
-
+        
     def emit_stmt(self, node):
         if isinstance(node, VarDecl):
             self.emit_var_decl(node)
         elif isinstance(node, Assign):
             self.emit_assign(node)
+        elif isinstance(node, FieldAssign):
+            self.emit_field_assign(node)
         elif isinstance(node, ReturnStmt):
             self.emit_return(node)
         elif isinstance(node, IfStmt):
@@ -326,18 +412,42 @@ class SSABuilder:
             val = self.new_temp(node.var_type)
             self.set_var(node.name, val)
             self.current_block.add_instr(IRInstr("undef", [], result=val))
+            if node.name in self.ref_vars:
+                self._promote_to_alloca(node.name, node.var_type, self.get_var(node.name))
         elif isinstance(node.expr, RefExpr):
-            src = self.emit_expr(node.expr.inner)
-            dest = self.new_temp(node.var_type)
-            self.current_block.add_instr(IRInstr("ref_copy", [src], result=dest))
-            self.set_var(node.name, dest)
+            inner = node.expr.inner
+            if type(inner).__name__ == "VarExpr":
+                src_name = self._resolve_alias(inner.name)
+                if src_name not in self.ptr_vars:
+                    cur_val = self.get_var(src_name)
+                    self._promote_to_alloca(src_name, cur_val.type, cur_val)
+                self.ptr_vars[node.name] = self.ptr_vars[src_name]
+            else:
+                src = self.emit_expr(node.expr.inner)
+                dest = self.new_temp(src.type)
+                self.current_block.add_instr(IRInstr("ref_copy", [src], result=dest))
+                self.set_var(node.name, dest)
         else:
             rhs = self.emit_expr(node.expr)
-            self.set_var(node.name, rhs)
+            if node.name in self.ref_vars:
+                self._promote_to_alloca(node.name, node.var_type, rhs)
+            else:
+                self.set_var(node.name, rhs)
 
     def emit_assign(self, node: Assign):
         rhs = self.emit_expr(node.expr)
         self.set_var(node.name, rhs)
+
+
+
+    def emit_field_assign(self, node: FieldAssign):
+        rhs = self.emit_expr(node.expr)
+        base = self.get_var(node.name)
+        res = self.new_temp(base.type)
+        self.current_block.add_instr(
+            IRInstr("store_field", [base, node.field, rhs], result=res)
+        )
+        self.set_var(node.name, res)
 
     def emit_return(self, node: ReturnStmt):
         if node.value is None:

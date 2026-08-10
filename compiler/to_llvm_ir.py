@@ -110,6 +110,9 @@ class LLVMIRCompiler:
     def to_llvm_type(self, t):
         if t is None:
             return "void"
+        if isinstance(t, str) and t.endswith("*"):
+            base = self.to_llvm_type(t[:-1])
+            return f"{base}*"
         if t == "int" or t == "Unknown" or t in ("Int8", "Int16", "Int32", "Int64"):
             return {"Int8": "i8", "Int16": "i16", "Int32": "i32", "Int64": "i64"}.get(t, "i32")
         if t == "float" or t in ("Float16", "Float32", "Float64"):
@@ -219,12 +222,34 @@ class LLVMIRCompiler:
         if op == "field":
             return self._emit_field(res, instr)
 
+        if op == "store_field":
+            return self._emit_store_field(res, instr)
+
         if op == "select":
             return self._emit_select(res, instr)
+        if op == "alloca":
+            return self._emit_alloca(res, instr.args[0])
 
+        if op == "load":
+            return self._emit_load(res, rtype, instr.args[0])
+
+        if op == "store":
+            return self._emit_store(instr.args[0], instr.args[1])
         return f"; UNHANDLED INSTRUCTION: {op}"
 
+    def _emit_alloca(self, res, var_type):
+        llvm_type = self.to_llvm_type(var_type)
+        return f"{res} = alloca {llvm_type}"
 
+    def _emit_load(self, res, rtype, ptr_val):
+        ptr_op = self.operand(ptr_val)
+        return f"{res} = load {rtype}, {rtype}* {ptr_op}"
+
+    def _emit_store(self, val, ptr_val):
+        val_type = self.to_llvm_type(val.type)
+        val_op = self.operand(val)
+        ptr_op = self.operand(ptr_val)
+        return f"store {val_type} {val_op}, {val_type}* {ptr_op}"
     def _emit_const(self, res, rtype, val):
         if rtype == "i1":
             vstr = "1" if str(val).lower() in ("true", "1") else "0"
@@ -270,10 +295,16 @@ class LLVMIRCompiler:
             return f"{res} = fadd double {src_op}, 0.0"
         if src_type == "i1":
             return f"{res} = xor i1 {src_op}, false"
+        if src_type == "i8*" or src_type.startswith("%struct") and src_type.endswith("*"):
+            return f"{res} = getelementptr {src_type[:-1]}, {src_type} {src_op}, i32 0"
         if src_type.startswith("%struct"):
-            return f"{res} = select i1 false, {src_type} {src_op}, {src_type} {src_op}"
+            ptr = f"{res}_ptr"
+            return [
+                f"{ptr} = alloca {src_type}",
+                f"store {src_type} {src_op}, {src_type}* {ptr}",
+                f"{res} = load {src_type}, {src_type}* {ptr}",
+            ]
         return f"{res} = add {src_type} {src_op}, 0"
-
     def _emit_unary(self, res, op, operand):
         src = self.operand(operand)
         src_type = self.to_llvm_type(operand.type)
@@ -367,7 +398,7 @@ class LLVMIRCompiler:
 
     def _emit_builtin(self, res, fname, args):
         if fname == "print":
-            return self._emit_print(res, args[0])
+            return self._emit_print(res, args)
         if fname == "input":
             return self._emit_input(res, args[0])
         if fname == "to_int":
@@ -378,25 +409,33 @@ class LLVMIRCompiler:
             return self._emit_to_bool(res, args[0])
         return f"; unknown builtin {fname}"
 
-    def _emit_print(self, res, arg):
+    def _emit_print(self, res, args):
         self.used_c_runtime.add("printf")
-        atype = self.to_llvm_type(arg.type)
-        formats = {"i32": "%d\n", "double": "%f\n", "i1": "%d\n", "i8*": "%s\n"}
-        fmt = formats[atype]
+        specs = []
+        call_args = []
+        lines = []
+        for i, arg in enumerate(args):
+            atype = self.to_llvm_type(arg.type)
+            spec_map = {"i32": "%d", "double": "%f", "i1": "%d", "i8*": "%s"}
+            spec = spec_map[atype]
+            specs.append(spec)
+            val = self.operand(arg)
+            if atype == "i1":
+                btmp = f"{res}_b{i}"
+                lines.append(f"{btmp} = zext i1 {val} to i32")
+                call_args.append(f"i32 {btmp}")
+            else:
+                call_args.append(f"{atype} {val}")
+        fmt = " ".join(specs) + "\n"
         fmt_global = self._string_global(fmt)
         size = len(fmt.encode("utf-8")) + 1
         ptr = f"{res}_fmt"
-        lines = [
+        lines.append(
             f"{ptr} = getelementptr inbounds "
             f"[{size} x i8], [{size} x i8]* {fmt_global}, i64 0, i64 0"
-        ]
-        val = self.operand(arg)
-        spec = atype
-        if atype == "i1":
-            val = f"{res}_b"
-            lines.append(f"{val} = zext i1 {self.operand(arg)} to i32")
-            spec = "i32"
-        lines.append(f"call i32 (i8*, ...) @printf(i8* {ptr}, {spec} {val})")
+        )
+        arg_str = ", " + ", ".join(call_args) if call_args else ""
+        lines.append(f"call i32 (i8*, ...) @printf(i8* {ptr}{arg_str})")
         return lines
 
     def _emit_input(self, res, arg):
@@ -621,6 +660,17 @@ class LLVMIRCompiler:
             llvm_type = self.to_llvm_type(base_type)
             return f"{res} = extractvalue {llvm_type} {base}, {idx}"
         return f"; unknown struct field {field_name}"
+
+    def _emit_store_field(self, res, instr):
+        base = self.operand(instr.args[0])
+        field_name = instr.args[1]
+        fval = instr.args[2]
+        base_type = instr.args[0].type
+        idx = self.struct_field_indices[base_type][field_name]
+        llvm_type = self.to_llvm_type(base_type)
+        ftype = self.to_llvm_type(fval.type)
+        foperand = self.operand(fval)
+        return f"{res} = insertvalue {llvm_type} {base}, {ftype} {foperand}, {idx}"
 
     def _emit_select(self, res, instr):
         cond = self.operand(instr.args[0])

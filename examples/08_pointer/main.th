@@ -1,0 +1,25 @@
+# The ^ operator creates a reference to an existing variable.
+# A reference is initialized with the referenced variable's current value.
+# Struct fields can be read (origin.x) and written (origin.x = 3).
+# print(a, b, ...) prints values separated by spaces.
+
+struct Point:
+    x: Int32
+    y: Int32
+
+def main() -> Int32
+    x: Int32 = 10
+    r: Int32 = x^
+    print("r =", r)
+    r += 5
+    print("r =", r)
+    print("x =", x)
+
+    origin: Point = Point(x=0, y=0)
+    print("origin.x =", origin.x)
+    print("origin.y =", origin.y)
+    origin.x = 3
+    origin.y = origin.x + 1
+    print("origin.x =", origin.x)
+    print("origin.y =", origin.y)
+    return 0
