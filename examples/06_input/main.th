@@ -1,5 +1,5 @@
 def main() -> Int32
-    n: Int32 = input("Input a number: ")
-    print("Double:")
-    print(n * 2)
+    name: String = input("What is your name? ")
+    print("Hello,")
+    print(name)
     return 0

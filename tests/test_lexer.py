@@ -88,7 +88,7 @@ def test_operators(op, token):
 
 
 def test_comment():
-    tokens = lex("# dit is commentaar\n123")
+    tokens = lex("# this is a comment\n123")
     assert tokens[0].type == TokenType.NEWLINE
     assert tokens[1].type == TokenType.NUMBER
 

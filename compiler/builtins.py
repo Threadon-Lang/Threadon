@@ -2,7 +2,7 @@
 
 BUILTIN_SIGS = {
     "print": ([("value", "poly")], "NoneType"),
-    "input": ([("prompt", "String")], "Int32"),
+    "input": ([("prompt", "String")], "String"),
     "to_int": ([("value", "poly")], "Int32"),
     "to_float": ([("value", "Int32")], "Float32"),
     "to_bool": ([("value", "poly")], "Bool"),

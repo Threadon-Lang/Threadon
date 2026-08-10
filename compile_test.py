@@ -189,14 +189,29 @@ def test_builtin_input():
     result = compile_stdlib_run(
         """
 def main() -> Int32
-    n: Int32 = input("Give a number: ")
+    n: String = input("Give a name: ")
+    print("Hello,")
     print(n)
     return 0
 """,
-        input="21\n",
+        input="Joep\n",
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "Give a number: 21\n"
+    assert result.stdout == "Give a name: Hello,\nJoep\n"
+
+
+def test_input_empty_on_eof():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    n: String = input("Give a name: ")
+    print(n)
+    return 0
+""",
+        input="",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Give a name: \n"
 
 
 def test_expr_statement():
@@ -239,6 +254,7 @@ if __name__ == "__main__":
     test_complex_program_inlined()
     test_builtin_print_and_conversions()
     test_builtin_input()
+    test_input_empty_on_eof()
     test_expr_statement()
     test_stdlib_helpers()
     print("compile_test OK")

@@ -6,7 +6,7 @@
 #
 # The following runtime builtins are also always available:
 #   print(value) - print an Int32, Float32, Bool or String, then a newline
-#   input()      - read an Int32 from standard input
+#   input(prompt) - show `prompt`, then read a line of text as a String
 #   to_int(x)    - convert a Float32 or Bool to an Int32
 #   to_float(x)  - convert an Int32 to a Float32
 #   to_bool(x)   - convert an Int32 or Float32 to a Bool

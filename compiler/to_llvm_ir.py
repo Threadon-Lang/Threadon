@@ -41,6 +41,10 @@ class LLVMIRCompiler:
         for func in module.funcs:
             self.emit_function(func)
 
+        if "input_helper" in self.used_c_runtime:
+            self.out.append("")
+            self._emit_input_helper()
+
         if self.used_intrinsics:
             self.out.append("")
             for intrin in sorted(self.used_intrinsics):
@@ -67,11 +71,22 @@ class LLVMIRCompiler:
             self.out.append("")
             if "printf" in self.used_c_runtime:
                 self.out.append("declare i32 @printf(i8*, ...)")
+            if "fprintf" in self.used_c_runtime:
+                self.out.append("declare i32 @fprintf(i8*, i8*, ...)")
             if "scanf" in self.used_c_runtime:
                 self.out.append("declare i32 @scanf(i8*, ...)")
             if "fflush" in self.used_c_runtime:
                 self.out.append("declare i32 @fflush(i8*)")
                 self.out.append("@stdout = external global i8*")
+            if "fgets" in self.used_c_runtime:
+                self.out.append("declare i8* @fgets(i8*, i32, i8*)")
+                self.out.append("@stdin = external global i8*")
+            if "strcspn" in self.used_c_runtime:
+                self.out.append("declare i64 @strcspn(i8*, i8*)")
+            if "exit" in self.used_c_runtime:
+                self.out.append("declare void @exit(i32)")
+            if "fprintf" in self.used_c_runtime:
+                self.out.append("@stderr = external global i8*")
             self.out.append("")
 
         return "\n".join(self.out)
@@ -370,31 +385,49 @@ class LLVMIRCompiler:
         return lines
 
     def _emit_input(self, res, arg):
-        self.used_c_runtime.update(["printf", "scanf", "fflush"])
-        fmt = "%d"
-        fmt_global = self._string_global(fmt)
-        size = len(fmt.encode("utf-8")) + 1
-        pfmt = "%s"
-        pfmt_global = self._string_global(pfmt)
-        psize = len(pfmt.encode("utf-8")) + 1
-        buf = f"{res}_buf"
-        ptr = f"{res}_fmt"
-        tmp = f"{res}_ret"
-        so = f"{res}_stdout"
-        fl = f"{res}_flush"
-        pp = f"{res}_pfmt"
-        return [
-            f"{pp} = getelementptr inbounds "
-            f"[{psize} x i8], [{psize} x i8]* {pfmt_global}, i64 0, i64 0",
-            f"call i32 (i8*, ...) @printf(i8* {pp}, i8* {self.operand(arg)})",
-            f"{so} = load i8*, i8** @stdout",
-            f"{fl} = call i32 @fflush(i8* {so})",
-            f"{buf} = alloca i32",
-            f"{ptr} = getelementptr inbounds "
-            f"[{size} x i8], [{size} x i8]* {fmt_global}, i64 0, i64 0",
-            f"{tmp} = call i32 (i8*, ...) @scanf(i8* {ptr}, i32* {buf})",
-            f"{res} = load i32, i32* {buf}",
-        ]
+        self.used_c_runtime.update(["printf", "fflush", "fgets", "strcspn"])
+        self.used_c_runtime.add("input_helper")
+        return f"{res} = call i8* @__threadon_input(i8* {self.operand(arg)})"
+
+    def _emit_input_helper(self):
+        buf_size = 1024
+        pfmt = self._string_global("%s")
+        psize = len("%s".encode("utf-8")) + 1
+        nl = "\n"
+        nl_global = self._string_global(nl)
+        nl_size = len(nl.encode("utf-8")) + 1
+        self.out.append("define i8* @__threadon_input(i8* %prompt) {")
+        self.out.append("entry:")
+        self.out.append(
+            f"  %pfmt = getelementptr inbounds "
+            f"[{psize} x i8], [{psize} x i8]* {pfmt}, i64 0, i64 0"
+        )
+        self.out.append("  call i32 (i8*, ...) @printf(i8* %pfmt, i8* %prompt)")
+        self.out.append("  %so = load i8*, i8** @stdout")
+        self.out.append("  %fl = call i32 @fflush(i8* %so)")
+        self.out.append("  %buf = getelementptr inbounds "
+                        f"[{buf_size} x i8], [{buf_size} x i8]* "
+                        "@__threadon_input_buf, i64 0, i64 0")
+        self.out.append("  %si = load i8*, i8** @stdin")
+        self.out.append(f"  %n = call i8* @fgets(i8* %buf, i32 {buf_size}, i8* %si)")
+        self.out.append("  %ok = icmp ne i8* %n, null")
+        self.out.append("  br i1 %ok, label %read_ok, label %read_eof")
+        self.out.append("read_eof:")
+        self.out.append("  store i8 0, i8* %buf")
+        self.out.append("  br label %read_ok")
+        self.out.append("read_ok:")
+        self.out.append(
+            f"  %nl = getelementptr inbounds "
+            f"[{nl_size} x i8], [{nl_size} x i8]* {nl_global}, i64 0, i64 0"
+        )
+        self.out.append("  %off = call i64 @strcspn(i8* %buf, i8* %nl)")
+        self.out.append("  %end = getelementptr i8, i8* %buf, i64 %off")
+        self.out.append("  store i8 0, i8* %end")
+        self.out.append("  ret i8* %buf")
+        self.out.append("}")
+        self.out.append("")
+        self.out.append(f"@__threadon_input_buf = private global [{buf_size} x i8] zeroinitializer")
+        self.out.append("")
 
     def _emit_to_int(self, res, arg):
         atype = self.to_llvm_type(arg.type)
