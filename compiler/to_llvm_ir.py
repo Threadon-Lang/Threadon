@@ -44,6 +44,15 @@ class LLVMIRCompiler:
         if "input_helper" in self.used_c_runtime:
             self.out.append("")
             self._emit_input_helper()
+        if "to_int_str" in self.used_c_runtime:
+            self.out.append("")
+            self._emit_str_to_int_helper()
+        if "to_float_str" in self.used_c_runtime:
+            self.out.append("")
+            self._emit_str_to_float_helper()
+        if "to_bool_str" in self.used_c_runtime:
+            self.out.append("")
+            self._emit_str_to_bool_helper()
 
         if self.used_intrinsics:
             self.out.append("")
@@ -83,6 +92,12 @@ class LLVMIRCompiler:
                 self.out.append("@stdin = external global i8*")
             if "strcspn" in self.used_c_runtime:
                 self.out.append("declare i64 @strcspn(i8*, i8*)")
+            if "strtol" in self.used_c_runtime:
+                self.out.append("declare i64 @strtol(i8*, i8**, i32)")
+            if "strtod" in self.used_c_runtime:
+                self.out.append("declare double @strtod(i8*, i8**)")
+            if "strcasecmp" in self.used_c_runtime:
+                self.out.append("declare i32 @strcasecmp(i8*, i8*)")
             if "exit" in self.used_c_runtime:
                 self.out.append("declare void @exit(i32)")
             if "fprintf" in self.used_c_runtime:
@@ -429,6 +444,109 @@ class LLVMIRCompiler:
         self.out.append(f"@__threadon_input_buf = private global [{buf_size} x i8] zeroinitializer")
         self.out.append("")
 
+    def _emit_conv_error(self, eglobal, esize):
+        self.out.append("  %se = load i8*, i8** @stderr")
+        self.out.append(
+            f"  %efmt = getelementptr inbounds "
+            f"[{esize} x i8], [{esize} x i8]* {eglobal}, i64 0, i64 0"
+        )
+        self.out.append("  call i32 (i8*, ...) @fprintf(i8* %se, i8* %efmt)")
+        self.out.append("  call void @exit(i32 1)")
+        self.out.append("  unreachable")
+
+    def _emit_str_to_int_helper(self):
+        emsg = "error: could not convert string to an integer\n"
+        eglobal = self._string_global(emsg)
+        esize = len(emsg.encode("utf-8")) + 1
+        self.out.append("define i32 @__threadon_str_to_int(i8* %s) {")
+        self.out.append("entry:")
+        self.out.append("  %end = alloca i8*")
+        self.out.append("  %v = call i64 @strtol(i8* %s, i8** %end, i32 10)")
+        self.out.append("  %ep = load i8*, i8** %end")
+        self.out.append("  %c = load i8, i8* %ep")
+        self.out.append("  %ok = icmp eq i8 %c, 0")
+        self.out.append("  br i1 %ok, label %conv_ok, label %conv_err")
+        self.out.append("conv_err:")
+        self._emit_conv_error(eglobal, esize)
+        self.out.append("conv_ok:")
+        self.out.append("  %r = trunc i64 %v to i32")
+        self.out.append("  ret i32 %r")
+        self.out.append("}")
+        self.out.append("")
+
+    def _emit_str_to_float_helper(self):
+        emsg = "error: could not convert string to a float\n"
+        eglobal = self._string_global(emsg)
+        esize = len(emsg.encode("utf-8")) + 1
+        self.out.append("define double @__threadon_str_to_float(i8* %s) {")
+        self.out.append("entry:")
+        self.out.append("  %end = alloca i8*")
+        self.out.append("  %v = call double @strtod(i8* %s, i8** %end)")
+        self.out.append("  %ep = load i8*, i8** %end")
+        self.out.append("  %c = load i8, i8* %ep")
+        self.out.append("  %ok = icmp eq i8 %c, 0")
+        self.out.append("  br i1 %ok, label %conv_ok, label %conv_err")
+        self.out.append("conv_err:")
+        self._emit_conv_error(eglobal, esize)
+        self.out.append("conv_ok:")
+        self.out.append("  ret double %v")
+        self.out.append("}")
+        self.out.append("")
+
+    def _emit_str_to_bool_helper(self):
+        true_s = self._string_global("true")
+        true_size = len("true".encode("utf-8")) + 1
+        one_s = self._string_global("1")
+        one_size = len("1".encode("utf-8")) + 1
+        false_s = self._string_global("false")
+        false_size = len("false".encode("utf-8")) + 1
+        zero_s = self._string_global("0")
+        zero_size = len("0".encode("utf-8")) + 1
+        emsg = "error: could not convert string to a boolean\n"
+        eglobal = self._string_global(emsg)
+        esize = len(emsg.encode("utf-8")) + 1
+        self.out.append("define i1 @__threadon_str_to_bool(i8* %s) {")
+        self.out.append("entry:")
+        self.out.append(
+            f"  %t = getelementptr inbounds "
+            f"[{true_size} x i8], [{true_size} x i8]* {true_s}, i64 0, i64 0"
+        )
+        self.out.append("  %ct = call i32 @strcasecmp(i8* %s, i8* %t)")
+        self.out.append("  %ist = icmp eq i32 %ct, 0")
+        self.out.append("  br i1 %ist, label %conv_true, label %check_false")
+        self.out.append("check_false:")
+        self.out.append(
+            f"  %f = getelementptr inbounds "
+            f"[{false_size} x i8], [{false_size} x i8]* {false_s}, i64 0, i64 0"
+        )
+        self.out.append("  %cf = call i32 @strcasecmp(i8* %s, i8* %f)")
+        self.out.append("  %isf = icmp eq i32 %cf, 0")
+        self.out.append("  br i1 %isf, label %conv_false, label %check_one")
+        self.out.append("check_one:")
+        self.out.append(
+            f"  %o = getelementptr inbounds "
+            f"[{one_size} x i8], [{one_size} x i8]* {one_s}, i64 0, i64 0"
+        )
+        self.out.append("  %co = call i32 @strcasecmp(i8* %s, i8* %o)")
+        self.out.append("  %iso = icmp eq i32 %co, 0")
+        self.out.append("  br i1 %iso, label %conv_true, label %check_zero")
+        self.out.append("check_zero:")
+        self.out.append(
+            f"  %z = getelementptr inbounds "
+            f"[{zero_size} x i8], [{zero_size} x i8]* {zero_s}, i64 0, i64 0"
+        )
+        self.out.append("  %cz = call i32 @strcasecmp(i8* %s, i8* %z)")
+        self.out.append("  %isz = icmp eq i32 %cz, 0")
+        self.out.append("  br i1 %isz, label %conv_false, label %conv_err")
+        self.out.append("conv_true:")
+        self.out.append("  ret i1 true")
+        self.out.append("conv_false:")
+        self.out.append("  ret i1 false")
+        self.out.append("conv_err:")
+        self._emit_conv_error(eglobal, esize)
+        self.out.append("}")
+        self.out.append("")
+
     def _emit_to_int(self, res, arg):
         atype = self.to_llvm_type(arg.type)
         val = self.operand(arg)
@@ -436,15 +554,28 @@ class LLVMIRCompiler:
             return f"{res} = fptosi double {val} to i32"
         if atype == "i1":
             return f"{res} = zext i1 {val} to i32"
+        if atype == "i8*":
+            self.used_c_runtime.update(["printf", "strtol", "fprintf", "exit"])
+            self.used_c_runtime.add("to_int_str")
+            return f"{res} = call i32 @__threadon_str_to_int(i8* {val})"
         return f"{res} = add i32 0, 0"
 
     def _emit_to_float(self, res, arg):
+        atype = self.to_llvm_type(arg.type)
         val = self.operand(arg)
+        if atype == "i8*":
+            self.used_c_runtime.update(["printf", "strtod", "fprintf", "exit"])
+            self.used_c_runtime.add("to_float_str")
+            return f"{res} = call double @__threadon_str_to_float(i8* {val})"
         return f"{res} = sitofp i32 {val} to double"
 
     def _emit_to_bool(self, res, arg):
         atype = self.to_llvm_type(arg.type)
         val = self.operand(arg)
+        if atype == "i8*":
+            self.used_c_runtime.update(["printf", "strcasecmp", "fprintf", "exit"])
+            self.used_c_runtime.add("to_bool_str")
+            return f"{res} = call i1 @__threadon_str_to_bool(i8* {val})"
         if atype == "double":
             return f"{res} = fcmp une double {val}, 0.0"
         return f"{res} = icmp ne i32 {val}, 0"

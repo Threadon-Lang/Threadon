@@ -4,13 +4,14 @@ BUILTIN_SIGS = {
     "print": ([("value", "poly")], "NoneType"),
     "input": ([("prompt", "String")], "String"),
     "to_int": ([("value", "poly")], "Int32"),
-    "to_float": ([("value", "Int32")], "Float32"),
+    "to_float": ([("value", "poly")], "Float32"),
     "to_bool": ([("value", "poly")], "Bool"),
 }
 
 PRINTABLE_TYPES = ("Int32", "Float32", "Bool", "String")
-CONVERTIBLE_TO_INT = ("Float32", "Bool")
-CONVERTIBLE_TO_BOOL = ("Int32", "Float32")
+CONVERTIBLE_TO_INT = ("Float32", "Bool", "String")
+CONVERTIBLE_TO_FLOAT = ("Int32", "String")
+CONVERTIBLE_TO_BOOL = ("Int32", "Float32", "String")
 
 
 def builtin_return_type(func_name, arg_types):
@@ -45,15 +46,23 @@ def builtin_return_type(func_name, arg_types):
         arg_type = arg_types[0]
         if arg_type not in CONVERTIBLE_TO_INT:
             raise ValueError(
-                f"Function 'to_int' expects Float32 or Bool, got {arg_type}"
+                f"Function 'to_int' expects Float32, Bool or String, got {arg_type}"
             )
         return "Int32"
+
+    if func_name == "to_float":
+        arg_type = arg_types[0]
+        if arg_type not in CONVERTIBLE_TO_FLOAT:
+            raise ValueError(
+                f"Function 'to_float' expects Int32 or String, got {arg_type}"
+            )
+        return "Float32"
 
     if func_name == "to_bool":
         arg_type = arg_types[0]
         if arg_type not in CONVERTIBLE_TO_BOOL:
             raise ValueError(
-                f"Function 'to_bool' expects Int32 or Float32, got {arg_type}"
+                f"Function 'to_bool' expects Int32, Float32 or String, got {arg_type}"
             )
         return "Bool"
 

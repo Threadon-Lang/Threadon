@@ -185,6 +185,52 @@ def main() -> Int32
     assert result.stdout == "hello world\n42\n3.140000\n1\n3\n1\n5.000000\n1\n"
 
 
+def test_string_conversions():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    print(to_int("123"))
+    print(to_float("3.5"))
+    print(to_bool("true"))
+    print(to_bool("False"))
+    print(to_bool("0"))
+    n: Int32 = to_int(input("Enter a number: "))
+    print(n * 2)
+    return 0
+""",
+        input="21\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "123\n3.500000\n1\n0\n0\nEnter a number: 42\n"
+
+
+def test_string_conversion_invalid_errors():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    print(to_int("abc"))
+    return 0
+""",
+    )
+    assert result.returncode != 0
+    assert "could not convert string to an integer" in result.stderr
+
+
+def test_int_and_string_zero_constants_distinct():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    s: String = "0"
+    n: Int32 = 0
+    print(to_int(s) + 1)
+    print(n)
+    return 0
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\n0\n"
+
+
 def test_builtin_input():
     result = compile_stdlib_run(
         """
@@ -253,6 +299,9 @@ if __name__ == "__main__":
     test_complex_program_runs()
     test_complex_program_inlined()
     test_builtin_print_and_conversions()
+    test_string_conversions()
+    test_string_conversion_invalid_errors()
+    test_int_and_string_zero_constants_distinct()
     test_builtin_input()
     test_input_empty_on_eof()
     test_expr_statement()

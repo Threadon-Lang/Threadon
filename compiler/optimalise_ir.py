@@ -793,9 +793,13 @@ class IROptimizer:
                     continue
                 if isinstance(instr, IRPhi) or instr.op == "call":
                     continue
-                key = (instr.op, tuple(
+                args = tuple(
                     a.name if isinstance(a, SSAValue) else a for a in instr.args
-                ))
+                )
+                if isinstance(instr.result, SSAValue):
+                    key = (instr.op, instr.result.type, args)
+                else:
+                    key = (instr.op, None, args)
                 if key in seen:
                     self._replace_value(instr.result, seen[key])
                     to_remove.append(idx)
@@ -841,7 +845,9 @@ class IROptimizer:
                 args = tuple(sorted(args))
             else:
                 args = tuple(args)
-            return (instr.op, args)
+            if isinstance(instr.result, SSAValue):
+                return (instr.op, instr.result.type, args)
+            return (instr.op, None, args)
 
         def process_block(label):
             nonlocal changed
