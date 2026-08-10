@@ -261,11 +261,30 @@ def f(x: Int32) -> Int32
 """
     )
     f = get_func(module, "f")
-    copies = entry_instrs(f, "ref_copy")
-    assert len(copies) == 1
-    assert copies[0].args[0].name == "%t0"
-    assert copies[0].result.type == "Int32"
+    # RefExpr on a plain VarExpr no longer emits ref_copy — it promotes the
+    # source variable to a stack slot (alloca) and aliases r to that same slot.
+    allocas = entry_instrs(f, "alloca")
+    stores = entry_instrs(f, "store")
+    assert len(allocas) == 1
+    assert len(stores) == 1
 
+
+def test_ref_copy_instruction_in_declaration():
+    module = build_module(
+        """
+def f(x: Int32) -> Int32
+    r: Int32 = x^
+    return r
+"""
+    )
+    f = get_func(module, "f")
+    # x is promoted to a pointer slot; r shares that slot rather than
+    # receiving a ref_copy of x's value.
+    allocas = entry_instrs(f, "alloca")
+    assert len(allocas) == 1
+    stores = entry_instrs(f, "store")
+    assert len(stores) == 1
+    assert stores[0].args[0].name == "%t0"  # initial store of x's param value
 
 def test_return_void():
     module = build_module(
@@ -553,19 +572,6 @@ def f(x: Int32) -> Bool
     assert term.op == "ret"
     assert term.args[0].def_instr.op == "cmp_gt"
 
-
-def test_ref_copy_instruction_in_declaration():
-    module = build_module(
-        """
-def f(x: Int32) -> Int32
-    r: Int32 = x^
-    return r
-"""
-    )
-    f = get_func(module, "f")
-    copies = entry_instrs(f, "ref_copy")
-    assert len(copies) == 1
-    assert copies[0].args[0].name == "%t0"
 
 
 def test_dominators_for_if_blocks():

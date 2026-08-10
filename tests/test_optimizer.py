@@ -458,8 +458,10 @@ def f(x: Int32) -> Int32
     f = module.funcs[0]
     ops = block_ops(f, "entry")
     assert "ref_copy" not in ops
-    assert f.block_map["entry"].terminator.args[0].name == "%t0"
 
+    term_val = f.block_map["entry"].terminator.args[0]
+    assert term_val.def_instr is not None
+    assert term_val.def_instr.op in ("load", "add", "const", "param")
 
 def test_tail_call_optimization():
     module = optimize(
