@@ -211,12 +211,13 @@ class LLVMIRCompiler:
                 
                 lines = []
                 
-                
                 if self.debug_mode:
                     self.used_c_runtime.add("exit")
-                    msg = "Error: Invalid integer conversion\n"
+                    msg = "Invalid integer conversion"
+                    ctx = self._string_global("String → Integer cast")
                     msg_global = self._string_global(msg)
                     msg_size = len(msg.encode("utf-8")) + 1
+                    emsg = f"{res.lstrip('%')}_emsg"
                     
                     lines.extend([
                         f"{endptr} = alloca i8*",
@@ -226,8 +227,8 @@ class LLVMIRCompiler:
                         f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
                         f"",
                         f"{bad_label}:",
-                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        f"  %{emsg} = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{emsg}, i8* {ctx})",
                         f"  unreachable",
                         f"",
                         f"{ok_label}:",
@@ -254,9 +255,11 @@ class LLVMIRCompiler:
                 
                 if self.debug_mode:
                     self.used_c_runtime.add("exit")
-                    msg = "Error: Invalid float conversion\\n"
+                    msg = "Invalid float conversion"
+                    ctx = self._string_global("String → Float cast")
                     msg_global = self._string_global(msg)
                     msg_size = len(msg.encode("utf-8")) + 1
+                    emsg = f"{res.lstrip('%')}_emsg"
                     
                     lines.extend([
                         f"{endptr} = alloca i8*",
@@ -266,8 +269,8 @@ class LLVMIRCompiler:
                         f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
                         f"",
                         f"{bad_label}:",
-                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        f"  %{emsg} = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{emsg}, i8* {ctx})",
                         f"  unreachable",
                         f"",
                         f"{ok_label}:",
@@ -283,16 +286,27 @@ class LLVMIRCompiler:
 
             if rtype == "i1":
                 self.used_c_runtime.add("strcasecmp")
+                self.used_c_runtime.add("strlen")
                 zero_global = self._string_global("0")
                 false_global = self._string_global("false")
-                tmp1 = f"{res}_z"
-                tmp2 = f"{res}_f"
-                tmp3 = f"{res}_len"
+                z = f"{res}_z"
+                f = f"{res}_f"
+                ln = f"{res}_len"
+                is_z = f"{res}_iszero"
+                is_f = f"{res}_isfalse"
+                is_empty = f"{res}_isempty"
+                falsey1 = f"{res}_falsey1"
+                falsey2 = f"{res}_falsey2"
                 return [
-                    f"{tmp1} = call i32 @strcasecmp(i8* {src_op}, i8* {zero_global})",
-                    f"{tmp2} = call i32 @strcasecmp(i8* {src_op}, i8* {false_global})",
-                    f"{tmp3} = call i64 @strlen(i8* {src_op})",
-                    f"{res} = icmp ne i64 {tmp3}, 0"
+                    f"{z} = call i32 @strcasecmp(i8* {src_op}, i8* {zero_global})",
+                    f"{f} = call i32 @strcasecmp(i8* {src_op}, i8* {false_global})",
+                    f"{ln} = call i64 @strlen(i8* {src_op})",
+                    f"{is_z} = icmp eq i32 {z}, 0",
+                    f"{is_f} = icmp eq i32 {f}, 0",
+                    f"{is_empty} = icmp eq i64 {ln}, 0",
+                    f"{falsey1} = or i1 {is_z}, {is_f}",
+                    f"{falsey2} = or i1 {falsey1}, {is_empty}",
+                    f"{res} = xor i1 {falsey2}, true"
                 ]
             
             raise Exception(f"Cannot cast String to {target_type}")
@@ -348,6 +362,15 @@ class LLVMIRCompiler:
             if order[src_type] < order[rtype]:
                 return f"{res} = fpext {src_type} {src_op} to {rtype}"
             return f"{res} = fptrunc {src_type} {src_op} to {rtype}"
+
+        if rtype == "i1":
+            if src_type in int_bits:
+                return f"{res} = icmp ne {src_type} {src_op}, 0"
+            if src_type in FLOAT_LLVM_TYPES:
+                return f"{res} = fcmp une {src_type} {src_op}, 0.0"
+            if src_type == "i1":
+                return f"{res} = xor i1 {src_op}, false"
+            raise Exception(f"Cannot cast {src.type} to Bool")
 
         if src_type == "i1" and rtype in int_bits:
             return f"{res} = zext i1 {src_op} to {rtype}"

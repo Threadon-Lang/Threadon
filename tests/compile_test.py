@@ -162,7 +162,7 @@ def test_complex_program_inlined():
 
 
 def compile_stdlib_run(source, inline_threshold=0, input=None):
-    llvm = compile_source(source, importer=Importer(), inline_threshold=inline_threshold)
+    llvm = compile_source(source, importer=Importer(), inline_threshold=inline_threshold,debug_mode=True)
     return run_llvm(llvm, input=input)
 
 
@@ -234,7 +234,7 @@ def main() -> Int32
 """,
     )
     assert result.returncode != 0
-    assert "Error: Invalid integer conversion" in result.stderr
+    assert "Invalid integer conversion" in result.stderr
 
 
 def test_int_and_string_zero_constants_distinct():

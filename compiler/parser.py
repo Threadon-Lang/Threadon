@@ -1223,7 +1223,7 @@ class Parser:
             numeric_or_str = ("Int8","Int16","Int32","Int64","Float16","Float32","Float64","String","Bool")
             if inner_type not in numeric_or_str:
                 self.give_error(f"Cannot cast type '{inner_type}' to '{expr.target_type}'")
-            if expr.target_type not in ("Int8","Int16","Int32","Int64","Float16","Float32","Float64"):
+            if expr.target_type not in ("Int8","Int16","Int32","Int64","Float16","Float32","Float64","Bool"):
                 self.give_error(f"Unknown cast target type '{expr.target_type}'")
             return expr.target_type
         self.give_error("Unknown expression type")
