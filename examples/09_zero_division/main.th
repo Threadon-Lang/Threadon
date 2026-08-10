@@ -1,4 +1,5 @@
 def main() -> Int32:
-    x: Int32 = 2/0
+    x: Int8 = Int8(2)/Int8(input("Enter a number"))
     print(x)
+
     return 0

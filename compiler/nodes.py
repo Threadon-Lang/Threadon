@@ -100,3 +100,7 @@ class ImportStmt(Node):
     names: list
     lazy: bool = False
     is_from: bool = True
+class CastExpr:
+    def __init__(self, target_type, expr):
+        self.target_type = target_type
+        self.expr = expr

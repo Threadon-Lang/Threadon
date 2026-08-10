@@ -3,6 +3,8 @@ from .nodes import *
 from .builtins import BUILTIN_SIGS, builtin_return_type
 from .importer import Importer, ImporterError
 
+int_types = ("Int8", "Int16", "Int32", "Int64")
+
 
 def strip_indent_tokens(line_tokens):
     indent = 0
@@ -937,7 +939,13 @@ class Parser:
 
                 if struct_name in self.struct_defs:
                     return self.parse_struct_init(struct_name, ts[2:-1])
-
+            if len(ts) >= 3 and ts[0].type == TokenType.TYPE and ts[1].type == TokenType.LPAREN:
+                target_type = ts[0].value
+                if ts[-1].type != TokenType.RPAREN:
+                    self.give_error("Unmatched '(' in cast")
+                inner_tokens = ts[2:-1]
+                inner_expr = self.parse_expr(inner_tokens)
+                return CastExpr(target_type, inner_expr)
             if ts[0].type == TokenType.LPAREN:
                 depth = 0
                 inner = []
@@ -977,7 +985,6 @@ class Parser:
                     return VarExpr(tok.value)
 
             self.give_error("Invalid expression")
-
         def unary(ts):
             if ts and ts[0].type == TokenType.MINUS:
                 return UnaryExpr("-", unary(ts[1:]))
@@ -1179,16 +1186,107 @@ class Parser:
             if expr.op in ("+", "-", "*", "/", "**", "%", "//"):
                 if left != right:
                     self.give_error(f"Type mismatch in arithmetic: {left} vs {right}")
+        if t == "BinaryExpr":
+            left = self.detect_expr_type(expr.left)
+            right = self.detect_expr_type(expr.right)
+
+            if expr.op in ("<", ">", "<=", ">=", "==", "!="):
+                if left != right:
+                    self.give_error(f"Type mismatch in comparison: {left} vs {right}")
+                return "Bool"
+
+            if expr.op in ("and", "or"):
+                if left != "Bool" or right != "Bool":
+                    self.give_error("Boolean operators require Bool operands")
+                return "Bool"
+
+            if expr.op in ("+", "-", "*", "/", "**", "%", "//"):
+                if left != right:
+                    self.give_error(f"Type mismatch in arithmetic: {left} vs {right}")
                 if expr.op in ("/", "//", "%"):
-                    r = expr.right
-                    if type(r).__name__ == "LiteralExpr" and r.value.value == "0":
+                    const_val = self._const_eval(expr.right)
+                    is_zero = False
+                    if const_val is not None:
+                        val, _ = const_val
+                        is_zero = (val == 0)
+                    elif type(expr.right).__name__ == "LiteralExpr" and expr.right.value.value == "0":
+                        is_zero = True
+                    
+                    if is_zero:
                         self.give_error("Division by zero is not allowed")
                 return left
 
             self.give_error(f"Unknown operator '{expr.op}'")
-
+            self.give_error(f"Unknown operator '{expr.op}'")
+        if t == "CastExpr":
+            inner_type = self.detect_expr_type(expr.expr)
+            numeric_or_str = ("Int8","Int16","Int32","Int64","Float16","Float32","Float64","String","Bool")
+            if inner_type not in numeric_or_str:
+                self.give_error(f"Cannot cast type '{inner_type}' to '{expr.target_type}'")
+            if expr.target_type not in ("Int8","Int16","Int32","Int64","Float16","Float32","Float64"):
+                self.give_error(f"Unknown cast target type '{expr.target_type}'")
+            return expr.target_type
         self.give_error("Unknown expression type")
+    def _const_eval(self, expr):
 
+        t = type(expr).__name__
+        
+        if t == "LiteralExpr":
+            val = expr.value.value
+            if expr.type in ("Int8", "Int16", "Int32", "Int64"):
+                return (int(val), expr.type)
+            if expr.type in ("Float16", "Float32", "Float64"):
+                return (float(val), expr.type)
+            return None
+        
+        if t == "UnaryExpr":
+            inner = self._const_eval(expr.expr)
+            if inner is None:
+                return None
+            val, typ = inner
+            if expr.op == "-":
+                return (-val, typ)
+            if expr.op == "+":
+                return (val, typ)
+            return None
+        
+        if t == "BinaryExpr":
+            left = self._const_eval(expr.left)
+            right = self._const_eval(expr.right)
+            if left is None or right is None:
+                return None
+            lval, ltyp = left
+            rval, rtyp = right
+            
+            if ltyp != rtyp:
+                return None
+                
+            op = expr.op
+            try:
+                if op == "+":
+                    return (lval + rval, ltyp)
+                elif op == "-":
+                    return (lval - rval, ltyp)
+                elif op == "*":
+                    return (lval * rval, ltyp)
+                elif op == "/":
+                    if rval == 0:
+                        self.give_error("Division by zero in constant expression")
+                    return (lval / rval, ltyp)
+                elif op == "//":
+                    if rval == 0:
+                        self.give_error("Division by zero in constant expression")
+                    return (lval // rval, ltyp)
+                elif op == "%":
+                    if rval == 0:
+                        self.give_error("Division by zero in constant expression")
+                    return (lval % rval, ltyp)
+                elif op == "**":
+                    return (lval ** rval, ltyp)
+            except ZeroDivisionError:
+                self.give_error("Division by zero in constant expression")
+        
+        return None
     def parse_return(self):
         if self.return_type is None:
             self.give_error("Return outside function")
@@ -1256,16 +1354,35 @@ class Parser:
 
         if detected != var_type:
             int_types = ("Int8", "Int16", "Int32", "Int64")
-            is_int_literal = (
-                type(expr).__name__ == "LiteralExpr"
-                and detected in int_types
-                and var_type in int_types
-            )
+            
+            def is_const_int_expr(e):
+
+                t = type(e).__name__
+                if t == "LiteralExpr" and e.type in int_types:
+                    return True
+                if t == "BinaryExpr" and e.op in ("+", "-", "*", "/", "//", "%", "**"):
+                    return is_const_int_expr(e.left) and is_const_int_expr(e.right)
+                if t == "UnaryExpr" and e.op in ("+", "-"):
+                    return is_const_int_expr(e.expr)
+                return False
+            
+            def set_expr_type(e, new_type):
+
+                t = type(e).__name__
+                if t == "LiteralExpr" and e.type in int_types:
+                    e.type = new_type
+                elif t == "BinaryExpr":
+                    set_expr_type(e.left, new_type)
+                    set_expr_type(e.right, new_type)
+                elif t == "UnaryExpr":
+                    set_expr_type(e.expr, new_type)
+
+            is_int_literal = is_const_int_expr(expr) and var_type in int_types
+            
             if is_int_literal:
-                expr.type = var_type
+                set_expr_type(expr, var_type)
             else:
                 self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
-
         if isinstance(expr, RefExpr) and isinstance(expr.inner, VarExpr):
             self.aliases[name] = expr.inner.name
 

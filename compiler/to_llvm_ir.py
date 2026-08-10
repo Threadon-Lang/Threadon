@@ -7,13 +7,14 @@ FLOAT_LLVM_TYPES = ("half", "float", "double")
 class LLVMIRCompiler:
 
 
-    def __init__(self):
+    def __init__(self,debug_mode=False):
         self.module = None
         self.struct_field_indices = {}
         self.used_intrinsics = set()
         self.used_c_runtime = set()
         self.string_globals = {}
         self.out = []
+        self.debug_mode = debug_mode
 
 
     def compile(self, module):
@@ -45,16 +46,17 @@ class LLVMIRCompiler:
         if "input_helper" in self.used_c_runtime:
             self.out.append("")
             self._emit_input_helper()
-        if "to_int_str" in self.used_c_runtime:
-            self.out.append("")
-            self._emit_str_to_int_helper()
-        if "to_float_str" in self.used_c_runtime:
-            self.out.append("")
-            self._emit_str_to_float_helper()
-        if "to_bool_str" in self.used_c_runtime:
-            self.out.append("")
-            self._emit_str_to_bool_helper()
 
+        if self.debug_mode:
+            self.used_c_runtime.add("fprintf")
+            self.used_c_runtime.add("exit")
+            self.out.append("")
+            self.out.append("define void @__threadon_debug_error(i8* %msg) {")
+            self.out.append("  %se = load i8*, i8** @stderr")
+            self.out.append("  call i32 (i8*, i8*, ...) @fprintf(i8* %se, i8* %msg)")
+            self.out.append("  call void @exit(i32 1)")
+            self.out.append("  unreachable")
+            self.out.append("}")
         if self.used_intrinsics:
             self.out.append("")
             for intrin in sorted(self.used_intrinsics):
@@ -108,6 +110,10 @@ class LLVMIRCompiler:
                 self.out.append("declare void @exit(i32)")
             if "fprintf" in self.used_c_runtime:
                 self.out.append("@stderr = external global i8*")
+            if "snprintf" in self.used_c_runtime:
+                self.out.append("declare i32 @snprintf(i8*, i64, i8*, ...)")
+            if "strlen" in self.used_c_runtime:
+                self.out.append("declare i64 @strlen(i8*)")
             self.out.append("")
 
         return "\n".join(self.out)
@@ -177,7 +183,167 @@ class LLVMIRCompiler:
             line = self.emit_terminator(block.terminator)
             self.out.append(f"  {line}")
 
+    def _emit_cast(self, res, rtype, src, target_type):
+        src_type = self.to_llvm_type(src.type)
+        src_op = self.operand(src)
+        int_bits = {"i8": 8, "i16": 16, "i32": 32, "i64": 64}
 
+        if src_type == "i8*":
+            if rtype in int_bits:
+                self.used_c_runtime.add("strtol")
+                tmp = f"{res}_tmp"
+                endptr = f"{res}_endptr"
+                end_val = f"{res}_endval"
+                is_null = f"{res}_isnull"
+                bad_label = f"{res.lstrip('%')}_badconv"
+                ok_label = f"{res.lstrip('%')}_okconv"
+                
+                lines = []
+                
+                if self.debug_mode:
+                    self.used_c_runtime.add("exit")
+                    msg = "Error: Invalid integer conversion\n"
+                    msg_global = self._string_global(msg)
+                    msg_size = len(msg.encode("utf-8")) + 1
+                    
+                    lines.extend([
+                        f"{endptr} = alloca i8*",
+                        f"{tmp} = call i64 @strtol(i8* {src_op}, i8** {endptr}, i32 10)",
+                        f"{end_val} = load i8*, i8** {endptr}",
+                        f"{is_null} = icmp eq i8* {end_val}, {src_op}",
+                        f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
+                        f"",
+                        f"{bad_label}:",
+                        f"  %emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %emsg)",
+                        f"  unreachable",
+                        f"",
+                        f"{ok_label}:",
+                    ])
+                else:
+                    lines.append(f"{tmp} = call i64 @strtol(i8* {src_op}, i8** null, i32 10)")
+                
+                if rtype != "i64":
+                    lines.append(f"{res} = trunc i64 {tmp} to {rtype}")
+                else:
+                    lines.append(f"{res} = add i64 {tmp}, 0")
+                return lines
+
+            if rtype in FLOAT_LLVM_TYPES:
+                self.used_c_runtime.add("strtod")
+                tmp = f"{res}_tmp"
+                endptr = f"{res}_endptr"
+                end_val = f"{res}_endval"
+                is_null = f"{res}_isnull"
+                bad_label = f"{res.lstrip('%')}_badconv"
+                ok_label = f"{res.lstrip('%')}_okconv"
+                
+                lines = []
+                
+                if self.debug_mode:
+                    self.used_c_runtime.add("exit")
+                    msg = "Error: Invalid float conversion\\n"
+                    msg_global = self._string_global(msg)
+                    msg_size = len(msg.encode("utf-8")) + 1
+                    
+                    lines.extend([
+                        f"{endptr} = alloca i8*",
+                        f"{tmp} = call double @strtod(i8* {src_op}, i8** {endptr})",
+                        f"{end_val} = load i8*, i8** {endptr}",
+                        f"{is_null} = icmp eq i8* {end_val}, {src_op}",
+                        f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
+                        f"",
+                        f"{bad_label}:",
+                        f"  %emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %emsg)",
+                        f"  unreachable",
+                        f"",
+                        f"{ok_label}:",
+                    ])
+                else:
+                    lines.append(f"{tmp} = call double @strtod(i8* {src_op}, i8** null)")
+                
+                if rtype != "double":
+                    lines.append(f"{res} = fptrunc double {tmp} to {rtype}")
+                else:
+                    lines.append(f"{res} = fadd double {tmp}, 0.0")
+                return lines
+
+            if rtype == "i1":
+                self.used_c_runtime.add("strcasecmp")
+                zero_global = self._string_global("0")
+                false_global = self._string_global("false")
+                tmp1 = f"{res}_z"
+                tmp2 = f"{res}_f"
+                tmp3 = f"{res}_len"
+                return [
+                    f"{tmp1} = call i32 @strcasecmp(i8* {src_op}, i8* {zero_global})",
+                    f"{tmp2} = call i32 @strcasecmp(i8* {src_op}, i8* {false_global})",
+                    f"{tmp3} = call i64 @strlen(i8* {src_op})",
+                    f"{res} = icmp ne i64 {tmp3}, 0"
+                ]
+            
+            raise Exception(f"Cannot cast String to {target_type}")
+
+        if rtype == "i8*":
+            if src_type in int_bits:
+                self.used_c_runtime.add("snprintf")
+                buf = f"{res}_buf"
+                fmt = self._string_global("%lld") if src_type == "i64" else self._string_global("%d")
+                return [
+                    f"{buf} = alloca [32 x i8]",
+                    f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 32, i8* {fmt}, {src_type} {src_op})",
+                    f"{res} = getelementptr [32 x i8], [32 x i8]* {buf}, i64 0, i64 0"
+                ]
+            if src_type in FLOAT_LLVM_TYPES:
+                self.used_c_runtime.add("snprintf")
+                buf = f"{res}_buf"
+                fmt = self._string_global("%f")
+                return [
+                    f"{buf} = alloca [64 x i8]",
+                    f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 64, i8* {fmt}, {src_type} {src_op})",
+                    f"{res} = getelementptr [64 x i8], [64 x i8]* {buf}, i64 0, i64 0"
+                ]
+            if src_type == "i1":
+                self.used_c_runtime.add("snprintf")
+                t_global = self._string_global("true")
+                f_global = self._string_global("false")
+                sel = f"{res}_sel"
+                return [
+                    f"{sel} = select i1 {src_op}, i8* {t_global}, i8* {f_global}",
+                    f"{res} = getelementptr i8, i8* {sel}, i64 0"
+                ]
+            raise Exception(f"Cannot cast {src.type} to String")
+
+        if src_type in int_bits and rtype in int_bits:
+            sb, tb = int_bits[src_type], int_bits[rtype]
+            if sb == tb:
+                return f"{res} = add {rtype} {src_op}, 0"
+            if sb > tb:
+                return f"{res} = trunc {src_type} {src_op} to {rtype}"
+            return f"{res} = sext {src_type} {src_op} to {rtype}"
+
+        if src_type in int_bits and rtype in FLOAT_LLVM_TYPES:
+            return f"{res} = sitofp {src_type} {src_op} to {rtype}"
+
+        if src_type in FLOAT_LLVM_TYPES and rtype in int_bits:
+            return f"{res} = fptosi {src_type} {src_op} to {rtype}"
+
+        if src_type in FLOAT_LLVM_TYPES and rtype in FLOAT_LLVM_TYPES:
+            order = {"half": 0, "float": 1, "double": 2}
+            if order[src_type] == order[rtype]:
+                return f"{res} = fadd {rtype} {src_op}, 0.0"
+            if order[src_type] < order[rtype]:
+                return f"{res} = fpext {src_type} {src_op} to {rtype}"
+            return f"{res} = fptrunc {src_type} {src_op} to {rtype}"
+
+        if src_type == "i1" and rtype in int_bits:
+            return f"{res} = zext i1 {src_op} to {rtype}"
+
+        if src_type == "i1" and rtype in FLOAT_LLVM_TYPES:
+            return f"{res} = uitofp i1 {src_op} to {rtype}"
+
+        raise Exception(f"Unsupported cast from {src_type} to {rtype}")
     def emit_instr(self, instr):
         op = instr.op
         res = instr.result.name if isinstance(instr.result, SSAValue) else None
@@ -186,7 +352,8 @@ class LLVMIRCompiler:
         if op == "const":
             val = instr.args[0]
             return self._emit_const(res, rtype, val)
-
+        if op == "cast":
+            return self._emit_cast(res, rtype, instr.args[0], instr.args[1])
         if op == "phi":
             incoming = ", ".join(
                 f"[ {self.operand(v)}, %{blk} ]" for blk, v in instr.incoming
@@ -366,6 +533,27 @@ class LLVMIRCompiler:
             "mod": "frem" if is_float else "srem",
         }
         llvm_op = op_map.get(op, "add")
+
+        if self.debug_mode and op in ("div", "floordiv", "mod") and not is_float:
+            self.used_c_runtime.add("exit")
+            is_zero = f"{res}_iszero"
+            bad_label = f"{res.lstrip('%')}_divzero"
+            ok_label = f"{res.lstrip('%')}_divok"
+            msg = "Error: Division by zero\\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            return [
+                f"{is_zero} = icmp eq {ltype} {r}, 0",
+                f"br i1 {is_zero}, label %{bad_label}, label %{ok_label}",
+                f"",
+                f"{bad_label}:",
+                f"  %emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                f"  call void @__threadon_debug_error(i8* %emsg)",
+                f"  unreachable",
+                f"",
+                f"{ok_label}:",
+                f"  {res} = {llvm_op} {ltype} {l}, {r}",
+            ]
         return f"{res} = {llvm_op} {ltype} {l}, {r}"
     def _emit_bitwise(self, res, op, left, right):
         l = self.operand(left)
@@ -417,12 +605,7 @@ class LLVMIRCompiler:
             return self._emit_print(res, args)
         if fname == "input":
             return self._emit_input(res, args[0])
-        if fname == "to_int":
-            return self._emit_to_int(res, args[0])
-        if fname == "to_float":
-            return self._emit_to_float(res, args[0])
-        if fname == "to_bool":
-            return self._emit_to_bool(res, args[0])
+
         return f"; unknown builtin {fname}"
 
     def _emit_print(self, res, args):
@@ -524,145 +707,7 @@ class LLVMIRCompiler:
         self.out.append(f"@__threadon_input_buf = private global [{buf_size} x i8] zeroinitializer")
         self.out.append("")
 
-    def _emit_conv_error(self, eglobal, esize):
-        self.out.append("  %se = load i8*, i8** @stderr")
-        self.out.append(
-            f"  %efmt = getelementptr inbounds "
-            f"[{esize} x i8], [{esize} x i8]* {eglobal}, i64 0, i64 0"
-        )
-        self.out.append("  call i32 (i8*, ...) @fprintf(i8* %se, i8* %efmt)")
-        self.out.append("  call void @exit(i32 1)")
-        self.out.append("  unreachable")
 
-    def _emit_str_to_int_helper(self):
-        emsg = "error: could not convert string to an integer\n"
-        eglobal = self._string_global(emsg)
-        esize = len(emsg.encode("utf-8")) + 1
-        self.out.append("define i32 @__threadon_str_to_int(i8* %s) {")
-        self.out.append("entry:")
-        self.out.append("  %end = alloca i8*")
-        self.out.append("  %v = call i64 @strtol(i8* %s, i8** %end, i32 10)")
-        self.out.append("  %ep = load i8*, i8** %end")
-        self.out.append("  %c = load i8, i8* %ep")
-        self.out.append("  %ok = icmp eq i8 %c, 0")
-        self.out.append("  br i1 %ok, label %conv_ok, label %conv_err")
-        self.out.append("conv_err:")
-        self._emit_conv_error(eglobal, esize)
-        self.out.append("conv_ok:")
-        self.out.append("  %r = trunc i64 %v to i32")
-        self.out.append("  ret i32 %r")
-        self.out.append("}")
-        self.out.append("")
-
-    def _emit_str_to_float_helper(self):
-        emsg = "error: could not convert string to a float\n"
-        eglobal = self._string_global(emsg)
-        esize = len(emsg.encode("utf-8")) + 1
-        self.out.append("define double @__threadon_str_to_float(i8* %s) {")
-        self.out.append("entry:")
-        self.out.append("  %end = alloca i8*")
-        self.out.append("  %v = call double @strtod(i8* %s, i8** %end)")
-        self.out.append("  %ep = load i8*, i8** %end")
-        self.out.append("  %c = load i8, i8* %ep")
-        self.out.append("  %ok = icmp eq i8 %c, 0")
-        self.out.append("  br i1 %ok, label %conv_ok, label %conv_err")
-        self.out.append("conv_err:")
-        self._emit_conv_error(eglobal, esize)
-        self.out.append("conv_ok:")
-        self.out.append("  ret double %v")
-        self.out.append("}")
-        self.out.append("")
-
-    def _emit_str_to_bool_helper(self):
-        true_s = self._string_global("true")
-        true_size = len("true".encode("utf-8")) + 1
-        one_s = self._string_global("1")
-        one_size = len("1".encode("utf-8")) + 1
-        false_s = self._string_global("false")
-        false_size = len("false".encode("utf-8")) + 1
-        zero_s = self._string_global("0")
-        zero_size = len("0".encode("utf-8")) + 1
-        emsg = "error: could not convert string to a boolean\n"
-        eglobal = self._string_global(emsg)
-        esize = len(emsg.encode("utf-8")) + 1
-        self.out.append("define i1 @__threadon_str_to_bool(i8* %s) {")
-        self.out.append("entry:")
-        self.out.append(
-            f"  %t = getelementptr inbounds "
-            f"[{true_size} x i8], [{true_size} x i8]* {true_s}, i64 0, i64 0"
-        )
-        self.out.append("  %ct = call i32 @strcasecmp(i8* %s, i8* %t)")
-        self.out.append("  %ist = icmp eq i32 %ct, 0")
-        self.out.append("  br i1 %ist, label %conv_true, label %check_false")
-        self.out.append("check_false:")
-        self.out.append(
-            f"  %f = getelementptr inbounds "
-            f"[{false_size} x i8], [{false_size} x i8]* {false_s}, i64 0, i64 0"
-        )
-        self.out.append("  %cf = call i32 @strcasecmp(i8* %s, i8* %f)")
-        self.out.append("  %isf = icmp eq i32 %cf, 0")
-        self.out.append("  br i1 %isf, label %conv_false, label %check_one")
-        self.out.append("check_one:")
-        self.out.append(
-            f"  %o = getelementptr inbounds "
-            f"[{one_size} x i8], [{one_size} x i8]* {one_s}, i64 0, i64 0"
-        )
-        self.out.append("  %co = call i32 @strcasecmp(i8* %s, i8* %o)")
-        self.out.append("  %iso = icmp eq i32 %co, 0")
-        self.out.append("  br i1 %iso, label %conv_true, label %check_zero")
-        self.out.append("check_zero:")
-        self.out.append(
-            f"  %z = getelementptr inbounds "
-            f"[{zero_size} x i8], [{zero_size} x i8]* {zero_s}, i64 0, i64 0"
-        )
-        self.out.append("  %cz = call i32 @strcasecmp(i8* %s, i8* %z)")
-        self.out.append("  %isz = icmp eq i32 %cz, 0")
-        self.out.append("  br i1 %isz, label %conv_false, label %conv_err")
-        self.out.append("conv_true:")
-        self.out.append("  ret i1 true")
-        self.out.append("conv_false:")
-        self.out.append("  ret i1 false")
-        self.out.append("conv_err:")
-        self._emit_conv_error(eglobal, esize)
-        self.out.append("}")
-        self.out.append("")
-
-    def _emit_to_int(self, res, arg):
-        atype = self.to_llvm_type(arg.type)
-        val = self.operand(arg)
-        if atype in FLOAT_LLVM_TYPES:
-            return f"{res} = fptosi {atype} {val} to i32"
-        if atype == "i1":
-            return f"{res} = zext i1 {val} to i32"
-        if atype == "i8*":
-            self.used_c_runtime.update(["printf", "strtol", "fprintf", "exit"])
-            self.used_c_runtime.add("to_int_str")
-            return f"{res} = call i32 @__threadon_str_to_int(i8* {val})"
-        return f"{res} = add i32 0, 0"
-
-    def _emit_to_float(self, res, arg):
-        atype = self.to_llvm_type(arg.type)
-        val = self.operand(arg)
-        if atype == "i8*":
-            self.used_c_runtime.update(["printf", "strtod", "fprintf", "exit"])
-            self.used_c_runtime.add("to_float_str")
-            tmp = f"{res}_d"
-            return [
-                f"{tmp} = call double @__threadon_str_to_float(i8* {val})",
-                f"{res} = fptrunc double {tmp} to float",
-            ]
-        return f"{res} = sitofp i32 {val} to float"
-
-    def _emit_to_bool(self, res, arg):
-        atype = self.to_llvm_type(arg.type)
-        val = self.operand(arg)
-        if atype == "i8*":
-            self.used_c_runtime.update(["printf", "strcasecmp", "fprintf", "exit"])
-            self.used_c_runtime.add("to_bool_str")
-            return f"{res} = call i1 @__threadon_str_to_bool(i8* {val})"
-        if atype in FLOAT_LLVM_TYPES:
-            return f"{res} = fcmp une {atype} {val}, 0.0"
-        return f"{res} = icmp ne i32 {val}, 0"
 
     def _emit_tailcall(self, res, instr):
         fname = instr.args[0]

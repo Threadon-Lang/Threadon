@@ -16,6 +16,7 @@ from .nodes import (
     FieldAccessExpr,
     UnaryExpr,
     RefExpr,
+    CastExpr
 )
 from .checker import CombinedChecker
 from .builtins import BUILTIN_SIGS
@@ -565,7 +566,11 @@ class SSABuilder:
             v = self.new_temp(t)
             self.current_block.add_instr(IRInstr("const", [val], result=v))
             return v
-
+        if isinstance(expr, CastExpr):
+            src = self.emit_expr(expr.expr)
+            v = self.new_temp(expr.target_type)
+            self.current_block.add_instr(IRInstr("cast", [src, expr.target_type], result=v))
+            return v
         if isinstance(expr, VarExpr):
             return self.get_var(expr.name)
 

@@ -199,6 +199,8 @@ def main(argv=None):
         metavar="N",
         help="optimizer inline threshold (default: 0 = no inlining)",
     )
+    parser.add_argument("--debug", action="store_true", help="Enable debug runtime checks")
+    
     args = parser.parse_args(argv)
 
     path = Path(args.file)
@@ -214,6 +216,7 @@ def main(argv=None):
         path,
         importer=importer,
         inline_threshold=args.inline_threshold,
+        debug_mode=args.debug
     )
 
     if args.output:

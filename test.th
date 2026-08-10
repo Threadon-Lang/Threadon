@@ -1,0 +1,3 @@
+def main() -> Int32
+    print(Int32("abc"))
+    return 0

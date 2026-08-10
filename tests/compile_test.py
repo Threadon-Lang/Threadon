@@ -195,10 +195,10 @@ def main() -> Int32
     print(42)
     print(3.14)
     print(True)
-    print(to_int(3.7))
-    print(to_int(True))
-    print(to_float(5))
-    print(to_bool(7))
+    print(Int32(3.7))
+    print(Int32(True))
+    print(Float32(5))
+    print(Bool(7))
     return 0
 """
     )
@@ -210,12 +210,12 @@ def test_string_conversions():
     result = compile_stdlib_run(
         """
 def main() -> Int32
-    print(to_int("123"))
-    print(to_float("3.5"))
-    print(to_bool("true"))
-    print(to_bool("False"))
-    print(to_bool("0"))
-    n: Int32 = to_int(input("Enter a number: "))
+    print(Int32("123"))
+    print(Float32("3.5"))
+    print(Bool("true"))
+    print(Bool("False"))
+    print(Bool("0"))
+    n: Int32 = Int32(input("Enter a number: "))
     print(n * 2)
     return 0
 """,
@@ -229,12 +229,12 @@ def test_string_conversion_invalid_errors():
     result = compile_stdlib_run(
         """
 def main() -> Int32
-    print(to_int("abc"))
+    print(Int32("abc"))
     return 0
 """,
     )
     assert result.returncode != 0
-    assert "could not convert string to an integer" in result.stderr
+    assert "Error: Invalid integer conversion" in result.stderr
 
 
 def test_int_and_string_zero_constants_distinct():
@@ -243,7 +243,7 @@ def test_int_and_string_zero_constants_distinct():
 def main() -> Int32
     s: String = "0"
     n: Int32 = 0
-    print(to_int(s) + 1)
+    print(Int32(s) + 1)
     print(n)
     return 0
 """,
@@ -311,7 +311,7 @@ def test_expr_statement():
     result = compile_stdlib_run(
         """
 def main() -> Int32
-    print(to_int(2.5) + 1)
+    print(Int32(2.5) + 1)
     return 0
 """
     )
