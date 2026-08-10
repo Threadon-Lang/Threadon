@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 MODULE_EXTENSION = ".th"
 STDLIB_DIR = Path(__file__).resolve().parent.parent / "stdlib"
 

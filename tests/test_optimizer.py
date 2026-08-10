@@ -1,16 +1,15 @@
-from pathlib import Path
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-
-from compiler.parser import Parser
-from compiler.checker import CombinedChecker
-from compiler.to_high_ir import IRPhi, SSAValue, SSABuilder
-from compiler.optimalise_ir import IROptimizer
-
 from compile_test import COMPLEX_SOURCE
+
+from compiler.checker import CombinedChecker
+from compiler.optimalise_ir import IROptimizer
+from compiler.parser import Parser
+from compiler.to_high_ir import IRPhi, SSABuilder, SSAValue
 
 
 def build_module(source):
@@ -320,7 +319,7 @@ def f(x: Int32) -> Int32
     ops = block_ops(f, "entry")
     assert "mul" not in ops
     assert "shl" in ops
-    shl = [i for i in f.block_map["entry"].instructions if i.op == "shl"][0]
+    shl = next(i for i in f.block_map["entry"].instructions if i.op == "shl")
     assert int(shl.args[1]) == 2
 
 

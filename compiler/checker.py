@@ -1,4 +1,6 @@
 from .nodes import RefExpr
+
+
 class UnreachableChecker:
 
 
@@ -292,7 +294,7 @@ class UnusedVariableChecker:
                 self.warn(f"Variable '{var}' declared but never used")
 
     def check_function(self, func):
-        declared = set(pname for pname, _ in func.params)
+        declared = {pname for pname, _ in func.params}
         used = set()
 
         for stmt in func.body:
@@ -303,7 +305,7 @@ class UnusedVariableChecker:
             if pname not in used:
                 self.warn(f"Parameter '{pname}' in function '{func.name}' is never used")
 
-        local_decl = declared - set(pname for pname, _ in func.params)
+        local_decl = declared - {pname for pname, _ in func.params}
         for var in local_decl:
             if var not in used:
                 self.warn(f"Variable '{var}' in function '{func.name}' declared but never used")
@@ -358,7 +360,7 @@ class UnusedVariableChecker:
             for a in expr.args:
                 self.visit_expr(a, used)
         elif t == "StructInitExpr":
-            for _, e in expr.fields.items():
+            for e in expr.fields.values():
                 self.visit_expr(e, used)
         elif t == "FieldAccessExpr":
             self.visit_expr(expr.obj, used)
@@ -438,7 +440,7 @@ class DeadStoreChecker:
                 self.walk_expr(a, reads)
 
         elif t == "StructInitExpr":
-            for _, e in expr.fields.items():
+            for e in expr.fields.values():
                 self.walk_expr(e, reads)
 
         elif t == "FieldAccessExpr":
@@ -504,7 +506,7 @@ class AliasChecker:
 
     def check_function(self, func):
         self.aliases = {}
-        declared = set(pname for pname, _ in func.params)
+        declared = {pname for pname, _ in func.params}
 
         for stmt in func.body:
             self.visit_stmt(stmt, declared)

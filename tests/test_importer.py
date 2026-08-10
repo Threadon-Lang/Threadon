@@ -1,12 +1,10 @@
 import io
 from contextlib import redirect_stdout
-from pathlib import Path
 
 import pytest
 
 from compiler.importer import Importer, ImporterError
 from compiler.nodes import ImportStmt
-
 
 MATH_SOURCE = """
 def abs(x: Int32) -> Int32

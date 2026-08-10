@@ -1,27 +1,25 @@
 
-from .parser import Parser
+from collections import defaultdict
+
+from .builtins import BUILTIN_SIGS
 from .nodes import (
-    FunctionDef,
-    IfStmt,
-    VarDecl,
     Assign,
-    FieldAssign,
-    ReturnStmt,
-    ExprStmt,
-    StructInitExpr,
     BinaryExpr,
     CallExpr,
-    LiteralExpr,
-    VarExpr,
+    CastExpr,
+    ExprStmt,
     FieldAccessExpr,
-    UnaryExpr,
+    FieldAssign,
+    FunctionDef,
+    IfStmt,
+    LiteralExpr,
     RefExpr,
-    CastExpr
+    ReturnStmt,
+    StructInitExpr,
+    UnaryExpr,
+    VarDecl,
+    VarExpr,
 )
-from .checker import CombinedChecker
-from .builtins import BUILTIN_SIGS
-
-from collections import defaultdict
 
 
 class SSAValue:
@@ -332,11 +330,7 @@ class SSABuilder:
 
         def walk_stmt(stmt):
             t = type(stmt).__name__
-            if t == "VarDecl":
-                walk_expr(stmt.expr)
-            elif t == "Assign":
-                walk_expr(stmt.expr)
-            elif t == "FieldAssign":
+            if t == "VarDecl" or t == "Assign" or t == "FieldAssign":
                 walk_expr(stmt.expr)
             elif t == "ReturnStmt":
                 walk_expr(stmt.value)
@@ -451,9 +445,7 @@ class SSABuilder:
         self.set_var(node.name, res)
 
     def emit_return(self, node: ReturnStmt):
-        if node.value is None:
-            self.current_block.set_terminator(IRInstr("ret_void", []))
-        elif isinstance(node.value, LiteralExpr) and node.value.type == "NoneType":
+        if node.value is None or isinstance(node.value, LiteralExpr) and node.value.type == "NoneType":
             self.current_block.set_terminator(IRInstr("ret_void", []))
         else:
             val = self.emit_expr(node.value)

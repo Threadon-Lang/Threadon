@@ -1,6 +1,7 @@
-from .to_high_ir import SSAValue
+import struct
+
 from .builtins import BUILTIN_SIGS
-import struct 
+from .to_high_ir import SSAValue
 
 FLOAT_LLVM_TYPES = ("half", "float", "double")
 
@@ -77,11 +78,7 @@ class LLVMIRCompiler:
                     self.out.append(f"declare {t} @{intrin}({t}, {t}) #0")
                 elif intrin == "llvm.pow.i32":
                     self.out.append("declare i32 @llvm.pow.i32(i32, i32) #0")
-                elif intrin.startswith("llvm.floor.f"):
-                    suffix = intrin.rsplit(".", 1)[1]
-                    t = {"f16": "half", "f32": "float", "f64": "double"}[suffix]
-                    self.out.append(f"declare {t} @{intrin}({t}) #0")
-                elif intrin.startswith("llvm.ceil.f"):
+                elif intrin.startswith(("llvm.floor.f", "llvm.ceil.f")):
                     suffix = intrin.rsplit(".", 1)[1]
                     t = {"f16": "half", "f32": "float", "f64": "double"}[suffix]
                     self.out.append(f"declare {t} @{intrin}({t}) #0")
@@ -225,12 +222,12 @@ class LLVMIRCompiler:
                         f"{end_val} = load i8*, i8** {endptr}",
                         f"{is_null} = icmp eq i8* {end_val}, {src_op}",
                         f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
-                        f"",
+                        "",
                         f"{bad_label}:",
                         f"  %{emsg} = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
                         f"  call void @__threadon_debug_error(i8* %{emsg}, i8* {ctx})",
-                        f"  unreachable",
-                        f"",
+                        "  unreachable",
+                        "",
                         f"{ok_label}:",
                     ])
                 else:
@@ -267,12 +264,12 @@ class LLVMIRCompiler:
                         f"{end_val} = load i8*, i8** {endptr}",
                         f"{is_null} = icmp eq i8* {end_val}, {src_op}",
                         f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
-                        f"",
+                        "",
                         f"{bad_label}:",
                         f"  %{emsg} = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
                         f"  call void @__threadon_debug_error(i8* %{emsg}, i8* {ctx})",
-                        f"  unreachable",
-                        f"",
+                        "  unreachable",
+                        "",
                         f"{ok_label}:",
                     ])
                 else:
@@ -580,12 +577,12 @@ class LLVMIRCompiler:
             return [
                 f"{is_zero} = icmp eq {ltype} {r}, 0",
                 f"br i1 {is_zero}, label %{bad_label}, label %{ok_label}",
-                f"",
+                "",
                 f"{bad_label}:",
                 f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
                 f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
-                f"  unreachable",
-                f"",
+                "  unreachable",
+                "",
                 f"{ok_label}:",
                 f"  {res} = {llvm_op} {ltype} {l}, {r}",
             ]
@@ -705,7 +702,7 @@ class LLVMIRCompiler:
     def _emit_input_helper(self):
         buf_size = 1024
         pfmt = self._string_global("%s")
-        psize = len("%s".encode("utf-8")) + 1
+        psize = len(b"%s") + 1
         nl = "\n"
         nl_global = self._string_global(nl)
         nl_size = len(nl.encode("utf-8")) + 1

@@ -8,12 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from compiler.parser import Parser
 from compiler.checker import CombinedChecker
 from compiler.compiler import compile_source
 from compiler.importer import Importer
-from compiler.to_high_ir import SSABuilder
 from compiler.optimalise_ir import IROptimizer
+from compiler.parser import Parser
+from compiler.to_high_ir import SSABuilder
 from compiler.to_llvm_ir import LLVMIRCompiler
 
 COMPLEX_SOURCE = """

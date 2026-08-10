@@ -1,19 +1,18 @@
 import io
-from contextlib import redirect_stdout
-from pathlib import Path
 import re
 import sys
+from contextlib import redirect_stdout
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import compile_test as ct
 import pytest
 
 from compiler.checker import CombinedChecker
 from compiler.parser import Parser
 from compiler.to_high_ir import SSABuilder
 from compiler.to_llvm_ir import LLVMIRCompiler
-
-import compile_test as ct
 
 INT_HARNESS = """
 declare i32 @printf(i8*, ...)

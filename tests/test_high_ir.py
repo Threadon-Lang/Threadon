@@ -2,7 +2,7 @@ import pytest
 
 from compiler.checker import CombinedChecker
 from compiler.parser import Parser
-from compiler.to_high_ir import IRPhi, IRInstr, SSABuilder
+from compiler.to_high_ir import IRPhi, SSABuilder
 
 
 def build_module(source):
@@ -444,7 +444,7 @@ def f() -> Int32
     f = get_func(module, "f")
     ops = [i.op for i in f.block_map["entry"].instructions]
     assert ops == ["const", "neg"]
-    neg = [i for i in f.block_map["entry"].instructions if i.op == "neg"][0]
+    neg = next(i for i in f.block_map["entry"].instructions if i.op == "neg")
     assert neg.args[0].def_instr.op == "const"
 
 
@@ -491,7 +491,7 @@ def h(x: Int32) -> Int32
     h = get_func(module, "h")
     ops = [i.op for i in h.block_map["entry"].instructions]
     assert ops == ["param", "call", "const", "add"]
-    add = [i for i in h.block_map["entry"].instructions if i.op == "add"][0]
+    add = next(i for i in h.block_map["entry"].instructions if i.op == "add")
     assert add.args[0].def_instr.op == "call"
 
 

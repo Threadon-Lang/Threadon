@@ -1,7 +1,7 @@
-from .lexer import lex_lines, TokenType, Token
-from .nodes import *
 from .builtins import BUILTIN_SIGS, builtin_return_type
 from .importer import Importer, ImporterError
+from .lexer import Token, TokenType, lex_lines
+from .nodes import *
 
 int_types = ("Int8", "Int16", "Int32", "Int64")
 
@@ -189,8 +189,7 @@ class Parser:
 
     def line_col(self, raw):
         for tok in raw:
-            if tok.type in (TokenType.INDENT, TokenType.DEDENT):
-                if tok.value is not None:
+            if tok.type in (TokenType.INDENT, TokenType.DEDENT) and tok.value != None:
                     return tok.value
         return self.current_indent_col
 
@@ -301,15 +300,13 @@ class Parser:
 
         if first == TokenType.ELIF:
             return self.parse_elif_error()
-        if first == TokenType.IDENT and len(self.current_line) > 1:
-            if self.current_line[1].type in (
+        if first == TokenType.IDENT and len(self.current_line) > 1 and self.current_line[1].type in (
                 TokenType.PLUS_ASSIGN,
                 TokenType.MINUS_ASSIGN,
                 TokenType.MUL_ASSIGN,
                 TokenType.DIV_ASSIGN,
                 TokenType.MOD_ASSIGN,
-                TokenType.FLOORDIV_ASSIGN,
-            ):
+                TokenType.FLOORDIV_ASSIGN):
                 return self.parse_augmented_assign()
 
         if (

@@ -425,11 +425,10 @@ class Lexer:
                 self.advance()
                 return Token(TokenType.GT, ">")
 
-            if self.current_char == "!":
-                if self.peek() == "=":
-                    self.advance()
-                    self.advance()
-                    return Token(TokenType.NEQ, "!=")
+            if self.current_char == "!" and self.peek() == "=":
+                self.advance()
+                self.advance()
+                return Token(TokenType.NEQ, "!=")
 
             if self.current_char == "^":
                 self.advance()

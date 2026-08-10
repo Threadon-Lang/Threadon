@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from typing import List, Tuple
+
 from .lexer import Token
+
 
 @dataclass
 class Node:
@@ -11,9 +12,9 @@ class Expr(Node):
 @dataclass
 class FunctionDef(Node):
     name: str
-    params: List[Tuple[str, str]]
+    params: list[tuple[str, str]]
     return_type: str
-    body: List[list]
+    body: list[list]
 
     def __repr__(self):
         return (
@@ -26,13 +27,13 @@ class FunctionDef(Node):
 @dataclass
 class ReturnStmt(Node):
     return_type: str
-    value: List[Token] | None
+    value: list[Token] | None
 
 @dataclass
 class VarDecl:
     name: str
     var_type: str
-    expr: List[Expr]
+    expr: list[Expr]
 
 
 @dataclass
@@ -71,7 +72,7 @@ class IfStmt:
 @dataclass
 class Assign:
     name: str
-    expr: List[Expr]
+    expr: list[Expr]
 @dataclass
 class FieldAssign:
     name: str

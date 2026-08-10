@@ -237,7 +237,7 @@ class IROptimizer:
                     if op == "neg": return -n
                     if op == "pos": return n
                     if op == "not": return not n
-                except:
+                except (TypeError, ValueError):
                     return set()
             if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow",
                       "cmp_lt", "cmp_gt", "cmp_le", "cmp_ge", "cmp_eq", "cmp_ne"):
@@ -265,7 +265,7 @@ class IROptimizer:
                     if op == "cmp_ge": return ln >= rn
                     if op == "cmp_eq": return ln == rn
                     if op == "cmp_ne": return ln != rn
-                except:
+                except (TypeError, ValueError):
                     return set()
             if op == "select":
                 c = get_lat(instr.args[0].name) if isinstance(instr.args[0], SSAValue) else instr.args[0]
@@ -281,7 +281,7 @@ class IROptimizer:
 
         while edge_work or ssa_work:
             while edge_work:
-                fr, to = edge_work.popleft()
+                _fr, to = edge_work.popleft()
                 block = self.func.block_map[to]
                 for instr in block.instructions:
                     if isinstance(instr, (IRInstr, IRPhi)) and isinstance(instr.result, SSAValue):
@@ -340,7 +340,6 @@ class IROptimizer:
                     l = self._get_const_value(instr.args[0])
                     r = self._get_const_value(instr.args[1])
                     if l is not None and r is not None:
-                        try:
                             ln = self._to_number(l)
                             rn = self._to_number(r)
                             if ln is not None and rn is not None:
@@ -364,26 +363,23 @@ class IROptimizer:
                                     if isinstance(a, SSAValue) and instr in a.users:
                                         a.users.remove(instr)
                                 changed = True
-                        except Exception:
-                            pass
+
                 elif instr.op in ("neg", "pos", "not"):
                     v = self._get_const_value(instr.args[0])
                     if v is not None:
-                        try:
-                            n = self._to_number(v)
-                            if n is not None:
-                                if instr.op == "neg": res = -n
-                                elif instr.op == "pos": res = n
-                                elif instr.op == "not": res = not n
-                                old_args = instr.args
-                                instr.op = "const"
-                                instr.args = [res]
-                                for a in old_args:
-                                    if isinstance(a, SSAValue) and instr in a.users:
-                                        a.users.remove(instr)
-                                changed = True
-                        except Exception:
-                            pass
+                        n = self._to_number(v)
+                        if n is not None:
+                            if instr.op == "neg": res = -n
+                            elif instr.op == "pos": res = n
+                            elif instr.op == "not": res = not n
+                            old_args = instr.args
+                            instr.op = "const"
+                            instr.args = [res]
+                            for a in old_args:
+                                if isinstance(a, SSAValue) and instr in a.users:
+                                    a.users.remove(instr)
+                            changed = True
+
                 i += 1
         return changed
 
@@ -508,15 +504,7 @@ class IROptimizer:
                         changed = True
                         continue
 
-                elif op == "div":
-                    left, right = instr.args
-                    if self._is_one(right):
-                        self._replace_value(instr.result, left)
-                        self._remove_instr(block, i)
-                        changed = True
-                        continue
-
-                elif op == "floordiv":
+                elif op == "div" or op == "floordiv":
                     left, right = instr.args
                     if self._is_one(right):
                         self._replace_value(instr.result, left)
@@ -549,7 +537,7 @@ class IROptimizer:
                         changed = True
                         continue
 
-                elif op == "cmp_lt":
+                elif op == "cmp_lt" or op == "cmp_gt":
                     left, right = instr.args
                     if left is right:
                         old_args = instr.args
@@ -561,31 +549,7 @@ class IROptimizer:
                         changed = True
                         continue
 
-                elif op == "cmp_gt":
-                    left, right = instr.args
-                    if left is right:
-                        old_args = instr.args
-                        instr.op = "const"
-                        instr.args = [False]
-                        for a in old_args:
-                            if isinstance(a, SSAValue) and instr in a.users:
-                                a.users.remove(instr)
-                        changed = True
-                        continue
-
-                elif op == "cmp_le":
-                    left, right = instr.args
-                    if left is right:
-                        old_args = instr.args
-                        instr.op = "const"
-                        instr.args = [True]
-                        for a in old_args:
-                            if isinstance(a, SSAValue) and instr in a.users:
-                                a.users.remove(instr)
-                        changed = True
-                        continue
-
-                elif op == "cmp_ge":
+                elif op == "cmp_le" or op == "cmp_ge":
                     left, right = instr.args
                     if left is right:
                         old_args = instr.args
@@ -674,18 +638,16 @@ class IROptimizer:
 
                 if instr.op == "add" and len(instr.args) == 2:
                     left, right = instr.args
-                    if isinstance(left, SSAValue) and left.def_instr and left.def_instr.op == "sub":
-                        if left.def_instr.args[1] is right:
-                            self._replace_value(instr.result, left.def_instr.args[0])
-                            self._remove_instr(block, i)
-                            changed = True
-                            continue
-                    if isinstance(right, SSAValue) and right.def_instr and right.def_instr.op == "sub":
-                        if right.def_instr.args[1] is left:
-                            self._replace_value(instr.result, right.def_instr.args[0])
-                            self._remove_instr(block, i)
-                            changed = True
-                            continue
+                    if isinstance(left, SSAValue) and left.def_instr and left.def_instr.op == "sub" and left.def_instr.args[1] is right:
+                        self._replace_value(instr.result, left.def_instr.args[0])
+                        self._remove_instr(block, i)
+                        changed = True
+                        continue
+                    if isinstance(right, SSAValue) and right.def_instr and right.def_instr.op == "sub" and right.def_instr.args[1] is left:
+                        self._replace_value(instr.result, right.def_instr.args[0])
+                        self._remove_instr(block, i)
+                        changed = True
+                        continue
 
                 if instr.op == "sub" and len(instr.args) == 2:
                     left, right = instr.args
@@ -1128,8 +1090,7 @@ class IROptimizer:
                             if instr in v.users:
                                 v.users.remove(instr)
                         changed = True
-                elif isinstance(instr.result, SSAValue) and not instr.result.users:
-                    if self._is_pure(instr.op):
+                elif isinstance(instr.result, SSAValue) and not instr.result.users and self._is_pure(instr.op):
                         self._remove_instr(block, i)
                         changed = True
                 i -= 1
@@ -1163,10 +1124,9 @@ class IROptimizer:
                     if t.args[0] == target_label:
                         duplicate = True
                         break
-                elif t.op == "cond_br":
-                    if target_label in (t.args[1], t.args[2]):
-                        duplicate = True
-                        break
+                elif t.op == "cond_br" and target_label in (t.args[1], t.args[2]):
+                    duplicate = True
+                    break
             if duplicate:
                 continue
             for pred_label in list(block.predecessors):
@@ -1261,7 +1221,7 @@ class IROptimizer:
                             (blk, val) for blk, val in instr.incoming if blk != block.label
                         ]
                 if b.terminator and b.terminator.op == "cond_br":
-                    cond, t1, t2 = b.terminator.args
+                    _cond, t1, t2 = b.terminator.args
                     if t1 == block.label:
                         b.terminator = IRInstr("br", [t2])
                     elif t2 == block.label:
@@ -1297,7 +1257,7 @@ class IROptimizer:
                         if pred not in loop_blocks:
                             queue.append(pred)
 
-            for label in list(loop_blocks):
+            for label in loop_blocks:
                 block = self.func.block_map[label]
                 i = 0
                 while i < len(block.instructions):
@@ -1438,7 +1398,6 @@ class IROptimizer:
                     continue
                 if trip > factor:
                     continue
-                pass
         return changed
 
 

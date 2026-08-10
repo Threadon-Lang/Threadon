@@ -1,4 +1,5 @@
 import pytest
+
 from compiler.parser import Parser
 
 

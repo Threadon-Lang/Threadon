@@ -1,6 +1,6 @@
 import pytest
-from compiler.lexer import TokenType, lex
 
+from compiler.lexer import TokenType, lex
 
 
 def test_identifiers():
@@ -240,24 +240,8 @@ def test_mixed_operators_and_values():
     assert TokenType.MUL in types
     assert TokenType.MINUS in types
     assert TokenType.STRING in types
-def test_operator_sequence():
-    tokens = lex("a==b!=c<=d>=e")
-    types = [t.type for t in tokens]
-
-    assert TokenType.EQ in types
-    assert TokenType.NEQ in types
-    assert TokenType.LE in types
-    assert TokenType.GE in types
 
 
-def test_mixed_operators_and_values():
-    tokens = lex('x + 5 * y - "test"')
-    types = [t.type for t in tokens]
-
-    assert TokenType.PLUS in types
-    assert TokenType.MUL in types
-    assert TokenType.MINUS in types
-    assert TokenType.STRING in types
 def test_function_no_params():
     tokens = lex("def test() -> Boolean\n    return True")
     types = [t.type for t in tokens]
