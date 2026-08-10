@@ -261,8 +261,7 @@ def f(x: Int32) -> Int32
 """
     )
     f = get_func(module, "f")
-    # RefExpr on a plain VarExpr no longer emits ref_copy — it promotes the
-    # source variable to a stack slot (alloca) and aliases r to that same slot.
+
     allocas = entry_instrs(f, "alloca")
     stores = entry_instrs(f, "store")
     assert len(allocas) == 1
@@ -278,13 +277,12 @@ def f(x: Int32) -> Int32
 """
     )
     f = get_func(module, "f")
-    # x is promoted to a pointer slot; r shares that slot rather than
-    # receiving a ref_copy of x's value.
+
     allocas = entry_instrs(f, "alloca")
     assert len(allocas) == 1
     stores = entry_instrs(f, "store")
     assert len(stores) == 1
-    assert stores[0].args[0].name == "%t0"  # initial store of x's param value
+    assert stores[0].args[0].name == "%t0" 
 
 def test_return_void():
     module = build_module(

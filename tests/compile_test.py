@@ -88,7 +88,6 @@ done:
   ret i32 %r
 }
 """
-
 HARNESS_MAIN = """
 declare i32 @printf(i8*, ...)
 
@@ -99,9 +98,10 @@ define i32 @main() {
   %r = call i32 @run()
   %fmt1 = getelementptr inbounds [4 x i8], [4 x i8]* @.int_fmt, i64 0, i64 0
   %p1 = call i32 (i8*, ...) @printf(i8* %fmt1, i32 %r)
-  %f = call double @average(double 1.5, double 2.5)
+  %f = call float @average(float 1.5, float 2.5)
+  %fd = fpext float %f to double
   %fmt2 = getelementptr inbounds [6 x i8], [6 x i8]* @.float_fmt, i64 0, i64 0
-  %p2 = call i32 (i8*, ...) @printf(i8* %fmt2, double %f)
+  %p2 = call i32 (i8*, ...) @printf(i8* %fmt2, double %fd)
   ret i32 0
 }
 """

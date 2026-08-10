@@ -1,7 +1,8 @@
 from .to_high_ir import SSAValue
 from .builtins import BUILTIN_SIGS
+import struct 
 
-
+FLOAT_LLVM_TYPES = ("half", "float", "double")
 
 class LLVMIRCompiler:
 
@@ -57,17 +58,22 @@ class LLVMIRCompiler:
         if self.used_intrinsics:
             self.out.append("")
             for intrin in sorted(self.used_intrinsics):
-                if intrin == "llvm.pow.f64":
-                    self.out.append("declare double @llvm.pow.f64(double, double) #0")
+                if intrin.startswith("llvm.pow.f"):
+                    suffix = intrin.rsplit(".", 1)[1]
+                    t = {"f16": "half", "f32": "float", "f64": "double"}[suffix]
+                    self.out.append(f"declare {t} @{intrin}({t}, {t}) #0")
                 elif intrin == "llvm.pow.i32":
                     self.out.append("declare i32 @llvm.pow.i32(i32, i32) #0")
-                elif intrin == "llvm.floor.f64":
-                    self.out.append("declare double @llvm.floor.f64(double) #0")
-                elif intrin == "llvm.ceil.f64":
-                    self.out.append("declare double @llvm.ceil.f64(double) #0")
+                elif intrin.startswith("llvm.floor.f"):
+                    suffix = intrin.rsplit(".", 1)[1]
+                    t = {"f16": "half", "f32": "float", "f64": "double"}[suffix]
+                    self.out.append(f"declare {t} @{intrin}({t}) #0")
+                elif intrin.startswith("llvm.ceil.f"):
+                    suffix = intrin.rsplit(".", 1)[1]
+                    t = {"f16": "half", "f32": "float", "f64": "double"}[suffix]
+                    self.out.append(f"declare {t} @{intrin}({t}) #0")
             self.out.append("")
             self.out.append('attributes #0 = { nounwind readnone speculatable willreturn }')
-
         if self.string_globals:
             self.out.append("")
             for content, gname in self.string_globals.items():
@@ -116,7 +122,7 @@ class LLVMIRCompiler:
         if t == "int" or t == "Unknown" or t in ("Int8", "Int16", "Int32", "Int64"):
             return {"Int8": "i8", "Int16": "i16", "Int32": "i32", "Int64": "i64"}.get(t, "i32")
         if t == "float" or t in ("Float16", "Float32", "Float64"):
-            return "double"
+            return {"Float16": "half", "Float32": "float", "Float64": "double"}.get(t, "float")
         if t == "bool" or t in ("Bool", "Boolean"):
             return "i1"
         if t == "String":
@@ -131,8 +137,7 @@ class LLVMIRCompiler:
         return "i32"
 
     def is_float_type(self, t):
-        return self.to_llvm_type(t) == "double"
-
+        return self.to_llvm_type(t) in FLOAT_LLVM_TYPES
 
     def emit_function(self, func):
         entry = func.blocks[0] if func.blocks else None
@@ -250,22 +255,32 @@ class LLVMIRCompiler:
         val_op = self.operand(val)
         ptr_op = self.operand(ptr_val)
         return f"store {val_type} {val_op}, {val_type}* {ptr_op}"
+
+    def _f64_hex(self, fval):
+        return format(struct.unpack('<Q', struct.pack('<d', fval))[0], '016X')
+
     def _emit_const(self, res, rtype, val):
         if rtype == "i1":
             vstr = "1" if str(val).lower() in ("true", "1") else "0"
             return f"{res} = add i1 0, {vstr}"
         if rtype == "i8*":
             return self._emit_string_const(res, val)
-        if isinstance(val, float):
-            return f"{res} = fadd double 0.0, {val}"
+        if rtype in FLOAT_LLVM_TYPES:
+            fval = float(val)
+            if rtype == "float":
+                fval = struct.unpack('<f', struct.pack('<f', fval))[0]
+                return f"{res} = fadd float 0.0, 0x{self._f64_hex(fval)}"
+            if rtype == "half":
+                fval = struct.unpack('<f', struct.pack('<f', fval))[0]
+                return f"{res} = fadd half 0.0, 0x{self._f64_hex(fval)}"
+            return f"{res} = fadd {rtype} 0.0, {fval}"
         if isinstance(val, int):
             return f"{res} = add {rtype} 0, {val}"
         if isinstance(val, str):
             if '.' in val:
-                return f"{res} = fadd double 0.0, {val}"
+                return f"{res} = fadd {rtype} 0.0, {val}"
             return f"{res} = add {rtype} 0, {val}"
         return f"{res} = add {rtype} 0, 0"
-
     def _emit_string_const(self, res, val):
         gname = self._string_global(val)
         size = len(val.encode("utf-8", "replace")) + 1
@@ -282,8 +297,8 @@ class LLVMIRCompiler:
     def _emit_undef(self, res, rtype):
         if rtype.startswith("%struct"):
             return f"{res} = select i1 false, {rtype} undef, {rtype} undef"
-        if rtype == "double":
-            return f"{res} = fadd double 0.0, 0.0"
+        if rtype in FLOAT_LLVM_TYPES:
+            return f"{res} = fadd {rtype} 0.0, 0.0"
         if rtype == "i1":
             return f"{res} = xor i1 false, false"
         return f"{res} = add {rtype} 0, 0"
@@ -291,11 +306,11 @@ class LLVMIRCompiler:
     def _emit_identity(self, res, src):
         src_type = self.to_llvm_type(src.type)
         src_op = self.operand(src)
-        if src_type == "double":
-            return f"{res} = fadd double {src_op}, 0.0"
+        if src_type in FLOAT_LLVM_TYPES:
+            return f"{res} = fadd {src_type} {src_op}, 0.0"
         if src_type == "i1":
             return f"{res} = xor i1 {src_op}, false"
-        if src_type == "i8*" or src_type.startswith("%struct") and src_type.endswith("*"):
+        if src_type == "i8*" or (src_type.startswith("%struct") and src_type.endswith("*")):
             return f"{res} = getelementptr {src_type[:-1]}, {src_type} {src_op}, i32 0"
         if src_type.startswith("%struct"):
             ptr = f"{res}_ptr"
@@ -309,33 +324,37 @@ class LLVMIRCompiler:
         src = self.operand(operand)
         src_type = self.to_llvm_type(operand.type)
         if op == "neg":
-            if src_type == "double":
-                return f"{res} = fsub double 0.0, {src}"
+            if src_type in FLOAT_LLVM_TYPES:
+                return f"{res} = fsub {src_type} 0.0, {src}"
             return f"{res} = sub {src_type} 0, {src}"
         if op == "not":
             return f"{res} = xor i1 {src}, true"
         return f"; unknown unary {op}"
+    def _float_suffix(self, ltype):
+        return {"half": "f16", "float": "f32", "double": "f64"}[ltype]
 
     def _emit_binary(self, res, op, left, right):
         l = self.operand(left)
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
-        is_float = (ltype == "double")
+        is_float = ltype in FLOAT_LLVM_TYPES
 
         if op == "pow":
             if is_float:
-                self.used_intrinsics.add("llvm.pow.f64")
-                return f"{res} = call double @llvm.pow.f64(double {l}, double {r})"
+                intrin = f"llvm.pow.{self._float_suffix(ltype)}"
+                self.used_intrinsics.add(intrin)
+                return f"{res} = call {ltype} @{intrin}({ltype} {l}, {ltype} {r})"
             else:
                 self.used_intrinsics.add("llvm.pow.i32")
                 return f"{res} = call i32 @llvm.pow.i32(i32 {l}, i32 {r})"
 
         if op == "floordiv" and is_float:
-            self.used_intrinsics.add("llvm.floor.f64")
+            intrin = f"llvm.floor.{self._float_suffix(ltype)}"
+            self.used_intrinsics.add(intrin)
             tmp = f"{res}_div"
             return [
-                f"{tmp} = fdiv double {l}, {r}",
-                f"{res} = call double @llvm.floor.f64(double {tmp})"
+                f"{tmp} = fdiv {ltype} {l}, {r}",
+                f"{res} = call {ltype} @{intrin}({ltype} {tmp})"
             ]
 
         op_map = {
@@ -348,7 +367,6 @@ class LLVMIRCompiler:
         }
         llvm_op = op_map.get(op, "add")
         return f"{res} = {llvm_op} {ltype} {l}, {r}"
-
     def _emit_bitwise(self, res, op, left, right):
         l = self.operand(left)
         r = self.operand(right)
@@ -361,12 +379,11 @@ class LLVMIRCompiler:
         }
         llvm_op = op_map[op]
         return f"{res} = {llvm_op} i32 {l}, {r}"
-
     def _emit_cmp(self, res, op, left, right):
         l = self.operand(left)
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
-        is_float = (ltype == "double")
+        is_float = ltype in FLOAT_LLVM_TYPES
 
         pred_map = {
             "cmp_lt": "olt" if is_float else "slt",
@@ -379,7 +396,6 @@ class LLVMIRCompiler:
         pred = pred_map[op]
         cmp_op = "fcmp" if is_float else "icmp"
         return f"{res} = {cmp_op} {pred} {ltype} {l}, {r}"
-
     def _emit_call(self, res, instr):
         fname = instr.args[0]
         if fname in BUILTIN_SIGS:
@@ -416,16 +432,42 @@ class LLVMIRCompiler:
         lines = []
         for i, arg in enumerate(args):
             atype = self.to_llvm_type(arg.type)
-            spec_map = {"i32": "%d", "double": "%f", "i1": "%d", "i8*": "%s"}
-            spec = spec_map[atype]
-            specs.append(spec)
             val = self.operand(arg)
-            if atype == "i1":
+
+            if atype in ("i8", "i16", "i32"):
+                spec = "%d"
+                if atype != "i32":
+                    ext = f"{res}_ext{i}"
+                    lines.append(f"{ext} = sext {atype} {val} to i32")
+                    val = ext
+                call_args.append(f"i32 {val}")
+            elif atype == "i64":
+                spec = "%lld"
+                call_args.append(f"i64 {val}")
+            elif atype == "double":
+                spec = "%f"
+                call_args.append(f"double {val}")
+            elif atype == "i1":
+                spec = "%d"
                 btmp = f"{res}_b{i}"
                 lines.append(f"{btmp} = zext i1 {val} to i32")
                 call_args.append(f"i32 {btmp}")
+            elif atype == "i8*":
+                spec = "%s"
+                call_args.append(f"i8* {val}")
+            elif atype in ("half", "float"):
+                spec = "%f"
+                ext = f"{res}_fext{i}"
+                lines.append(f"{ext} = fpext {atype} {val} to double")
+                call_args.append(f"double {ext}")
+            elif atype == "double":
+                spec = "%f"
+                call_args.append(f"double {val}")
             else:
-                call_args.append(f"{atype} {val}")
+                raise Exception(f"print: unsupported type {atype}")
+
+            specs.append(spec)
+
         fmt = " ".join(specs) + "\n"
         fmt_global = self._string_global(fmt)
         size = len(fmt.encode("utf-8")) + 1
@@ -437,7 +479,6 @@ class LLVMIRCompiler:
         arg_str = ", " + ", ".join(call_args) if call_args else ""
         lines.append(f"call i32 (i8*, ...) @printf(i8* {ptr}{arg_str})")
         return lines
-
     def _emit_input(self, res, arg):
         self.used_c_runtime.update(["printf", "fflush", "fgets", "strcspn"])
         self.used_c_runtime.add("input_helper")
@@ -589,8 +630,8 @@ class LLVMIRCompiler:
     def _emit_to_int(self, res, arg):
         atype = self.to_llvm_type(arg.type)
         val = self.operand(arg)
-        if atype == "double":
-            return f"{res} = fptosi double {val} to i32"
+        if atype in FLOAT_LLVM_TYPES:
+            return f"{res} = fptosi {atype} {val} to i32"
         if atype == "i1":
             return f"{res} = zext i1 {val} to i32"
         if atype == "i8*":
@@ -605,8 +646,12 @@ class LLVMIRCompiler:
         if atype == "i8*":
             self.used_c_runtime.update(["printf", "strtod", "fprintf", "exit"])
             self.used_c_runtime.add("to_float_str")
-            return f"{res} = call double @__threadon_str_to_float(i8* {val})"
-        return f"{res} = sitofp i32 {val} to double"
+            tmp = f"{res}_d"
+            return [
+                f"{tmp} = call double @__threadon_str_to_float(i8* {val})",
+                f"{res} = fptrunc double {tmp} to float",
+            ]
+        return f"{res} = sitofp i32 {val} to float"
 
     def _emit_to_bool(self, res, arg):
         atype = self.to_llvm_type(arg.type)
@@ -615,8 +660,8 @@ class LLVMIRCompiler:
             self.used_c_runtime.update(["printf", "strcasecmp", "fprintf", "exit"])
             self.used_c_runtime.add("to_bool_str")
             return f"{res} = call i1 @__threadon_str_to_bool(i8* {val})"
-        if atype == "double":
-            return f"{res} = fcmp une double {val}, 0.0"
+        if atype in FLOAT_LLVM_TYPES:
+            return f"{res} = fcmp une {atype} {val}, 0.0"
         return f"{res} = icmp ne i32 {val}, 0"
 
     def _emit_tailcall(self, res, instr):

@@ -611,7 +611,7 @@ class Parser:
         return self.ast
 
     def _auto_import_stdlib(self):
-        """Implicitly import the standard library into the main module."""
+
         if not self.importer or self.importer.find_source("std") is None:
             return
         mod = self._load_module("std")
@@ -1253,8 +1253,18 @@ class Parser:
 
         detected = self.detect_expr_type(expr)
 
+
         if detected != var_type:
-            self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
+            int_types = ("Int8", "Int16", "Int32", "Int64")
+            is_int_literal = (
+                type(expr).__name__ == "LiteralExpr"
+                and detected in int_types
+                and var_type in int_types
+            )
+            if is_int_literal:
+                expr.type = var_type
+            else:
+                self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
 
         if isinstance(expr, RefExpr) and isinstance(expr.inner, VarExpr):
             self.aliases[name] = expr.inner.name

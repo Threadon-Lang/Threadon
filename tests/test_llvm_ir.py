@@ -34,13 +34,13 @@ declare i32 @printf(i8*, ...)
 @.float_fmt = private unnamed_addr constant [4 x i8] c"%f\n\0"
 
 define i32 @main() {
-  %r = call double @run()
+  %r = call float @run()
+  %rd = fpext float %r to double
   %fmt1 = getelementptr inbounds [4 x i8], [4 x i8]* @.float_fmt, i64 0, i64 0
-  %p1 = call i32 (i8*, ...) @printf(i8* %fmt1, double %r)
+  %p1 = call i32 (i8*, ...) @printf(i8* %fmt1, double %rd)
   ret i32 0
 }
 """
-
 
 def compile_llvm(source, inline_threshold=30):
     return ct.compile_program(source, inline_threshold=inline_threshold)
@@ -132,7 +132,7 @@ def run() -> Int32
 
 def test_float_pow_intrinsic_emitted():
     llvm = compile_unoptimized("def run() -> Float32\n    return 2.0 ** 3.0\n")
-    assert "@llvm.pow.f64" in llvm
+    assert "@llvm.pow.f32" in llvm
 
 
 def test_arithmetic_expression():
