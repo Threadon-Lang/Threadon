@@ -168,21 +168,9 @@ def test_struct_init_and_field_access_breaks(code):
 EXPR_SNIPPETS = [
 
     """
-def f(x: Int32, y: Int32) -> Bool
-    b: Bool = x < y and y < x or x == y
-    return b
-""",
-
-    """
 def f(x: Int32, y: Int32) -> Int32
     z: Int32 = x ** y ** 2
     return z
-""",
-
-    """
-def f(x: Int32, y: Int32) -> Bool
-    b: Bool = (x + y) > 0 and not (x == y)
-    return b
 """,
 
     """
@@ -199,6 +187,39 @@ def test_expr_edge_cases(code):
         parse_ok(code)
     except SystemExit:
         assert True
+
+
+AND_OR_SNIPPETS = [
+
+    """
+def f(x: Int32, y: Int32) -> Bool
+    b: Bool = x < y and y < x or x == y
+    return b
+""",
+
+    """
+def f(x: Int32, y: Int32) -> Bool
+    b: Bool = (x + y) > 0 and not (x == y)
+    return b
+""",
+
+    """
+def f() -> Bool
+    b: Bool = True and False
+    return b
+""",
+
+    """
+def f(x: Int32) -> Bool
+    b: Bool = x > 0 or x < 0
+    return b
+""",
+]
+
+
+@pytest.mark.parametrize("code", AND_OR_SNIPPETS)
+def test_and_or_operators_parse_ok(code):
+    parse_ok(code)
 
 
 TYPECHECK_SNIPPETS = [
@@ -472,11 +493,6 @@ def test_field_assign_breaks(code):
 FUNC_SIG_SNIPPETS = [
 
     """
-def f(x: Int32 = 0) -> Int32
-    return x
-""",
-
-    """
 def f(
     x: Int32,
     y: Int32,
@@ -529,13 +545,6 @@ def f() -> Int32
         y=2
     )
     return a.x
-""",
-
-    """
-def f(x: Int32, y: Int32) -> Bool
-    b: Bool = x < y and \
-        y < x
-    return b
 """,
 ]
 
@@ -789,7 +798,7 @@ def f(x: Int32) -> Int32
     )
 
 
-def test_double_else_fails():
+def test_double_else():
     parse_fail(
         """
 def f(x: Int32) -> Int32
@@ -804,8 +813,8 @@ def f(x: Int32) -> Int32
     )
 
 
-def test_and_operator_unsupported_fails():
-    parse_fail(
+def test_and_operator_unsupported():
+    parse_ok(
         """
 def f() -> Bool
     b: Bool = True and False
@@ -1001,5 +1010,138 @@ def test_missing_return_on_some_paths_fails():
 def f(x: Int32) -> Int32
     if x > 0:
         return 1
+"""
+    )
+
+
+def test_default_params_parsed():
+    ast = parse_ok(
+        """
+def f(a: Int32, b: Int32 = 5, c: Float32 = 1.5) -> Int32
+    return a + b
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    assert func.params[0] == ("a", "Int32", None)
+    assert func.params[1][0:2] == ("b", "Int32")
+    assert func.params[1][2].type == "Int32"
+    assert func.params[1][2].value.value == "5"
+    assert func.params[2][0:2] == ("c", "Float32")
+    assert func.params[2][2].type == "Float32"
+    assert func.params[2][2].value.value == "1.5"
+
+
+def test_default_params_call_with_fewer_args():
+    parse_ok(
+        """
+def f(a: Int32, b: Int32 = 5) -> Int32
+    return a + b
+def run() -> Int32
+    x: Int32 = f(1)
+    y: Int32 = f(1, 2)
+    return x + y
+"""
+    )
+
+
+def test_all_params_default_ok():
+    parse_ok(
+        """
+def f(a: Int32 = 1, b: Int32 = 2) -> Int32
+    return a + b
+def run() -> Int32
+    return f()
+"""
+    )
+
+
+def test_default_int8_narrows_literal():
+    ast = parse_ok(
+        """
+def f(a: Int8 = 300) -> Int8
+    return a
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    assert func.params[0][2].type == "Int8"
+
+
+DEFAULT_BREAK_SNIPPETS = [
+
+    """
+def f(a: Int32 = 1, b: Int32) -> Int32
+    return a + b
+""",
+
+    """
+x: Int32 = 5
+def f(a: Int32 = x) -> Int32
+    return a
+""",
+
+    """
+def f(a: Int32 = 1.5) -> Int32
+    return a
+""",
+
+    """
+def f(a: Bool = 5) -> Bool
+    return a
+""",
+
+    """
+def f(a: Int32 = 1, b: Int32 = 2, c: Int32) -> Int32
+    return a + b + c
+""",
+
+    """
+def f(a: Int32 =) -> Int32
+    return a
+""",
+]
+
+
+@pytest.mark.parametrize("code", DEFAULT_BREAK_SNIPPETS)
+def test_default_params_breaks(code):
+    parse_fail(code)
+
+
+CALL_ARG_COUNT_SNIPPETS = [
+
+    """
+def f(a: Int32, b: Int32 = 2) -> Int32
+    return a + b
+def run() -> Int32
+    return f()
+""",
+
+    """
+def f(a: Int32, b: Int32 = 2) -> Int32
+    return a + b
+def run() -> Int32
+    return f(1, 2, 3)
+""",
+
+    """
+def f(a: Int32 = 1) -> Int32
+    return a
+def run() -> Int32
+    return f(1, 2)
+""",
+]
+
+
+@pytest.mark.parametrize("code", CALL_ARG_COUNT_SNIPPETS)
+def test_default_param_call_arg_count_breaks(code):
+    parse_fail(code)
+
+
+def test_default_param_call_arg_type_mismatch_fails():
+    parse_fail(
+        """
+def f(a: Int32, b: Int32 = 2) -> Int32
+    return a + b
+def run() -> Int32
+    return f("hi")
 """
     )

@@ -12,7 +12,7 @@ class Expr(Node):
 @dataclass
 class FunctionDef(Node):
     name: str
-    params: list[tuple[str, str]]
+    params: list[tuple[str, str, Expr | None]]
     return_type: str
     body: list[list]
 

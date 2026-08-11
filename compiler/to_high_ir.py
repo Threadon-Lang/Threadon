@@ -199,7 +199,7 @@ class IRFunction:
         out = []
         out.append(
             f"func {self.name}(" +
-            ", ".join(f"{n}: {t}" for n, t in self.params) +
+            ", ".join(f"{n}: {t}" for n, t, _ in self.params) +
             f") -> {self.return_type}"
         )
         self.build_cfg()
@@ -247,6 +247,7 @@ class SSABuilder:
         self.env_stack = []
         self.temp_counter = 0
         self.func_returns = {}
+        self.func_params = {}
         self.aliases = {}
 
     def new_temp(self, type_):
@@ -297,6 +298,7 @@ class SSABuilder:
         for node in ast:
             if isinstance(node, FunctionDef):
                 self.func_returns[node.name] = node.return_type
+                self.func_params[node.name] = node.params
 
         for node in ast:
             if isinstance(node, FunctionDef):
@@ -372,7 +374,7 @@ class SSABuilder:
         self.current_block = entry
         self.push_env()
 
-        for pname, ptype in func_ast.params:
+        for pname, ptype, _ in func_ast.params:
             val = self.new_temp(ptype)
             self.set_var(pname, val)
             entry.add_instr(IRInstr("param", [pname], result=val))
@@ -606,6 +608,15 @@ class SSABuilder:
 
         if isinstance(expr, CallExpr):
             args = [self.emit_expr(a) for a in expr.args]
+            params = self.func_params.get(expr.func_name)
+            if params is not None:
+                for _, _, default in params[len(expr.args):]:
+                    if default is None:
+                        raise Exception(
+                            f"Missing argument for parameter in call to "
+                            f"'{expr.func_name}'"
+                        )
+                    args.append(self.emit_expr(default))
             ret_type = self.func_returns.get(expr.func_name)
             if ret_type is None:
                 ret_type = BUILTIN_SIGS.get(expr.func_name, ("", "Unknown"))[1]

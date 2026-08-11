@@ -6,6 +6,8 @@ import tempfile
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from compiler.checker import CombinedChecker
@@ -342,6 +344,43 @@ def main() -> Int32
         assert result.stdout == "7\n9\n2\n100\n0\n1\n0\n1\n6\n"
 
 
+def test_default_parameters_runtime():
+    source = """
+def add(a: Int32, b: Int32 = 5, c: Int32 = 10) -> Int32
+    return a + b + c
+
+def greet(name: String = "world") -> String
+    return name
+
+def main() -> Int32
+    print(add(1))
+    print(add(1, 2))
+    print(add(1, 2, 3))
+    print(greet())
+    print(greet("threadon"))
+    return 0
+"""
+    for threshold in (0, 10000):
+        result = compile_stdlib_run(source, inline_threshold=threshold)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "16\n13\n6\nworld\nthreadon\n"
+
+
+def test_default_parameters_error_cases():
+    with pytest.raises(RuntimeError) as excinfo:
+        compile_source(
+            """
+def f(a: Int32, b: Int32 = 2) -> Int32
+    return a + b
+def main() -> Int32
+    print(f())
+    return 0
+""",
+            importer=Importer(),
+        )
+    assert "expects between 1 and 2 arguments, got 0" in str(excinfo.value)
+
+
 if __name__ == "__main__":
     test_complex_program_runs()
     test_complex_program_inlined()
@@ -355,4 +394,6 @@ if __name__ == "__main__":
     test_field_assign()
     test_expr_statement()
     test_stdlib_helpers()
+    test_default_parameters_runtime()
+    test_default_parameters_error_cases()
     print("compile_test OK")

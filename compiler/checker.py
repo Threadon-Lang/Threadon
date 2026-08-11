@@ -172,7 +172,7 @@ class ShadowChecker:
                     self.visit_block(stmt.else_body, local.copy())
 
             elif t == "FunctionDef":
-                func_scope = {pname: True for pname, _ in stmt.params}
+                func_scope = {pname: True for pname, _, _ in stmt.params}
                 self.visit_block(stmt.body, func_scope)
 
 class DuplicateChecker:
@@ -216,7 +216,7 @@ class DuplicateChecker:
 
         func_scope = {}
 
-        for pname, ptype in func.params:
+        for pname, ptype, _ in func.params:
             func_scope[pname] = True
 
         for stmt in func.body:
@@ -294,7 +294,7 @@ class UnusedVariableChecker:
                 self.warn(f"Variable '{var}' declared but never used")
 
     def check_function(self, func):
-        declared = {pname for pname, _ in func.params}
+        declared = {pname for pname, _, _ in func.params}
         used = set()
 
         for stmt in func.body:
@@ -305,7 +305,7 @@ class UnusedVariableChecker:
             if pname not in used:
                 self.warn(f"Parameter '{pname}' in function '{func.name}' is never used")
 
-        local_decl = declared - {pname for pname, _ in func.params}
+        local_decl = declared - {pname for pname, _, _ in func.params}
         for var in local_decl:
             if var not in used:
                 self.warn(f"Variable '{var}' in function '{func.name}' declared but never used")
@@ -506,7 +506,7 @@ class AliasChecker:
 
     def check_function(self, func):
         self.aliases = {}
-        declared = {pname for pname, _ in func.params}
+        declared = {pname for pname, _, _ in func.params}
 
         for stmt in func.body:
             self.visit_stmt(stmt, declared)

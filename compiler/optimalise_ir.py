@@ -1498,7 +1498,7 @@ class IROptimizer:
                 new_block.set_terminator(new_term)
 
         call_args = call_instr.args[1:]
-        for (pname, ptype), arg in zip(callee.params, call_args):
+        for (pname, ptype, _), arg in zip(callee.params, call_args):
             entry_new = new_block_map[map_label(callee.blocks[0].label)]
             for instr in entry_new.instructions:
                 if instr.op == "param" and instr.args[0] == pname:

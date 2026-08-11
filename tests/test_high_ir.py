@@ -38,7 +38,7 @@ def add(a: Int32, b: Int32) -> Int32
     assert module.types["Point"] == {"x": "Int32", "y": "Int32"}
     add = get_func(module, "add")
     assert add.return_type == "Int32"
-    assert add.params == [("a", "Int32"), ("b", "Int32")]
+    assert add.params == [("a", "Int32", None), ("b", "Int32", None)]
 
 
 def test_parameters_produce_param_instructions():
@@ -751,3 +751,73 @@ def g() -> Int32
     assert len(calls) == 1
     call = calls[0]
     assert call.args == ["f"]
+
+
+def test_default_params_recorded_on_function():
+    module = build_module(
+        """
+def f(a: Int32, b: Int32 = 5) -> Int32
+    return a + b
+"""
+    )
+    f = get_func(module, "f")
+    assert f.params[0] == ("a", "Int32", None)
+    assert f.params[1][0:2] == ("b", "Int32")
+
+    default = f.params[1][2]
+    assert default.type == "Int32"
+    assert default.value.value == "5"
+
+
+def test_call_with_defaults_fills_arguments():
+    module = build_module(
+        """
+def add(a: Int32, b: Int32 = 5, c: Int32 = 10) -> Int32
+    return a + b + c
+def run() -> Int32
+    return add(1)
+"""
+    )
+    run = get_func(module, "run")
+    calls = entry_instrs(run, "call")
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.args[0] == "add"
+    args = call.args[1:]
+    assert len(args) == 3
+    assert [a.def_instr.args[0] for a in args] == ["1", "5", "10"]
+    assert [a.type for a in args] == ["Int32", "Int32", "Int32"]
+
+
+def test_call_with_partial_defaults_fills_remaining():
+    module = build_module(
+        """
+def add(a: Int32, b: Int32 = 5, c: Int32 = 10) -> Int32
+    return a + b + c
+def run() -> Int32
+    return add(1, 2)
+"""
+    )
+    run = get_func(module, "run")
+    calls = entry_instrs(run, "call")
+    call = calls[0]
+    args = call.args[1:]
+    assert len(args) == 3
+    assert [a.def_instr.args[0] for a in args] == ["1", "2", "10"]
+
+
+def test_call_with_all_arguments_no_defaults_filled():
+    module = build_module(
+        """
+def add(a: Int32, b: Int32 = 5, c: Int32 = 10) -> Int32
+    return a + b + c
+def run() -> Int32
+    return add(1, 2, 3)
+"""
+    )
+    run = get_func(module, "run")
+    calls = entry_instrs(run, "call")
+    call = calls[0]
+    args = call.args[1:]
+    assert len(args) == 3
+    assert [a.def_instr.args[0] for a in args] == ["1", "2", "3"]

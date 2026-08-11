@@ -57,8 +57,9 @@ def print_ast(ast, indent=0):
 
         if t == "FunctionDef":
             print(f"{pad}Function {node.name}(")
-            for pname, ptype in node.params:
-                print(f"{pad}    param {pname}: {ptype}")
+            for pname, ptype, pdefault in node.params:
+                default_str = f" = {print_expr(pdefault)}" if pdefault is not None else ""
+                print(f"{pad}    param {pname}: {ptype}{default_str}")
             print(f"{pad}) -> {node.return_type}")
             print(f"{pad}{{")
             print_ast(node.body, indent + 1)
@@ -797,7 +798,21 @@ class Parser:
             param_type = self.parse_type_token(tokens[i], "function signature")
             i += 1
 
-            params.append((param_name, param_type))
+            default = None
+            if i < len(tokens) and tokens[i].type == TokenType.ASSIGN:
+                i += 1
+                default_tokens = []
+                while i < len(tokens) and tokens[i].type not in (
+                    TokenType.COMMA,
+                    TokenType.RPAREN,
+                ):
+                    default_tokens.append(tokens[i])
+                    i += 1
+                if not default_tokens:
+                    self.give_error("Expected default value after '='")
+                default = self.parse_expr(default_tokens)
+
+            params.append((param_name, param_type, default))
 
             if i < len(tokens) and tokens[i].type == TokenType.COMMA:
                 i += 1
@@ -818,14 +833,45 @@ class Parser:
         i += 1
 
         func_name_q = self.qualify(func_name)
-        params = [(pname, self.resolve_type(ptype)) for pname, ptype in params]
+        params = [
+            (pname, self.resolve_type(ptype), pdefault)
+            for pname, ptype, pdefault in params
+        ]
         return_type = self.resolve_type(return_type)
+
+        seen_default = False
+        for pname, _, pdefault in params:
+            if pdefault is not None:
+                seen_default = True
+            elif seen_default:
+                self.give_error(
+                    f"Parameter '{pname}' without a default value cannot "
+                    f"follow a parameter with a default value"
+                )
+
+        for pname, ptype, pdefault in params:
+            if pdefault is None:
+                continue
+            if not self._is_const_expr(pdefault):
+                self.give_error(
+                    f"Default value for parameter '{pname}' must be a "
+                    f"constant expression"
+                )
+            default_type = self.detect_expr_type(pdefault)
+            if default_type != ptype:
+                if self._is_const_int_expr(pdefault) and ptype in self._INT_TYPES:
+                    self._set_expr_type(pdefault, ptype)
+                else:
+                    self.give_error(
+                        f"Default value for parameter '{pname}' must have "
+                        f"type {ptype}, got {default_type}"
+                    )
 
         self.qfunc[func_name] = func_name_q
         self.func_sigs[func_name_q] = (params, return_type)
 
         self.push_scope()
-        for pname, ptype in params:
+        for pname, ptype, _ in params:
             self.declare_var(pname, ptype)
 
         self.return_type = return_type
@@ -1149,13 +1195,20 @@ class Parser:
 
             params, return_type = self.func_sigs[func_name]
 
-            if len(expr.args) != len(params):
-                self.give_error(
-                    f"Function '{func_name}' expects {len(params)} arguments, "
-                    f"got {len(expr.args)}"
-                )
+            required = sum(1 for p in params if p[2] is None)
+            if len(expr.args) < required or len(expr.args) > len(params):
+                if required == len(params):
+                    self.give_error(
+                        f"Function '{func_name}' expects {len(params)} arguments, "
+                        f"got {len(expr.args)}"
+                    )
+                else:
+                    self.give_error(
+                        f"Function '{func_name}' expects between {required} and "
+                        f"{len(params)} arguments, got {len(expr.args)}"
+                    )
 
-            for (arg_expr, (param_name, param_type)) in zip(expr.args, params):
+            for (arg_expr, (param_name, param_type, _)) in zip(expr.args, params):
                 arg_type = self.detect_expr_type(arg_expr)
                 if arg_type != param_type:
                     self.give_error(
@@ -1363,6 +1416,16 @@ class Parser:
         return VarDecl(name, var_type, expr)
 
     _INT_TYPES = ("Int8", "Int16", "Int32", "Int64")
+
+    def _is_const_expr(self, e):
+        t = type(e).__name__
+        if t == "LiteralExpr":
+            return True
+        if t == "BinaryExpr" and e.op in ("+", "-", "*", "/", "//", "%", "**"):
+            return self._is_const_expr(e.left) and self._is_const_expr(e.right)
+        if t == "UnaryExpr" and e.op in ("+", "-"):
+            return self._is_const_expr(e.expr)
+        return False
 
     def _is_const_int_expr(self, e):
         t = type(e).__name__

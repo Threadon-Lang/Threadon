@@ -1,0 +1,7 @@
+def stack_overflow(x: Int32) -> NoneType:
+    stack_overflow(68)
+    return
+
+def main() -> Int32:
+    stack_overflow(3):
+    return 0

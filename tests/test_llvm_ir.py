@@ -664,3 +664,104 @@ def test_build_executable(tmp_path):
     result = subprocess.run([str(exe)], capture_output=True, text=True)
     assert result.returncode == 42, result.stderr
     assert result.stdout == ""
+
+
+def test_default_params_emitted_in_signature():
+    llvm = compile_unoptimized(
+        """
+def f(a: Int32, b: Int32 = 5) -> Int32
+    return a + b
+"""
+    )
+    assert "define i32 @f(i32 %t0, i32 %t1)" in llvm
+
+
+def test_defaults_filled_at_call_site_in_llvm():
+    llvm = compile_unoptimized(
+        """
+def f(a: Int32, b: Int32 = 5, c: Float32 = 1.5) -> Int32
+    return a
+def run() -> Int32
+    return f(1)
+"""
+    )
+    assert "define i32 @f(i32 %t0, i32 %t1, float %t2)" in llvm
+
+    run_idx = llvm.index("define i32 @run")
+    run = llvm[run_idx:]
+    assert "call i32 @f(i32 %t0, i32 %t1, float %t2)" in run
+    assert "add i32 0, 5" in run
+    assert "fadd float 0.0" in run
+
+
+def test_default_params_runtime():
+    assert_run_output(
+        """
+def add(a: Int32, b: Int32 = 5, c: Int32 = 10) -> Int32
+    return a + b + c
+def run() -> Int32
+    return add(1)
+""",
+        "16\n",
+    )
+    assert_run_output(
+        """
+def add(a: Int32, b: Int32 = 5, c: Int32 = 10) -> Int32
+    return a + b + c
+def run() -> Int32
+    return add(1, 2)
+""",
+        "13\n",
+    )
+    assert_run_output(
+        """
+def add(a: Int32, b: Int32 = 5, c: Int32 = 10) -> Int32
+    return a + b + c
+def run() -> Int32
+    return add(1, 2, 3)
+""",
+        "6\n",
+    )
+
+
+def test_default_params_runtime_inlined():
+    assert_run_output(
+        """
+def add(a: Int32, b: Int32 = 5, c: Int32 = 10) -> Int32
+    return a + b + c
+def run() -> Int32
+    return add(1)
+""",
+        "16\n",
+        inline_threshold=10000,
+    )
+
+
+def test_default_bool_and_string_runtime():
+    assert_run_output(
+        """
+def f(b: Bool = True) -> Int32
+    if b:
+        return 1
+    return 0
+def run() -> Int32
+    return f() + f(False)
+""",
+        "1\n",
+        inline_threshold=0,
+    )
+
+
+def test_default_float_runtime():
+    llvm = compile_llvm(
+        """
+def f(a: Float32 = 2.5) -> Float32
+    return a
+def run() -> Float32
+    return f()
+"""
+    )
+    patched = patch_for_execution(llvm, FLOAT_HARNESS)
+    result = ct.run_llvm(patched)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2.500000\n"
