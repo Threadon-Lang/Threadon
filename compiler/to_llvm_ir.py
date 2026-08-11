@@ -8,7 +8,11 @@ FLOAT_LLVM_TYPES = ("half", "float", "double")
 class LLVMIRCompiler:
 
 
-    def __init__(self,debug_mode=False):
+    def __init__(self,debug_mode=False,max_stack_depth=10_000):
+
+        if max_stack_depth > 500_000:
+            raise Exception("Current stack depth is to big")
+
         self.module = None
         self.struct_field_indices = {}
         self.used_intrinsics = set()
@@ -16,6 +20,7 @@ class LLVMIRCompiler:
         self.string_globals = {}
         self.out = []
         self.debug_mode = debug_mode
+        self.max_stack_depth = max_stack_depth
 
     def compile(self, module):
         self.module = module
@@ -221,7 +226,7 @@ class LLVMIRCompiler:
         msg_gname = self._string_global(msg)
         msg_size = len(msg.encode("utf-8")) + 1
 
-        ctx = "Runtime stack depth exceeded (max 10000)"
+        ctx = f"Runtime stack depth exceeded (max {self.max_stack_depth})"
         ctx_gname = self._string_global(ctx)
         ctx_size = len(ctx.encode("utf-8")) + 1
 
@@ -231,7 +236,7 @@ class LLVMIRCompiler:
         self.out.append("  %depth = load i32, i32* @__threadon_call_depth")
         self.out.append("  %new   = add i32 %depth, 1")
         self.out.append("  store i32 %new, i32* @__threadon_call_depth")
-        self.out.append("  %cmp   = icmp sgt i32 %new, 10000")
+        self.out.append(f"  %cmp   = icmp sgt i32 %new, {self.max_stack_depth}")
         self.out.append("  br i1 %cmp, label %overflow, label %ok")
         self.out.append("overflow:")
         self.out.append(f"  %msg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_gname}, i64 0, i64 0")
