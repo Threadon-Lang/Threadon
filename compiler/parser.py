@@ -853,10 +853,6 @@ class Parser:
 
 
     def parse_expr(self, tokens):
-        for tok in tokens:
-            if tok.type in (TokenType.AND, TokenType.OR):
-                self.give_error(f"Boolean operator '{tok.value}' is not supported")
-
         def find_op(ts, op_types, last=True, skip_prefix_unary=False):
             idx = None
             depth = 0
