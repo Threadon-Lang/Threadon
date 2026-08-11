@@ -405,7 +405,7 @@ class LLVMIRCompiler:
         if op == "not":
             return self._emit_unary(res, "not", instr.args[0])
 
-        if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow"):
+        if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow", "and", "or"):
             return self._emit_binary(res, op, instr.args[0], instr.args[1])
 
         if op in ("shl", "shr", "bit_and", "bit_or", "bit_xor"):
@@ -563,6 +563,8 @@ class LLVMIRCompiler:
             "div": "fdiv" if is_float else "sdiv",
             "floordiv": "sdiv",
             "mod": "frem" if is_float else "srem",
+            "and": "and",
+            "or": "or",
         }
         llvm_op = op_map.get(op, "add")
 

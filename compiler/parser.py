@@ -318,6 +318,9 @@ class Parser:
         ):
             return self.parse_field_assign()
 
+        if first == TokenType.IDENT and len(self.current_line) > 1 and self.current_line[1].type == TokenType.ASSIGN:
+            return self.parse_assign()
+
         if first == TokenType.IDENT and len(self.current_line) > 1:
             if self.current_line[1].type == TokenType.LPAREN:
                 expr = self.parse_expr(self.current_line)
@@ -1346,34 +1349,10 @@ class Parser:
 
 
         if detected != var_type:
-            int_types = ("Int8", "Int16", "Int32", "Int64")
-            
-            def is_const_int_expr(e):
+            is_int_literal = self._is_const_int_expr(expr) and var_type in self._INT_TYPES
 
-                t = type(e).__name__
-                if t == "LiteralExpr" and e.type in int_types:
-                    return True
-                if t == "BinaryExpr" and e.op in ("+", "-", "*", "/", "//", "%", "**"):
-                    return is_const_int_expr(e.left) and is_const_int_expr(e.right)
-                if t == "UnaryExpr" and e.op in ("+", "-"):
-                    return is_const_int_expr(e.expr)
-                return False
-            
-            def set_expr_type(e, new_type):
-
-                t = type(e).__name__
-                if t == "LiteralExpr" and e.type in int_types:
-                    e.type = new_type
-                elif t == "BinaryExpr":
-                    set_expr_type(e.left, new_type)
-                    set_expr_type(e.right, new_type)
-                elif t == "UnaryExpr":
-                    set_expr_type(e.expr, new_type)
-
-            is_int_literal = is_const_int_expr(expr) and var_type in int_types
-            
             if is_int_literal:
-                set_expr_type(expr, var_type)
+                self._set_expr_type(expr, var_type)
             else:
                 self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
         if isinstance(expr, RefExpr) and isinstance(expr.inner, VarExpr):
@@ -1382,6 +1361,29 @@ class Parser:
         self.declare_var(name, var_type)
 
         return VarDecl(name, var_type, expr)
+
+    _INT_TYPES = ("Int8", "Int16", "Int32", "Int64")
+
+    def _is_const_int_expr(self, e):
+        t = type(e).__name__
+        if t == "LiteralExpr" and e.type in self._INT_TYPES:
+            return True
+        if t == "BinaryExpr" and e.op in ("+", "-", "*", "/", "//", "%", "**"):
+            return self._is_const_int_expr(e.left) and self._is_const_int_expr(e.right)
+        if t == "UnaryExpr" and e.op in ("+", "-"):
+            return self._is_const_int_expr(e.expr)
+        return False
+
+    def _set_expr_type(self, e, new_type):
+        t = type(e).__name__
+        if t == "LiteralExpr" and e.type in self._INT_TYPES:
+            e.type = new_type
+        elif t == "BinaryExpr":
+            self._set_expr_type(e.left, new_type)
+            self._set_expr_type(e.right, new_type)
+        elif t == "UnaryExpr":
+            self._set_expr_type(e.expr, new_type)
+
     def parse_struct_init(self, struct_name, tokens):
         fields = {}
 
@@ -1463,6 +1465,25 @@ class Parser:
             )
 
         return FieldAssign(name, field, rhs)
+
+    def parse_assign(self):
+        tokens = self.current_line
+
+        name = tokens[0].value
+        var_type = self.lookup_var(name)
+
+        rhs = self.parse_expr(tokens[2:])
+        rhs_type = self.detect_expr_type(rhs)
+
+        if var_type != rhs_type:
+            if self._is_const_int_expr(rhs) and var_type in self._INT_TYPES:
+                self._set_expr_type(rhs, var_type)
+            else:
+                self.give_error(
+                    f"Variable '{name}' expects type {var_type}, got {rhs_type}"
+                )
+
+        return Assign(name, rhs)
 
 if __name__ == "__main__":
     code = """
