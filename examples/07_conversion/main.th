@@ -1,18 +1,13 @@
-# Demonstrates the type conversion builtins:
-#   to_int(x)   - convert a Float32, Bool or String to an Int32
-#   to_float(x) - convert an Int32 or String to a Float32
-#   to_bool(x)  - convert an Int32, Float32 or String to a Bool
-
 def main() -> Int32
     x: Int32 = 7
-    print(to_float(x))
+    print(Float32(x))
     f: Float32 = 3.7
-    print(to_int(f))
-    print(to_int(True))
-    print(to_int("123"))
+    print(Int32(f))
+    print(Int32(True))
+    print(Int32("123"))
     print(to_float("3.5"))
-    print(to_bool("true"))
-    print(to_bool("0"))
-    b: Bool = to_bool(x)
+    print(Bool("true"))
+    print(Bool("0"))
+    b: Bool = Bool(x)
     print(b)
     return 0
