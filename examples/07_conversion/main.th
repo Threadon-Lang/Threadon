@@ -5,7 +5,7 @@ def main() -> Int32
     print(Int32(f))
     print(Int32(True))
     print(Int32("123"))
-    print(to_float("3.5"))
+    print(Float32("3.5"))
     print(Bool("true"))
     print(Bool("0"))
     b: Bool = Bool(x)
