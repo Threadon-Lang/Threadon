@@ -17,7 +17,6 @@ class LLVMIRCompiler:
         self.out = []
         self.debug_mode = debug_mode
 
-
     def compile(self, module):
         self.module = module
         self.struct_field_indices = {}
@@ -44,31 +43,38 @@ class LLVMIRCompiler:
         for func in module.funcs:
             self.emit_function(func)
 
-        if "input_helper" in self.used_c_runtime:
-            self.out.append("")
-            self._emit_input_helper()
 
-        if self.debug_mode:
-            self.used_c_runtime.add("fprintf")
-            self.used_c_runtime.add("exit")
+        self.out.append("")
+        self._emit_input_helper()
 
-            err_fmt = (
-                "\x1b[1;31m[RUNTIME ERROR]\x1b[0m\n"
-                "\x1b[33m│\x1b[0m \x1b[1m%s\x1b[0m\n"
-                "\x1b[33m├─>\x1b[0m \x1b[90mLocation:\x1b[0m \x1b[36m%s\x1b[0m\n"
-                "\x1b[33m└─>\x1b[0m \x1b[90mProcess terminated with exit code 1\x1b[0m\n"
-            )
-            fmt_g = self._string_global(err_fmt)
-            fmt_sz = len(err_fmt.encode("utf-8")) + 1
+        self.used_c_runtime.add("fprintf")
+        self.used_c_runtime.add("exit")
+        self.used_c_runtime.add("fflush")
+        self.used_c_runtime.add("fgets")
+        self.used_c_runtime.add("printf")
+        self.used_c_runtime.add("strcspn")
 
-            self.out.append("")
-            self.out.append("define void @__threadon_debug_error(i8* %msg, i8* %ctx) {")
-            self.out.append("  %se = load i8*, i8** @stderr")
-            self.out.append(f"  %fmt = getelementptr inbounds [{fmt_sz} x i8], [{fmt_sz} x i8]* {fmt_g}, i64 0, i64 0")
-            self.out.append("  call i32 (i8*, i8*, ...) @fprintf(i8* %se, i8* %fmt, i8* %msg, i8* %ctx)")
-            self.out.append("  call void @exit(i32 1)")
-            self.out.append("  unreachable")
-            self.out.append("}")
+
+        err_fmt = (
+            "\x1b[1;31m[RUNTIME ERROR]\x1b[0m\n"
+            "\x1b[33m│\x1b[0m \x1b[1m%s\x1b[0m\n"
+            "\x1b[33m├─>\x1b[0m \x1b[90mLocation:\x1b[0m \x1b[36m%s\x1b[0m\n"
+            "\x1b[33m└─>\x1b[0m \x1b[90mProcess terminated with exit code 1\x1b[0m\n"
+        )
+        fmt_g = self._string_global(err_fmt)
+        fmt_sz = len(err_fmt.encode("utf-8")) + 1
+
+        self.out.append("")
+        self.out.append("define void @__threadon_debug_error(i8* %msg, i8* %ctx) {")
+        self.out.append("  %se = load i8*, i8** @stderr")
+        self.out.append(f"  %fmt = getelementptr inbounds [{fmt_sz} x i8], [{fmt_sz} x i8]* {fmt_g}, i64 0, i64 0")
+        self.out.append("  call i32 (i8*, i8*, ...) @fprintf(i8* %se, i8* %fmt, i8* %msg, i8* %ctx)")
+        self.out.append("  call void @exit(i32 1)")
+        self.out.append("  unreachable")
+        self.out.append("}")
+
+        self._emit_stack_overflow_protection()
+
         if self.used_intrinsics:
             self.out.append("")
             for intrin in sorted(self.used_intrinsics):
@@ -84,6 +90,7 @@ class LLVMIRCompiler:
                     self.out.append(f"declare {t} @{intrin}({t}) #0")
             self.out.append("")
             self.out.append('attributes #0 = { nounwind readnone speculatable willreturn }')
+
         if self.string_globals:
             self.out.append("")
             for content, gname in self.string_globals.items():
@@ -125,7 +132,6 @@ class LLVMIRCompiler:
             self.out.append("")
 
         return "\n".join(self.out)
-
 
     def to_llvm_type(self, t):
         if t is None:
@@ -169,14 +175,23 @@ class LLVMIRCompiler:
 
         self.out.append(f"define {ret_type} @{func.name}({params_str}) {{")
 
+        self.current_func_name = func.name
+        self.current_func_entry_label = func.blocks[0].label if func.blocks else None
+
         for block in func.blocks:
             self.emit_block(block)
 
         self.out.append("}")
         self.out.append("")
-
+        
     def emit_block(self, block):
         self.out.append(f"{block.label}:")
+
+        if (block.label == getattr(self, 'current_func_entry_label', None) and
+                getattr(self, 'current_func_name', None) not in
+                ("__threadon_check_depth", "__threadon_decrement_depth")):
+            self.out.append("  call void @__threadon_check_depth()")
+
         for instr in block.instructions:
             if instr.op == "param":
                 continue
@@ -187,10 +202,54 @@ class LLVMIRCompiler:
                 lines = [lines]
             for line in lines:
                 self.out.append(f"  {line}")
+
         if block.terminator:
+            if (block.terminator.op in ("ret", "ret_void") and
+                    getattr(self, 'current_func_name', None) not in
+                    ("__threadon_check_depth", "__threadon_decrement_depth")):
+                self.out.append("  call void @__threadon_decrement_depth()")
+
             line = self.emit_terminator(block.terminator)
             self.out.append(f"  {line}")
+    def _emit_stack_overflow_protection(self):
 
+
+        self.out.append("")
+        self.out.append("@__threadon_call_depth = global i32 0")
+
+        msg = "Error: stack overflow detected"
+        msg_gname = self._string_global(msg)
+        msg_size = len(msg.encode("utf-8")) + 1
+
+        ctx = "Runtime stack depth exceeded (max 10000)"
+        ctx_gname = self._string_global(ctx)
+        ctx_size = len(ctx.encode("utf-8")) + 1
+
+        self.out.append("")
+        self.out.append("define void @__threadon_check_depth() {")
+        self.out.append("entry:")
+        self.out.append("  %depth = load i32, i32* @__threadon_call_depth")
+        self.out.append("  %new   = add i32 %depth, 1")
+        self.out.append("  store i32 %new, i32* @__threadon_call_depth")
+        self.out.append("  %cmp   = icmp sgt i32 %new, 10000")
+        self.out.append("  br i1 %cmp, label %overflow, label %ok")
+        self.out.append("overflow:")
+        self.out.append(f"  %msg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_gname}, i64 0, i64 0")
+        self.out.append(f"  %ctx = getelementptr inbounds [{ctx_size} x i8], [{ctx_size} x i8]* {ctx_gname}, i64 0, i64 0")
+        self.out.append("  call void @__threadon_debug_error(i8* %msg, i8* %ctx)")
+        self.out.append("  unreachable")
+        self.out.append("ok:")
+        self.out.append("  ret void")
+        self.out.append("}")
+
+        self.out.append("")
+        self.out.append("define void @__threadon_decrement_depth() {")
+        self.out.append("entry:")
+        self.out.append("  %depth = load i32, i32* @__threadon_call_depth")
+        self.out.append("  %new   = sub i32 %depth, 1")
+        self.out.append("  store i32 %new, i32* @__threadon_call_depth")
+        self.out.append("  ret void")
+        self.out.append("}")
     def _emit_cast(self, res, rtype, src, target_type):
         src_type = self.to_llvm_type(src.type)
         src_op = self.operand(src)
