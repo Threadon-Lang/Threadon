@@ -32,6 +32,7 @@ class LLVMIRCompiler:
         self.debug_mode = debug_mode
         self.max_stack_depth = max_stack_depth
         self.block_end_label = {}
+        self.used_checked_pow_widths = set()
 
     def compile(self, module):
         self.module = module 
@@ -279,6 +280,230 @@ class LLVMIRCompiler:
         self.out.append("  store i32 %new, i32* @__threadon_call_depth")
         self.out.append("  ret void")
         self.out.append("}")
+    def _emit_binary(self, res, op, left, right):
+        l = self.operand(left)
+        r = self.operand(right)
+        ltype = self.to_llvm_type(left.type)
+        is_float = ltype in FLOAT_LLVM_TYPES
+        unsigned = self._is_unsigned(left.type)
+
+        if self.debug_mode and op in ("add", "sub", "mul") and not is_float:
+            width = int(ltype[1:])
+            max_val = (1 << width) - 1 if unsigned else (1 << (width - 1)) - 1
+            min_val = 0 if unsigned else -(1 << (width - 1))
+            
+            bad_label = f"{res.lstrip('%')}_overflow"
+            ok_label = f"{res.lstrip('%')}_ok"
+            
+            op_name = {"add": "addition", "sub": "subtraction", "mul": "multiplication"}[op]
+            msg = f"Error: Integer overflow in {op_name}\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            
+            ctx = f"Type: {left.type}, Operation: {left.name} {op} {right.name}"
+            ctx_global = self._string_global(ctx)
+            
+            lines = []
+            
+            if op == "add":
+                if unsigned:
+                    tmp = f"{res}_tmp"
+                    lines.append(f"{tmp} = add {ltype} {l}, {r}")
+                    ovf = f"{res}_ovf"
+                    lines.append(f"{ovf} = icmp ult {ltype} {tmp}, {l}")
+                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+                    lines.append(f"{res} = add {ltype} {l}, {r}")
+                else:
+                    intrin = f"llvm.sadd.with.overflow.{ltype}"
+                    self.used_intrinsics.add(intrin)
+                    tmp_res = f"{res}_ovf_res"
+                    ovf_bit = f"{res}_ovf_bit"
+                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
+                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
+                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
+                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+            
+            elif op == "sub":
+                if unsigned:
+                    tmp = f"{res}_tmp"
+                    lines.append(f"{tmp} = sub {ltype} {l}, {r}")
+                    ovf = f"{res}_ovf"
+                    lines.append(f"{ovf} = icmp ult {ltype} {l}, {r}")
+                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+                    lines.append(f"{res} = sub {ltype} {l}, {r}")
+                else:
+                    intrin = f"llvm.ssub.with.overflow.{ltype}"
+                    self.used_intrinsics.add(intrin)
+                    tmp_res = f"{res}_ovf_res"
+                    ovf_bit = f"{res}_ovf_bit"
+                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
+                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
+                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
+                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+            
+            elif op == "mul":
+                if unsigned:
+                    tmp = f"{res}_tmp"
+                    check = f"{res}_check"
+                    ovf = f"{res}_ovf"
+                    lines.append(f"{tmp} = mul {ltype} {l}, {r}")
+                    is_zero = f"{res}_rzero"
+                    lines.append(f"{is_zero} = icmp eq {ltype} {r}, 0")
+                    lines.append(f"br i1 {is_zero}, label %{ok_label}, label %check_{res.lstrip('%')}")
+                    lines.append("")
+                    lines.append(f"check_{res.lstrip('%')}:")
+                    lines.append(f"{check} = udiv {ltype} {tmp}, {r}")
+                    lines.append(f"{ovf} = icmp ne {ltype} {check}, {l}")
+                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+                    lines.append(f"{res} = mul {ltype} {l}, {r}")
+                else:
+                    intrin = f"llvm.smul.with.overflow.{ltype}"
+                    self.used_intrinsics.add(intrin)
+                    tmp_res = f"{res}_ovf_res"
+                    ovf_bit = f"{res}_ovf_bit"
+                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
+                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
+                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
+                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+            
+            return lines
+
+        if op == "pow":
+            if is_float:
+                intrin = f"llvm.pow.{self._float_suffix(ltype)}"
+                self.used_intrinsics.add(intrin)
+                return f"{res} = call {ltype} @{intrin}({ltype} {l}, {ltype} {r})"
+            else:
+                if self.debug_mode and ltype in INT_LLVM_BITS and ltype != "i256":
+                    width = ltype[1:]
+                    helper = f"__threadon_pow_i{width}_checked"
+                    self.used_checked_pow_widths.add(width)
+                    return f"{res} = call {ltype} @{helper}({ltype} {l}, {ltype} {r})"
+                if ltype == "i32":
+                    self.used_intrinsics.add("llvm.pow.i32")
+                    return f"{res} = call i32 @llvm.pow.i32(i32 {l}, i32 {r})"
+                width = ltype[1:]
+                self.used_pow_widths.add(width)
+                return f"{res} = call {ltype} @__threadon_pow_i{width}({ltype} {l}, {ltype} {r})"
+        if op == "floordiv" and is_float:
+            intrin = f"llvm.floor.{self._float_suffix(ltype)}"
+            self.used_intrinsics.add(intrin)
+            tmp = f"{res}_div"
+            return [
+                f"{tmp} = fdiv {ltype} {l}, {r}",
+                f"{res} = call {ltype} @{intrin}({ltype} {tmp})"
+            ]
+
+        op_map = {
+            "add": "fadd" if is_float else "add",
+            "sub": "fsub" if is_float else "sub",
+            "mul": "fmul" if is_float else "mul",
+            "div": "fdiv" if is_float else ("udiv" if unsigned else "sdiv"),
+            "floordiv": "udiv" if unsigned else "sdiv",
+            "mod": "frem" if is_float else ("urem" if unsigned else "srem"),
+            "and": "and",
+            "or": "or",
+        }
+        llvm_op = op_map.get(op, "add")
+
+        if self.debug_mode and op in ("div", "floordiv", "mod") and not is_float:
+            self.used_c_runtime.add("exit")
+            is_zero = f"{res}_iszero"
+            bad_label = f"{res.lstrip('%')}_divzero"
+            ok_label = f"{res.lstrip('%')}_divok"
+            msg = "Error: Division by zero\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            
+            lines = [
+                f"{is_zero} = icmp eq {ltype} {r}, 0",
+                f"br i1 {is_zero}, label %{bad_label}, label %{ok_label}",
+                "",
+                f"{bad_label}:",
+                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                "  unreachable",
+                "",
+                f"{ok_label}:",
+            ]
+            
+            if not unsigned and ltype in INT_LLVM_BITS and ltype != "i256":
+                width = INT_LLVM_BITS[ltype]
+                min_val = -(1 << (width - 1))
+                of_label = f"{res.lstrip('%')}_divof"
+                ok2_label = f"{res.lstrip('%')}_divok2"
+                
+                is_min = f"{res}_ismin"
+                is_m1 = f"{res}_ism1"
+                of_cond = f"{res}_divofcond"
+                
+                msg2 = "Error: Signed division overflow (MIN / -1)\n"
+                msg2_global = self._string_global(msg2)
+                msg2_size = len(msg2.encode("utf-8")) + 1
+                
+                lines.extend([
+                    f"{is_min} = icmp eq {ltype} {l}, {min_val}",
+                    f"{is_m1} = icmp eq {ltype} {r}, -1",
+                    f"{of_cond} = and i1 {is_min}, {is_m1}",
+                    f"br i1 {of_cond}, label %{of_label}, label %{ok2_label}",
+                    "",
+                    f"{of_label}:",
+                    f"  %{res.lstrip('%')}_emsg2 = getelementptr inbounds [{msg2_size} x i8], [{msg2_size} x i8]* {msg2_global}, i64 0, i64 0",
+                    f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg2)",
+                    "  unreachable",
+                    "",
+                    f"{ok2_label}:",
+                ])
+            
+            lines.append(f"{res} = {llvm_op} {ltype} {l}, {r}")
+            return lines
+        
+        return f"{res} = {llvm_op} {ltype} {l}, {r}"
+
+
+
     def _emit_cast(self, res, rtype, src, target_type):
         src_type = self.to_llvm_type(src.type)
         src_op = self.operand(src)
@@ -289,11 +514,6 @@ class LLVMIRCompiler:
             if rtype in INT_LLVM_BITS:
                 self.used_c_runtime.add("strtoull" if tgt_unsigned else "strtol")
                 tmp = f"{res}_tmp"
-                endptr = f"{res}_endptr"
-                end_val = f"{res}_endval"
-                is_null = f"{res}_isnull"
-                bad_label = f"{res.lstrip('%')}_badconv"
-                ok_label = f"{res.lstrip('%')}_okconv"
                 
                 lines = []
                 
@@ -304,6 +524,11 @@ class LLVMIRCompiler:
                     msg_global = self._string_global(msg)
                     msg_size = len(msg.encode("utf-8")) + 1
                     emsg = f"{res.lstrip('%')}_emsg"
+                    endptr = f"{res}_endptr"
+                    end_val = f"{res}_endval"
+                    is_null = f"{res}_isnull"
+                    bad_label = f"{res.lstrip('%')}_badconv"
+                    ok_label = f"{res.lstrip('%')}_okconv"
                     
                     lines.extend([
                         f"{endptr} = alloca i8*",
@@ -323,6 +548,48 @@ class LLVMIRCompiler:
                     lines.append(f"{tmp} = call i64 @{'strtoull' if tgt_unsigned else 'strtol'}(i8* {src_op}, i8** null, i32 10)")
                 
                 tb = INT_LLVM_BITS[rtype]
+                
+                if self.debug_mode and tb < 64:
+                    range_bad = f"{res.lstrip('%')}_range_bad"
+                    range_ok = f"{res.lstrip('%')}_range_ok"
+                    range_msg = f"Error: Integer overflow in string conversion (value out of range for {target_type})\n"
+                    range_msg_g = self._string_global(range_msg)
+                    range_msg_sz = len(range_msg.encode("utf-8")) + 1
+                    range_ctx = self._string_global(f"String → {target_type} cast")
+                    range_emsg_name = f"{res.lstrip('%')}_range_emsg"
+                    range_emsg = f"%{range_emsg_name}"
+                    
+
+                    if tgt_unsigned:
+                        max_val = (1 << tb) - 1
+                        lines.extend([
+                            f"  %_{res.lstrip('%')}_toobig = icmp ugt i64 {tmp}, {max_val}",
+                            f"  br i1 %_{res.lstrip('%')}_toobig, label %{range_bad}, label %{range_ok}",
+                            "",
+                            f"{range_bad}:",
+                            f"  {range_emsg} = getelementptr inbounds [{range_msg_sz} x i8], [{range_msg_sz} x i8]* {range_msg_g}, i64 0, i64 0",
+                            f"  call void @__threadon_debug_error(i8* {range_emsg}, i8* {range_ctx})",
+                            "  unreachable",
+                            "",
+                            f"{range_ok}:",
+                        ])
+                    else:
+                        max_val = (1 << (tb - 1)) - 1
+                        min_val = -(1 << (tb - 1))
+                        lines.extend([
+                            f"  %_{res.lstrip('%')}_toobig = icmp sgt i64 {tmp}, {max_val}",
+                            f"  %_{res.lstrip('%')}_toosmall = icmp slt i64 {tmp}, {min_val}",
+                            f"  %_{res.lstrip('%')}_rangebad = or i1 %_{res.lstrip('%')}_toobig, %_{res.lstrip('%')}_toosmall",
+                            f"  br i1 %_{res.lstrip('%')}_rangebad, label %{range_bad}, label %{range_ok}",
+                            "",
+                            f"{range_bad}:",
+                            f"  {range_emsg} = getelementptr inbounds [{range_msg_sz} x i8], [{range_msg_sz} x i8]* {range_msg_g}, i64 0, i64 0",
+                            f"  call void @__threadon_debug_error(i8* {range_emsg}, i8* {range_ctx})",
+                            "  unreachable",
+                            "",
+                            f"{range_ok}:",
+                        ])
+                
                 if tb == 64:
                     lines.append(f"{res} = add i64 {tmp}, 0")
                 elif tb < 64:
@@ -330,76 +597,6 @@ class LLVMIRCompiler:
                 else:
                     lines.append(f"{res} = {'zext' if tgt_unsigned else 'sext'} i64 {tmp} to {rtype}")
                 return lines
-
-            if rtype in FLOAT_LLVM_TYPES:
-                self.used_c_runtime.add("strtod")
-                tmp = f"{res}_tmp"
-                endptr = f"{res}_endptr"
-                end_val = f"{res}_endval"
-                is_null = f"{res}_isnull"
-                bad_label = f"{res.lstrip('%')}_badconv"
-                ok_label = f"{res.lstrip('%')}_okconv"
-                
-                lines = []
-                
-                if self.debug_mode:
-                    self.used_c_runtime.add("exit")
-                    msg = "Invalid float conversion"
-                    ctx = self._string_global("String → Float cast")
-                    msg_global = self._string_global(msg)
-                    msg_size = len(msg.encode("utf-8")) + 1
-                    emsg = f"{res.lstrip('%')}_emsg"
-                    
-                    lines.extend([
-                        f"{endptr} = alloca i8*",
-                        f"{tmp} = call double @strtod(i8* {src_op}, i8** {endptr})",
-                        f"{end_val} = load i8*, i8** {endptr}",
-                        f"{is_null} = icmp eq i8* {end_val}, {src_op}",
-                        f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
-                        "",
-                        f"{bad_label}:",
-                        f"  %{emsg} = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %{emsg}, i8* {ctx})",
-                        "  unreachable",
-                        "",
-                        f"{ok_label}:",
-                    ])
-                else:
-                    lines.append(f"{tmp} = call double @strtod(i8* {src_op}, i8** null)")
-                
-                if rtype != "double":
-                    lines.append(f"{res} = fptrunc double {tmp} to {rtype}")
-                else:
-                    lines.append(f"{res} = fadd double {tmp}, 0.0")
-                return lines
-
-            if rtype == "i1":
-                self.used_c_runtime.add("strcasecmp")
-                self.used_c_runtime.add("strlen")
-                zero_global = self._string_global("0")
-                false_global = self._string_global("false")
-                z = f"{res}_z"
-                f = f"{res}_f"
-                ln = f"{res}_len"
-                is_z = f"{res}_iszero"
-                is_f = f"{res}_isfalse"
-                is_empty = f"{res}_isempty"
-                falsey1 = f"{res}_falsey1"
-                falsey2 = f"{res}_falsey2"
-                return [
-                    f"{z} = call i32 @strcasecmp(i8* {src_op}, i8* {zero_global})",
-                    f"{f} = call i32 @strcasecmp(i8* {src_op}, i8* {false_global})",
-                    f"{ln} = call i64 @strlen(i8* {src_op})",
-                    f"{is_z} = icmp eq i32 {z}, 0",
-                    f"{is_f} = icmp eq i32 {f}, 0",
-                    f"{is_empty} = icmp eq i64 {ln}, 0",
-                    f"{falsey1} = or i1 {is_z}, {is_f}",
-                    f"{falsey2} = or i1 {falsey1}, {is_empty}",
-                    f"{res} = xor i1 {falsey2}, true"
-                ]
-            
-            raise Exception(f"Cannot cast String to {target_type}")
-
         if rtype == "i8*":
             if src_type in INT_LLVM_BITS:
                 self.used_c_runtime.add("snprintf")
@@ -457,14 +654,129 @@ class LLVMIRCompiler:
             sb, tb = INT_LLVM_BITS[src_type], INT_LLVM_BITS[rtype]
             if sb == tb:
                 return f"{res} = add {rtype} {src_op}, 0"
-            if sb > tb:
-                return f"{res} = trunc {src_type} {src_op} to {rtype}"
-            return f"{res} = {'zext' if src_unsigned else 'sext'} {src_type} {src_op} to {rtype}"
+            
+            if self.debug_mode and sb > tb:
+                bad_label = f"{res.lstrip('%')}_truncof"
+                ok_label = f"{res.lstrip('%')}_truncok"
+                
+                if tgt_unsigned:
+                    max_val = (1 << tb) - 1
+                    msg = f"Error: Integer truncation overflow (value > {max_val})\n"
+                    msg_global = self._string_global(msg)
+                    msg_size = len(msg.encode("utf-8")) + 1
+                    
+                    max_const = max_val
+                    cmp_inst = f"{res}_toobig"
+                    
+                    lines = [
+                        f"{cmp_inst} = icmp ugt {src_type} {src_op}, {max_const}",
+                        f"br i1 {cmp_inst}, label %{bad_label}, label %{ok_label}",
+                        "",
+                        f"{bad_label}:",
+                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        "  unreachable",
+                        "",
+                        f"{ok_label}:",
+                        f"{res} = trunc {src_type} {src_op} to {rtype}"
+                    ]
+                    return lines
+                else:
+                    max_val = (1 << (tb - 1)) - 1
+                    min_val = -(1 << (tb - 1))
+                    msg = f"Error: Integer truncation overflow\n"
+                    msg_global = self._string_global(msg)
+                    msg_size = len(msg.encode("utf-8")) + 1
+                    
+                    too_big = f"{res}_toobig"
+                    too_small = f"{res}_toosmall"
+                    any_bad = f"{res}_anybad"
+                    
+                    lines = [
+                        f"{too_big} = icmp sgt {src_type} {src_op}, {max_val}",
+                        f"{too_small} = icmp slt {src_type} {src_op}, {min_val}",
+                        f"{any_bad} = or i1 {too_big}, {too_small}",
+                        f"br i1 {any_bad}, label %{bad_label}, label %{ok_label}",
+                        "",
+                        f"{bad_label}:",
+                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        "  unreachable",
+                        "",
+                        f"{ok_label}:",
+                        f"{res} = trunc {src_type} {src_op} to {rtype}"
+                    ]
+                    return lines
+            
+            return f"{res} = trunc {src_type} {src_op} to {rtype}" if sb > tb else f"{res} = {'zext' if src_unsigned else 'sext'} {src_type} {src_op} to {rtype}"
 
         if src_type in INT_LLVM_BITS and rtype in FLOAT_LLVM_TYPES:
             return f"{res} = {'uitofp' if src_unsigned else 'sitofp'} {src_type} {src_op} to {rtype}"
 
         if src_type in FLOAT_LLVM_TYPES and rtype in INT_LLVM_BITS:
+            if self.debug_mode:
+                bad_label = f"{res.lstrip('%')}_fiof"
+                ok_label = f"{res.lstrip('%')}_fiok"
+                tb = INT_LLVM_BITS[rtype]
+                
+                if tgt_unsigned:
+                    max_val = (1 << tb) - 1
+                    msg = f"Error: Float-to-integer overflow\n"
+                    msg_global = self._string_global(msg)
+                    msg_size = len(msg.encode("utf-8")) + 1
+                    
+                    fmax = f"{res}_fmax"
+                    too_big = f"{res}_toobig"
+                    too_small = f"{res}_toosmall"
+                    any_bad = f"{res}_anybad"
+                    
+                    lines = [
+                        f"{fmax} = sitofp i64 {max_val} to {src_type}",
+                        f"{too_big} = fcmp ogt {src_type} {src_op}, {fmax}",
+                        f"{too_small} = fcmp olt {src_type} {src_op}, 0.0",
+                        f"{any_bad} = or i1 {too_big}, {too_small}",
+                        f"br i1 {any_bad}, label %{bad_label}, label %{ok_label}",
+                        "",
+                        f"{bad_label}:",
+                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        "  unreachable",
+                        "",
+                        f"{ok_label}:",
+                        f"{res} = fptoui {src_type} {src_op} to {rtype}"
+                    ]
+                    return lines
+                else:
+                    max_val = (1 << (tb - 1)) - 1
+                    min_val = -(1 << (tb - 1))
+                    msg = f"Error: Float-to-integer overflow\n"
+                    msg_global = self._string_global(msg)
+                    msg_size = len(msg.encode("utf-8")) + 1
+                    
+                    fmax = f"{res}_fmax"
+                    fmin = f"{res}_fmin"
+                    too_big = f"{res}_toobig"
+                    too_small = f"{res}_toosmall"
+                    any_bad = f"{res}_anybad"
+                    
+                    lines = [
+                        f"{fmax} = sitofp i64 {max_val} to {src_type}",
+                        f"{fmin} = sitofp i64 {min_val} to {src_type}",
+                        f"{too_big} = fcmp ogt {src_type} {src_op}, {fmax}",
+                        f"{too_small} = fcmp olt {src_type} {src_op}, {fmin}",
+                        f"{any_bad} = or i1 {too_big}, {too_small}",
+                        f"br i1 {any_bad}, label %{bad_label}, label %{ok_label}",
+                        "",
+                        f"{bad_label}:",
+                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        "  unreachable",
+                        "",
+                        f"{ok_label}:",
+                        f"{res} = fptosi {src_type} {src_op} to {rtype}"
+                    ]
+                    return lines
+            
             return f"{res} = {'fptoui' if tgt_unsigned else 'fptosi'} {src_type} {src_op} to {rtype}"
 
         if src_type in FLOAT_LLVM_TYPES and rtype in FLOAT_LLVM_TYPES:
@@ -491,6 +803,56 @@ class LLVMIRCompiler:
             return f"{res} = uitofp i1 {src_op} to {rtype}"
 
         raise Exception(f"Unsupported cast from {src_type} to {rtype}")
+
+
+    def _emit_bitwise(self, res, op, left, right):
+        l = self.operand(left)
+        r = self.operand(right)
+        ltype = self.to_llvm_type(left.type)
+        unsigned = self._is_unsigned(left.type)
+        
+        if self.debug_mode and op in ("shl", "shr"):
+            width = INT_LLVM_BITS.get(ltype, 64)
+            bad_label = f"{res.lstrip('%')}_shftof"
+            ok_label = f"{res.lstrip('%')}_shftok"
+            msg = "Error: Shift amount >= bit-width\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            
+            too_big = f"{res}_shftbig"
+            
+            lines = [
+                f"{too_big} = icmp uge {ltype} {r}, {width}",
+                f"br i1 {too_big}, label %{bad_label}, label %{ok_label}",
+                "",
+                f"{bad_label}:",
+                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                "  unreachable",
+                "",
+                f"{ok_label}:",
+            ]
+            
+            op_map = {
+                "shl": "shl",
+                "shr": "lshr" if unsigned else "ashr",
+                "bit_and": "and",
+                "bit_or": "or",
+                "bit_xor": "xor",
+            }
+            llvm_op = op_map[op]
+            lines.append(f"{res} = {llvm_op} {ltype} {l}, {r}")
+            return lines
+        
+        op_map = {
+            "shl": "shl",
+            "shr": "lshr" if unsigned else "ashr",
+            "bit_and": "and",
+            "bit_or": "or",
+            "bit_xor": "xor",
+        }
+        llvm_op = op_map[op]
+        return f"{res} = {llvm_op} {ltype} {l}, {r}"
     def emit_instr(self, instr):
         op = instr.op
         res = instr.result.name if isinstance(instr.result, SSAValue) else None
@@ -652,206 +1014,7 @@ class LLVMIRCompiler:
     def _float_suffix(self, ltype):
         return {"half": "f16", "float": "f32", "double": "f64"}[ltype]
 
-    def _emit_binary(self, res, op, left, right):
-        l = self.operand(left)
-        r = self.operand(right)
-        ltype = self.to_llvm_type(left.type)
-        is_float = ltype in FLOAT_LLVM_TYPES
-        unsigned = self._is_unsigned(left.type)
 
-        if self.debug_mode and op in ("add", "sub", "mul") and not is_float:
-            width = int(ltype[1:])
-            max_val = (1 << width) - 1 if unsigned else (1 << (width - 1)) - 1
-            min_val = 0 if unsigned else -(1 << (width - 1))
-            
-            bad_label = f"{res.lstrip('%')}_overflow"
-            ok_label = f"{res.lstrip('%')}_ok"
-            
-            op_name = {"add": "addition", "sub": "subtraction", "mul": "multiplication"}[op]
-            msg = f"Error: Integer overflow in {op_name}\n"
-            msg_global = self._string_global(msg)
-            msg_size = len(msg.encode("utf-8")) + 1
-            
-            ctx = f"Type: {left.type}, Operation: {left.name} {op} {right.name}"
-            ctx_global = self._string_global(ctx)
-            
-            lines = []
-            
-            if op == "add":
-                if unsigned:
-                    tmp = f"{res}_tmp"
-                    lines.append(f"{tmp} = add {ltype} {l}, {r}")
-                    ovf = f"{res}_ovf"
-                    lines.append(f"{ovf} = icmp ult {ltype} {tmp}, {l}")
-                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
-                    lines.append("")
-                    lines.append(f"{bad_label}:")
-                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
-                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
-                    lines.append("  unreachable")
-                    lines.append("")
-                    lines.append(f"{ok_label}:")
-                    lines.append(f"{res} = add {ltype} {l}, {r}")
-                else:
-                    intrin = f"llvm.sadd.with.overflow.{ltype}"
-                    self.used_intrinsics.add(intrin)
-                    tmp_res = f"{res}_ovf_res"
-                    ovf_bit = f"{res}_ovf_bit"
-                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
-                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
-                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
-                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
-                    lines.append("")
-                    lines.append(f"{bad_label}:")
-                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
-                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
-                    lines.append("  unreachable")
-                    lines.append("")
-                    lines.append(f"{ok_label}:")
-            
-            elif op == "sub":
-                if unsigned:
-                    tmp = f"{res}_tmp"
-                    lines.append(f"{tmp} = sub {ltype} {l}, {r}")
-                    ovf = f"{res}_ovf"
-                    lines.append(f"{ovf} = icmp ult {ltype} {l}, {r}")
-                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
-                    lines.append("")
-                    lines.append(f"{bad_label}:")
-                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
-                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
-                    lines.append("  unreachable")
-                    lines.append("")
-                    lines.append(f"{ok_label}:")
-                    lines.append(f"{res} = sub {ltype} {l}, {r}")
-                else:
-                    intrin = f"llvm.ssub.with.overflow.{ltype}"
-                    self.used_intrinsics.add(intrin)
-                    tmp_res = f"{res}_ovf_res"
-                    ovf_bit = f"{res}_ovf_bit"
-                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
-                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
-                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
-                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
-                    lines.append("")
-                    lines.append(f"{bad_label}:")
-                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
-                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
-                    lines.append("  unreachable")
-                    lines.append("")
-                    lines.append(f"{ok_label}:")
-            
-            elif op == "mul":
-                if unsigned:
-                    tmp = f"{res}_tmp"
-                    check = f"{res}_check"
-                    ovf = f"{res}_ovf"
-                    lines.append(f"{tmp} = mul {ltype} {l}, {r}")
-                    is_zero = f"{res}_rzero"
-                    lines.append(f"{is_zero} = icmp eq {ltype} {r}, 0")
-                    lines.append(f"br i1 {is_zero}, label %{ok_label}, label %check_{res.lstrip('%')}")
-                    lines.append("")
-                    lines.append(f"check_{res.lstrip('%')}:")
-                    lines.append(f"{check} = udiv {ltype} {tmp}, {r}")
-                    lines.append(f"{ovf} = icmp ne {ltype} {check}, {l}")
-                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
-                    lines.append("")
-                    lines.append(f"{bad_label}:")
-                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
-                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
-                    lines.append("  unreachable")
-                    lines.append("")
-                    lines.append(f"{ok_label}:")
-                    lines.append(f"{res} = mul {ltype} {l}, {r}")
-                else:
-                    intrin = f"llvm.smul.with.overflow.{ltype}"
-                    self.used_intrinsics.add(intrin)
-                    tmp_res = f"{res}_ovf_res"
-                    ovf_bit = f"{res}_ovf_bit"
-                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
-                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
-                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
-                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
-                    lines.append("")
-                    lines.append(f"{bad_label}:")
-                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
-                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
-                    lines.append("  unreachable")
-                    lines.append("")
-                    lines.append(f"{ok_label}:")
-            
-            return lines
-
-        if op == "pow":
-            if is_float:
-                intrin = f"llvm.pow.{self._float_suffix(ltype)}"
-                self.used_intrinsics.add(intrin)
-                return f"{res} = call {ltype} @{intrin}({ltype} {l}, {ltype} {r})"
-            else:
-                if ltype == "i32":
-                    self.used_intrinsics.add("llvm.pow.i32")
-                    return f"{res} = call i32 @llvm.pow.i32(i32 {l}, i32 {r})"
-                width = ltype[1:]
-                self.used_pow_widths.add(width)
-                return f"{res} = call {ltype} @__threadon_pow_i{width}({ltype} {l}, {ltype} {r})"
-
-        if op == "floordiv" and is_float:
-            intrin = f"llvm.floor.{self._float_suffix(ltype)}"
-            self.used_intrinsics.add(intrin)
-            tmp = f"{res}_div"
-            return [
-                f"{tmp} = fdiv {ltype} {l}, {r}",
-                f"{res} = call {ltype} @{intrin}({ltype} {tmp})"
-            ]
-
-        op_map = {
-            "add": "fadd" if is_float else "add",
-            "sub": "fsub" if is_float else "sub",
-            "mul": "fmul" if is_float else "mul",
-            "div": "fdiv" if is_float else ("udiv" if unsigned else "sdiv"),
-            "floordiv": "udiv" if unsigned else "sdiv",
-            "mod": "frem" if is_float else ("urem" if unsigned else "srem"),
-            "and": "and",
-            "or": "or",
-        }
-        llvm_op = op_map.get(op, "add")
-
-        if self.debug_mode and op in ("div", "floordiv", "mod") and not is_float:
-            self.used_c_runtime.add("exit")
-            is_zero = f"{res}_iszero"
-            bad_label = f"{res.lstrip('%')}_divzero"
-            ok_label = f"{res.lstrip('%')}_divok"
-            msg = "Error: Division by zero\n"
-            msg_global = self._string_global(msg)
-            msg_size = len(msg.encode("utf-8")) + 1
-            return [
-                f"{is_zero} = icmp eq {ltype} {r}, 0",
-                f"br i1 {is_zero}, label %{bad_label}, label %{ok_label}",
-                "",
-                f"{bad_label}:",
-                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
-                "  unreachable",
-                "",
-                f"{ok_label}:",
-                f"  {res} = {llvm_op} {ltype} {l}, {r}",
-            ]
-        
-        return f"{res} = {llvm_op} {ltype} {l}, {r}"
-    def _emit_bitwise(self, res, op, left, right):
-        l = self.operand(left)
-        r = self.operand(right)
-        ltype = self.to_llvm_type(left.type)
-        unsigned = self._is_unsigned(left.type)
-        op_map = {
-            "shl": "shl",
-            "shr": "lshr" if unsigned else "ashr",
-            "bit_and": "and",
-            "bit_or": "or",
-            "bit_xor": "xor",
-        }
-        llvm_op = op_map[op]
-        return f"{res} = {llvm_op} {ltype} {l}, {r}"
     def _emit_cmp(self, res, op, left, right):
         l = self.operand(left)
         r = self.operand(right)
@@ -1014,10 +1177,13 @@ class LLVMIRCompiler:
                 self._emit_to_string_i256()
             self.out.append("")
 
+        for width in sorted(self.used_checked_pow_widths):
+            self._emit_pow_helper_checked(width)
+            self.out.append("")
+
         for width in sorted(self.used_pow_widths):
             self._emit_pow_helper(width)
             self.out.append("")
-
     def _emit_to_string_u256(self):
         self.out.append("define i8* @__threadon_to_string_u256(i256 %v, i8* %buf) {")
         self.out.append("entry:")
@@ -1061,10 +1227,9 @@ class LLVMIRCompiler:
         self.out.append("body:")
         self.out.append("  ret i8* %s")
         self.out.append("}")
-
-    def _emit_pow_helper(self, width):
+    def _emit_pow_helper_checked(self, width):
         t = f"i{width}"
-        self.out.append(f"define {t} @__threadon_pow_i{width}({t} %base, {t} %exp) {{")
+        self.out.append(f"define {t} @__threadon_pow_i{width}_checked({t} %base, {t} %exp) {{")
         self.out.append("entry:")
         self.out.append(f"  %res = alloca {t}")
         self.out.append(f"  store {t} 1, {t}* %res")
@@ -1077,8 +1242,21 @@ class LLVMIRCompiler:
         self.out.append("  br i1 %cmp, label %body, label %done")
         self.out.append("body:")
         self.out.append(f"  %r0 = load {t}, {t}* %res")
-        self.out.append(f"  %m = mul {t} %r0, %base")
-        self.out.append(f"  store {t} %m, {t}* %res")
+        self.out.append(f"  %ovf_res = call {{{t}, i1}} @llvm.smul.with.overflow.{t}({t} %r0, {t} %base)")
+        self.out.append(f"  %ovf_bit = extractvalue {{{t}, i1}} %ovf_res, 1")
+        self.out.append("  br i1 %ovf_bit, label %overflow, label %cont")
+        self.out.append("overflow:")
+        
+        msg = "Error: Integer overflow in power operation\n"
+        msg_g = self._string_global(msg)
+        msg_sz = len(msg.encode("utf-8")) + 1
+        ctx = self._string_global(f"i{width} power overflow")
+        self.out.append(f"  %emsg = getelementptr inbounds [{msg_sz} x i8], [{msg_sz} x i8]* {msg_g}, i64 0, i64 0")
+        self.out.append(f"  call void @__threadon_debug_error(i8* %emsg, i8* {ctx})")
+        self.out.append("  unreachable")
+        self.out.append("cont:")
+        self.out.append(f"  %val = extractvalue {{{t}, i1}} %ovf_res, 0")
+        self.out.append(f"  store {t} %val, {t}* %res")
         self.out.append(f"  %c1 = load {t}, {t}* %cnt")
         self.out.append(f"  %n = add {t} %c1, 1")
         self.out.append(f"  store {t} %n, {t}* %cnt")
@@ -1087,9 +1265,7 @@ class LLVMIRCompiler:
         self.out.append(f"  %r = load {t}, {t}* %res")
         self.out.append(f"  ret {t} %r")
         self.out.append("}")
-
-
-
+        self.used_intrinsics.add(f"llvm.smul.with.overflow.{t}")
     def _emit_tailcall(self, res, instr):
         fname = instr.args[0]
         args = instr.args[1:]
@@ -1101,25 +1277,33 @@ class LLVMIRCompiler:
         args_str = ", ".join(arg_strs)
         ret_type = self.to_llvm_type(instr.result.type)
         return f"{res} = tail call {ret_type} @{fname}({args_str})"
-
     def _emit_struct_init(self, res, instr):
         struct_name = instr.args[0]
         llvm_type = f"%struct.{struct_name}"
         lines = []
-        current = "undef"
-        n_fields = (len(instr.args) - 1) // 2
-        field_idx = 0
+        current = "zeroinitializer"
+
+        field_updates = []
         for k in range(1, len(instr.args), 2):
+            fname = instr.args[k]
             fval = instr.args[k + 1]
             ftype = self.to_llvm_type(fval.type)
             foperand = self.operand(fval)
-            if field_idx == n_fields - 1:
-                lines.append(f"{res} = insertvalue {llvm_type} {current}, {ftype} {foperand}, {field_idx}")
+            idx = self.struct_field_indices[struct_name][fname]
+            field_updates.append((idx, ftype, foperand))
+
+        if not field_updates:
+            return f"{res} = select i1 false, {llvm_type} zeroinitializer, {llvm_type} zeroinitializer"
+
+        field_updates.sort(key=lambda x: x[0])
+
+        for i, (idx, ftype, foperand) in enumerate(field_updates):
+            if i == len(field_updates) - 1:
+                lines.append(f"{res} = insertvalue {llvm_type} {current}, {ftype} {foperand}, {idx}")
             else:
-                tmp = f"{res}_s{field_idx}"
-                lines.append(f"{tmp} = insertvalue {llvm_type} {current}, {ftype} {foperand}, {field_idx}")
+                tmp = f"{res}_s{i}"
+                lines.append(f"{tmp} = insertvalue {llvm_type} {current}, {ftype} {foperand}, {idx}")
                 current = tmp
-            field_idx += 1
         return lines
 
     def _emit_field(self, res, instr):

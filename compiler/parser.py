@@ -872,6 +872,7 @@ class Parser:
                     self._is_const_float_expr(pdefault) and ptype in self._FLOAT_TYPES
                 ):
                     self._set_expr_type(pdefault, ptype)
+                    self._check_literal_range(pdefault,ptype)
                 else:
                     self.give_error(
                         f"Default value for parameter '{pname}' must have "
@@ -1440,6 +1441,7 @@ class Parser:
 
             if is_literal:
                 self._set_expr_type(expr, var_type)
+                self._check_literal_range(expr,var_type)
             else:
                 self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
         if isinstance(expr, RefExpr) and isinstance(expr.inner, VarExpr):
@@ -1490,11 +1492,32 @@ class Parser:
         if t == "UnaryExpr" and e.op in ("+", "-"):
             return self._is_const_float_expr(e.expr)
         return False
+    def _int_fits(self, val, type_name):
+        if type_name.startswith("UInt"):
+            width = int(type_name[4:])
+            return 0 <= val < (1 << width)
+        else:
+            width = int(type_name[3:])
+            return -(1 << (width - 1)) <= val < (1 << (width - 1))
 
+    def _check_literal_range(self, expr, target_type):
+        if target_type not in self._INT_TYPES:
+            return
+        if not self._is_const_int_expr(expr):
+            return
+        const_val = self._const_eval(expr)
+        if const_val is None:
+            return
+        val, _ = const_val
+        if not self._int_fits(val, target_type):
+            self.give_error(f"Integer literal {val} out of range for type '{target_type}'")
     def _set_expr_type(self, e, new_type):
         t = type(e).__name__
         if t == "LiteralExpr":
             if e.type in self._INT_TYPES and new_type in self._INT_TYPES:
+                val = int(e.value.value)
+                if not self._int_fits(val, new_type):
+                    self.give_error(f"Integer literal {val} out of range for type '{new_type}'")
                 e.type = new_type
             elif e.type in self._FLOAT_TYPES and new_type in self._FLOAT_TYPES:
                 e.type = new_type
@@ -1503,12 +1526,12 @@ class Parser:
             self._set_expr_type(e.right, new_type)
         elif t == "UnaryExpr":
             self._set_expr_type(e.expr, new_type)
-
     def _try_adapt_literal(self, node, node_type, want_type):
         if node_type == want_type:
             return True
         if node_type in self._INT_TYPES and want_type in self._INT_TYPES:
             if self._is_const_int_expr(node):
+                self._check_literal_range(node, want_type)
                 self._set_expr_type(node, want_type)
                 return True
         elif node_type in self._FLOAT_TYPES and want_type in self._FLOAT_TYPES:
@@ -1516,7 +1539,6 @@ class Parser:
                 self._set_expr_type(node, want_type)
                 return True
         return False
-
     def parse_struct_init(self, struct_name, tokens):
         fields = {}
 
@@ -1619,6 +1641,7 @@ class Parser:
                 self._is_const_float_expr(rhs) and var_type in self._FLOAT_TYPES
             ):
                 self._set_expr_type(rhs, var_type)
+                self._check_literal_range(rhs,var_type)
             else:
                 self.give_error(
                     f"Variable '{name}' expects type {var_type}, got {rhs_type}"
