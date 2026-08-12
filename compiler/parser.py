@@ -1593,7 +1593,7 @@ class Parser:
 
         rhs = self.parse_expr(tokens[4:])
         rhs_type = self.detect_expr_type(rhs)
-        if not self._is_valid_type(var_type):
+        if not self._is_valid_type(rhs_type):
             self.give_error(f"Unknown type '{var_type}'")
         if ftype != rhs_type:
             self.give_error(

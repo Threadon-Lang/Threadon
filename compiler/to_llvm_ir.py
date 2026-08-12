@@ -1,4 +1,5 @@
 import struct
+import re 
 
 from .builtins import BUILTIN_SIGS
 from .to_high_ir import SSAValue
@@ -30,17 +31,10 @@ class LLVMIRCompiler:
         self.out = []
         self.debug_mode = debug_mode
         self.max_stack_depth = max_stack_depth
+        self.block_end_label = {}
 
     def compile(self, module):
-        self.module = module
-        self.struct_field_indices = {}
-        self.used_intrinsics = set()
-        self.used_c_runtime = set()
-        self.used_bigint_helpers = set()
-        self.used_pow_widths = set()
-        self.string_globals = {}
-        self.out = []
-
+        self.module = module 
         for name, fields in module.types.items():
             self.struct_field_indices[name] = {}
             for idx, (fname, _) in enumerate(fields.items()):
@@ -63,13 +57,13 @@ class LLVMIRCompiler:
 
 
         self.out.append("")
-        self._emit_input_helper()
-
+        if "input_helper" in self.used_c_runtime:
+            self._emit_input_helper()
+        
         self.used_c_runtime.add("fprintf")
         self.used_c_runtime.add("exit")
         self.used_c_runtime.add("fflush")
         self.used_c_runtime.add("fgets")
-        self.used_c_runtime.add("printf")
         self.used_c_runtime.add("strcspn")
 
 
@@ -185,6 +179,8 @@ class LLVMIRCompiler:
     def emit_function(self, func):
         entry = func.blocks[0] if func.blocks else None
 
+        self.block_end_label
+
         param_names = []
         param_types = []
         if entry:
@@ -209,6 +205,7 @@ class LLVMIRCompiler:
         
     def emit_block(self, block):
         self.out.append(f"{block.label}:")
+        last_label = block.label
 
         if (block.label == getattr(self, 'current_func_entry_label', None) and
                 getattr(self, 'current_func_name', None) not in
@@ -225,6 +222,15 @@ class LLVMIRCompiler:
                 lines = [lines]
             for line in lines:
                 self.out.append(f"  {line}")
+                stripped = line.strip()
+                if (
+                    stripped.endswith(":")
+                    and len(stripped) > 1
+                    and re.match(r"^[A-Za-z_.][A-Za-z0-9_.]*:$", stripped)
+                ):
+                    last_label = stripped[:-1]
+
+        self.block_end_label[block.label] = last_label
 
         if block.terminator:
             if (block.terminator.op in ("ret", "ret_void") and
@@ -496,11 +502,11 @@ class LLVMIRCompiler:
         if op == "cast":
             return self._emit_cast(res, rtype, instr.args[0], instr.args[1])
         if op == "phi":
-            incoming = ", ".join(
-                f"[ {self.operand(v)}, %{blk} ]" for blk, v in instr.incoming
-            )
-            return f"{res} = phi {rtype} {incoming}"
-
+                    incoming = ", ".join(
+                        f"[ {self.operand(v)}, %{self.block_end_label.get(blk, blk)} ]"
+                        for blk, v in instr.incoming
+                    )
+                    return f"{res} = phi {rtype} {incoming}"
         if op == "undef":
             return self._emit_undef(res, rtype)
 
@@ -646,7 +652,192 @@ class LLVMIRCompiler:
     def _float_suffix(self, ltype):
         return {"half": "f16", "float": "f32", "double": "f64"}[ltype]
 
+    def _emit_binary(self, res, op, left, right):
+        l = self.operand(left)
+        r = self.operand(right)
+        ltype = self.to_llvm_type(left.type)
+        is_float = ltype in FLOAT_LLVM_TYPES
+        unsigned = self._is_unsigned(left.type)
 
+        if self.debug_mode and op in ("add", "sub", "mul") and not is_float:
+            width = int(ltype[1:])
+            max_val = (1 << width) - 1 if unsigned else (1 << (width - 1)) - 1
+            min_val = 0 if unsigned else -(1 << (width - 1))
+            
+            bad_label = f"{res.lstrip('%')}_overflow"
+            ok_label = f"{res.lstrip('%')}_ok"
+            
+            op_name = {"add": "addition", "sub": "subtraction", "mul": "multiplication"}[op]
+            msg = f"Error: Integer overflow in {op_name}\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            
+            ctx = f"Type: {left.type}, Operation: {left.name} {op} {right.name}"
+            ctx_global = self._string_global(ctx)
+            
+            lines = []
+            
+            if op == "add":
+                if unsigned:
+                    tmp = f"{res}_tmp"
+                    lines.append(f"{tmp} = add {ltype} {l}, {r}")
+                    ovf = f"{res}_ovf"
+                    lines.append(f"{ovf} = icmp ult {ltype} {tmp}, {l}")
+                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+                    lines.append(f"{res} = add {ltype} {l}, {r}")
+                else:
+                    intrin = f"llvm.sadd.with.overflow.{ltype}"
+                    self.used_intrinsics.add(intrin)
+                    tmp_res = f"{res}_ovf_res"
+                    ovf_bit = f"{res}_ovf_bit"
+                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
+                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
+                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
+                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+            
+            elif op == "sub":
+                if unsigned:
+                    tmp = f"{res}_tmp"
+                    lines.append(f"{tmp} = sub {ltype} {l}, {r}")
+                    ovf = f"{res}_ovf"
+                    lines.append(f"{ovf} = icmp ult {ltype} {l}, {r}")
+                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+                    lines.append(f"{res} = sub {ltype} {l}, {r}")
+                else:
+                    intrin = f"llvm.ssub.with.overflow.{ltype}"
+                    self.used_intrinsics.add(intrin)
+                    tmp_res = f"{res}_ovf_res"
+                    ovf_bit = f"{res}_ovf_bit"
+                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
+                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
+                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
+                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+            
+            elif op == "mul":
+                if unsigned:
+                    tmp = f"{res}_tmp"
+                    check = f"{res}_check"
+                    ovf = f"{res}_ovf"
+                    lines.append(f"{tmp} = mul {ltype} {l}, {r}")
+                    is_zero = f"{res}_rzero"
+                    lines.append(f"{is_zero} = icmp eq {ltype} {r}, 0")
+                    lines.append(f"br i1 {is_zero}, label %{ok_label}, label %check_{res.lstrip('%')}")
+                    lines.append("")
+                    lines.append(f"check_{res.lstrip('%')}:")
+                    lines.append(f"{check} = udiv {ltype} {tmp}, {r}")
+                    lines.append(f"{ovf} = icmp ne {ltype} {check}, {l}")
+                    lines.append(f"br i1 {ovf}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+                    lines.append(f"{res} = mul {ltype} {l}, {r}")
+                else:
+                    intrin = f"llvm.smul.with.overflow.{ltype}"
+                    self.used_intrinsics.add(intrin)
+                    tmp_res = f"{res}_ovf_res"
+                    ovf_bit = f"{res}_ovf_bit"
+                    lines.append(f"{tmp_res} = call {{{ltype}, i1}} @{intrin}({ltype} {l}, {ltype} {r})")
+                    lines.append(f"{res} = extractvalue {{{ltype}, i1}} {tmp_res}, 0")
+                    lines.append(f"{ovf_bit} = extractvalue {{{ltype}, i1}} {tmp_res}, 1")
+                    lines.append(f"br i1 {ovf_bit}, label %{bad_label}, label %{ok_label}")
+                    lines.append("")
+                    lines.append(f"{bad_label}:")
+                    lines.append(f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0")
+                    lines.append(f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})")
+                    lines.append("  unreachable")
+                    lines.append("")
+                    lines.append(f"{ok_label}:")
+            
+            return lines
+
+        if op == "pow":
+            if is_float:
+                intrin = f"llvm.pow.{self._float_suffix(ltype)}"
+                self.used_intrinsics.add(intrin)
+                return f"{res} = call {ltype} @{intrin}({ltype} {l}, {ltype} {r})"
+            else:
+                if ltype == "i32":
+                    self.used_intrinsics.add("llvm.pow.i32")
+                    return f"{res} = call i32 @llvm.pow.i32(i32 {l}, i32 {r})"
+                width = ltype[1:]
+                self.used_pow_widths.add(width)
+                return f"{res} = call {ltype} @__threadon_pow_i{width}({ltype} {l}, {ltype} {r})"
+
+        if op == "floordiv" and is_float:
+            intrin = f"llvm.floor.{self._float_suffix(ltype)}"
+            self.used_intrinsics.add(intrin)
+            tmp = f"{res}_div"
+            return [
+                f"{tmp} = fdiv {ltype} {l}, {r}",
+                f"{res} = call {ltype} @{intrin}({ltype} {tmp})"
+            ]
+
+        op_map = {
+            "add": "fadd" if is_float else "add",
+            "sub": "fsub" if is_float else "sub",
+            "mul": "fmul" if is_float else "mul",
+            "div": "fdiv" if is_float else ("udiv" if unsigned else "sdiv"),
+            "floordiv": "udiv" if unsigned else "sdiv",
+            "mod": "frem" if is_float else ("urem" if unsigned else "srem"),
+            "and": "and",
+            "or": "or",
+        }
+        llvm_op = op_map.get(op, "add")
+
+        if self.debug_mode and op in ("div", "floordiv", "mod") and not is_float:
+            self.used_c_runtime.add("exit")
+            is_zero = f"{res}_iszero"
+            bad_label = f"{res.lstrip('%')}_divzero"
+            ok_label = f"{res.lstrip('%')}_divok"
+            msg = "Error: Division by zero\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            return [
+                f"{is_zero} = icmp eq {ltype} {r}, 0",
+                f"br i1 {is_zero}, label %{bad_label}, label %{ok_label}",
+                "",
+                f"{bad_label}:",
+                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                "  unreachable",
+                "",
+                f"{ok_label}:",
+                f"  {res} = {llvm_op} {ltype} {l}, {r}",
+            ]
+        
+        return f"{res} = {llvm_op} {ltype} {l}, {r}"
     def _emit_bitwise(self, res, op, left, right):
         l = self.operand(left)
         r = self.operand(right)
