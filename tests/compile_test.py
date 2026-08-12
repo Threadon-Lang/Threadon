@@ -381,6 +381,66 @@ def main() -> Int32
     assert "expects between 1 and 2 arguments, got 0" in str(excinfo.value)
 
 
+def test_float_inf_constant_errors_with_flag():
+    source = """
+def main() -> Int32
+    x: Float64 = 1.0e400
+    print(x)
+    return 0
+"""
+    with pytest.raises(SystemExit):
+        compile_source(source, importer=Importer(), debug_mode=True, flag_inf=True)
+
+
+def test_float_inf_constant_allowed_without_flag():
+    source = """
+def main() -> Int32
+    a: Float64 = 1.0e400
+    b: Float32 = -1.0e400
+    print(a, b)
+    return 0
+"""
+    llvm = compile_source(source, importer=Importer(), debug_mode=True)
+    assert "0x7FF0000000000000" in llvm
+    result = run_llvm(llvm)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "inf -inf\n"
+
+
+def test_float_inf_runtime_errors_with_flag():
+    source = """
+def main() -> Int32
+    x: Float64 = Float64(input("n> "))
+    print(x * 2.0)
+    return 0
+"""
+    llvm = compile_source(
+        source, importer=Importer(), debug_mode=True, flag_inf=True
+    )
+    result = run_llvm(llvm, input="1e308\n")
+    assert result.returncode == 1, result.stdout
+    assert "Non-finite float value" in result.stderr
+
+    ok = compile_source(source, importer=Importer(), debug_mode=True)
+    result = run_llvm(ok, input="1e308\n")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.endswith("inf\n")
+
+
+def test_float_div_zero_not_folded():
+    source = """
+def main() -> Int32
+    a: Float64 = 1.0
+    b: Float64 = 0.0
+    c: Float64 = a / b
+    print(c)
+    return 0
+"""
+    result = run_llvm(compile_source(source, importer=Importer(), debug_mode=True))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "inf\n"
+
+
 if __name__ == "__main__":
     test_complex_program_runs()
     test_complex_program_inlined()
@@ -396,4 +456,8 @@ if __name__ == "__main__":
     test_stdlib_helpers()
     test_default_parameters_runtime()
     test_default_parameters_error_cases()
+    test_float_inf_constant_errors_with_flag()
+    test_float_inf_constant_allowed_without_flag()
+    test_float_inf_runtime_errors_with_flag()
+    test_float_div_zero_not_folded()
     print("compile_test OK")

@@ -1,5 +1,7 @@
 import struct
 import re 
+import math
+import sys
 
 from .builtins import BUILTIN_SIGS
 from .to_high_ir import SSAValue
@@ -16,7 +18,7 @@ THREADON_INT_BITS = {
 class LLVMIRCompiler:
 
 
-    def __init__(self,debug_mode=False,max_stack_depth=10_000):
+    def __init__(self,debug_mode=False,max_stack_depth=10_000,flag_inf=False):
 
         if max_stack_depth > 500_000:
             raise Exception("Current stack depth is to big")
@@ -30,6 +32,7 @@ class LLVMIRCompiler:
         self.string_globals = {}
         self.out = []
         self.debug_mode = debug_mode
+        self.flag_inf = flag_inf
         self.max_stack_depth = max_stack_depth
         self.block_end_label = {}
         self.used_checked_pow_widths = set()
@@ -302,7 +305,12 @@ class LLVMIRCompiler:
             
             ctx = f"Type: {left.type}, Operation: {left.name} {op} {right.name}"
             ctx_global = self._string_global(ctx)
-            
+
+            if ltype == "i256":
+                return self._emit_i256_checked_binop(
+                    res, op, l, r, unsigned, msg_global, msg_size, ctx_global
+                )
+
             lines = []
             
             if op == "add":
@@ -414,12 +422,16 @@ class LLVMIRCompiler:
             if is_float:
                 intrin = f"llvm.pow.{self._float_suffix(ltype)}"
                 self.used_intrinsics.add(intrin)
-                return f"{res} = call {ltype} @{intrin}({ltype} {l}, {ltype} {r})"
+                line = f"{res} = call {ltype} @{intrin}({ltype} {l}, {ltype} {r})"
+                if self.flag_inf:
+                    ctx = self._string_global(f"Float operation: {left.name} ** {right.name}")
+                    return [line] + self._emit_finite_check(res, ltype, ctx)
+                return line
             else:
-                if self.debug_mode and ltype in INT_LLVM_BITS and ltype != "i256":
+                if self.debug_mode and ltype in INT_LLVM_BITS:
                     width = ltype[1:]
-                    helper = f"__threadon_pow_i{width}_checked"
-                    self.used_checked_pow_widths.add(width)
+                    helper = f"__threadon_pow_{'u' if unsigned else 'i'}{width}_checked"
+                    self.used_checked_pow_widths.add((width, unsigned))
                     return f"{res} = call {ltype} @{helper}({ltype} {l}, {ltype} {r})"
                 if ltype == "i32":
                     self.used_intrinsics.add("llvm.pow.i32")
@@ -431,10 +443,14 @@ class LLVMIRCompiler:
             intrin = f"llvm.floor.{self._float_suffix(ltype)}"
             self.used_intrinsics.add(intrin)
             tmp = f"{res}_div"
-            return [
+            lines = [
                 f"{tmp} = fdiv {ltype} {l}, {r}",
                 f"{res} = call {ltype} @{intrin}({ltype} {tmp})"
             ]
+            if self.flag_inf:
+                ctx = self._string_global(f"Float operation: {left.name} // {right.name}")
+                return lines + self._emit_finite_check(res, ltype, ctx)
+            return lines
 
         op_map = {
             "add": "fadd" if is_float else "add",
@@ -456,6 +472,7 @@ class LLVMIRCompiler:
             msg = "Error: Division by zero\n"
             msg_global = self._string_global(msg)
             msg_size = len(msg.encode("utf-8")) + 1
+            ctx = self._string_global(f"Division: {left.name} {op} {right.name}")
             
             lines = [
                 f"{is_zero} = icmp eq {ltype} {r}, 0",
@@ -463,7 +480,7 @@ class LLVMIRCompiler:
                 "",
                 f"{bad_label}:",
                 f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
                 "  unreachable",
                 "",
                 f"{ok_label}:",
@@ -482,6 +499,7 @@ class LLVMIRCompiler:
                 msg2 = "Error: Signed division overflow (MIN / -1)\n"
                 msg2_global = self._string_global(msg2)
                 msg2_size = len(msg2.encode("utf-8")) + 1
+                ctx2 = self._string_global(f"Signed division: {left.name} {op} {right.name}")
                 
                 lines.extend([
                     f"{is_min} = icmp eq {ltype} {l}, {min_val}",
@@ -491,7 +509,7 @@ class LLVMIRCompiler:
                     "",
                     f"{of_label}:",
                     f"  %{res.lstrip('%')}_emsg2 = getelementptr inbounds [{msg2_size} x i8], [{msg2_size} x i8]* {msg2_global}, i64 0, i64 0",
-                    f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg2)",
+                    f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg2, i8* {ctx2})",
                     "  unreachable",
                     "",
                     f"{ok2_label}:",
@@ -500,9 +518,42 @@ class LLVMIRCompiler:
             lines.append(f"{res} = {llvm_op} {ltype} {l}, {r}")
             return lines
         
+        if self.flag_inf and is_float:
+            ctx = self._string_global(f"Float operation: {left.name} {op} {right.name}")
+            return [f"{res} = {llvm_op} {ltype} {l}, {r}"] + self._emit_finite_check(
+                res, ltype, ctx
+            )
         return f"{res} = {llvm_op} {ltype} {l}, {r}"
 
 
+    def _emit_i256_checked_binop(self, res, op, l, r, unsigned, msg_global, msg_size, ctx_global):
+        ext = "zext" if unsigned else "sext"
+        ex = f"{res}_ex"
+        ey = f"{res}_ey"
+        p = f"{res}_p"
+        t = f"{res}_t"
+        te = f"{res}_te"
+        ovf = f"{res}_ovf"
+        llvm_op = {"add": "add", "sub": "sub", "mul": "mul"}[op]
+        bad = f"{res.lstrip('%')}_overflow"
+        ok = f"{res.lstrip('%')}_ok"
+        return [
+            f"{ex} = {ext} i256 {l} to i512",
+            f"{ey} = {ext} i256 {r} to i512",
+            f"{p} = {llvm_op} i512 {ex}, {ey}",
+            f"{t} = trunc i512 {p} to i256",
+            f"{te} = {ext} i256 {t} to i512",
+            f"{ovf} = icmp ne i512 {p}, {te}",
+            f"br i1 {ovf}, label %{bad}, label %{ok}",
+            "",
+            f"{bad}:",
+            f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+            f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx_global})",
+            "  unreachable",
+            "",
+            f"{ok}:",
+            f"{res} = {llvm_op} i256 {l}, {r}",
+        ]
 
     def _emit_cast(self, res, rtype, src, target_type):
         src_type = self.to_llvm_type(src.type)
@@ -637,6 +688,9 @@ class LLVMIRCompiler:
                     lines.append(f"{res} = fadd double {tmp}, 0.0")
                 else:
                     lines.append(f"{res} = fptrunc double {tmp} to {rtype}")
+                if self.flag_inf:
+                    fin_ctx = self._string_global("String → Float conversion")
+                    lines.extend(self._emit_finite_check(res, rtype, fin_ctx))
                 return lines
 
             if rtype == "i1":
@@ -730,6 +784,7 @@ class LLVMIRCompiler:
                     msg = f"Error: Integer truncation overflow (value > {max_val})\n"
                     msg_global = self._string_global(msg)
                     msg_size = len(msg.encode("utf-8")) + 1
+                    ctx = self._string_global(f"Int {src.type} → {target_type} cast")
                     
                     max_const = max_val
                     cmp_inst = f"{res}_toobig"
@@ -740,7 +795,7 @@ class LLVMIRCompiler:
                         "",
                         f"{bad_label}:",
                         f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
                         "  unreachable",
                         "",
                         f"{ok_label}:",
@@ -753,6 +808,7 @@ class LLVMIRCompiler:
                     msg = f"Error: Integer truncation overflow\n"
                     msg_global = self._string_global(msg)
                     msg_size = len(msg.encode("utf-8")) + 1
+                    ctx = self._string_global(f"Int {src.type} → {target_type} cast")
                     
                     too_big = f"{res}_toobig"
                     too_small = f"{res}_toosmall"
@@ -766,7 +822,7 @@ class LLVMIRCompiler:
                         "",
                         f"{bad_label}:",
                         f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
                         "  unreachable",
                         "",
                         f"{ok_label}:",
@@ -777,7 +833,11 @@ class LLVMIRCompiler:
             return f"{res} = trunc {src_type} {src_op} to {rtype}" if sb > tb else f"{res} = {'zext' if src_unsigned else 'sext'} {src_type} {src_op} to {rtype}"
 
         if src_type in INT_LLVM_BITS and rtype in FLOAT_LLVM_TYPES:
-            return f"{res} = {'uitofp' if src_unsigned else 'sitofp'} {src_type} {src_op} to {rtype}"
+            line = f"{res} = {'uitofp' if src_unsigned else 'sitofp'} {src_type} {src_op} to {rtype}"
+            if self.flag_inf:
+                ctx = self._string_global(f"Int {src.type} → {target_type} conversion")
+                return [line] + self._emit_finite_check(res, rtype, ctx)
+            return line
 
         if src_type in FLOAT_LLVM_TYPES and rtype in INT_LLVM_BITS:
             if self.debug_mode:
@@ -790,6 +850,7 @@ class LLVMIRCompiler:
                     msg = f"Error: Float-to-integer overflow\n"
                     msg_global = self._string_global(msg)
                     msg_size = len(msg.encode("utf-8")) + 1
+                    ctx = self._string_global(f"Float {src.type} → {target_type} cast")
                     
                     fmax = f"{res}_fmax"
                     too_big = f"{res}_toobig"
@@ -805,7 +866,7 @@ class LLVMIRCompiler:
                         "",
                         f"{bad_label}:",
                         f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
                         "  unreachable",
                         "",
                         f"{ok_label}:",
@@ -818,6 +879,7 @@ class LLVMIRCompiler:
                     msg = f"Error: Float-to-integer overflow\n"
                     msg_global = self._string_global(msg)
                     msg_size = len(msg.encode("utf-8")) + 1
+                    ctx = self._string_global(f"Float {src.type} → {target_type} cast")
                     
                     fmax = f"{res}_fmax"
                     fmin = f"{res}_fmin"
@@ -835,7 +897,7 @@ class LLVMIRCompiler:
                         "",
                         f"{bad_label}:",
                         f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
                         "  unreachable",
                         "",
                         f"{ok_label}:",
@@ -851,7 +913,11 @@ class LLVMIRCompiler:
                 return f"{res} = fadd {rtype} {src_op}, 0.0"
             if order[src_type] < order[rtype]:
                 return f"{res} = fpext {src_type} {src_op} to {rtype}"
-            return f"{res} = fptrunc {src_type} {src_op} to {rtype}"
+            line = f"{res} = fptrunc {src_type} {src_op} to {rtype}"
+            if self.flag_inf:
+                ctx = self._string_global(f"Float {src.type} → {target_type} narrowing")
+                return [line] + self._emit_finite_check(res, rtype, ctx)
+            return line
 
         if rtype == "i1":
             if src_type in INT_LLVM_BITS:
@@ -884,6 +950,7 @@ class LLVMIRCompiler:
             msg = "Error: Shift amount >= bit-width\n"
             msg_global = self._string_global(msg)
             msg_size = len(msg.encode("utf-8")) + 1
+            ctx = self._string_global(f"{op} on {left.type}")
             
             too_big = f"{res}_shftbig"
             
@@ -893,7 +960,7 @@ class LLVMIRCompiler:
                 "",
                 f"{bad_label}:",
                 f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
                 "  unreachable",
                 "",
                 f"{ok_label}:",
@@ -1002,6 +1069,10 @@ class LLVMIRCompiler:
         ptr_op = self.operand(ptr_val)
         return f"store {val_type} {val_op}, {val_type}* {ptr_op}"
 
+    def _error(self, msg):
+        print(f"\033[91m\033[1mError:\033[0m {msg}", file=sys.stderr)
+        raise SystemExit(1)
+
     def _f64_hex(self, fval):
         return format(struct.unpack('<Q', struct.pack('<d', fval))[0], '016X')
 
@@ -1013,6 +1084,13 @@ class LLVMIRCompiler:
             return self._emit_string_const(res, val)
         if rtype in FLOAT_LLVM_TYPES:
             fval = float(val)
+            if math.isinf(fval) or math.isnan(fval):
+                if self.flag_inf:
+                    self._error(
+                        f"non-finite floating-point constant {fval} in {rtype} "
+                        f"(--flag-inf enabled)"
+                    )
+                return f"{res} = fadd {rtype} 0.0, 0x{self._f64_hex(fval)}"
             if rtype == "float":
                 fval = struct.unpack('<f', struct.pack('<f', fval))[0]
                 return f"{res} = fadd float 0.0, 0x{self._f64_hex(fval)}"
@@ -1077,10 +1155,82 @@ class LLVMIRCompiler:
         if op == "neg":
             if src_type in FLOAT_LLVM_TYPES:
                 return f"{res} = fsub {src_type} 0.0, {src}"
+            if self.debug_mode and src_type in INT_LLVM_BITS:
+                return self._emit_checked_neg(res, src, src_type, operand.type)
             return f"{res} = sub {src_type} 0, {src}"
         if op == "not":
             return f"{res} = xor i1 {src}, true"
         return f"; unknown unary {op}"
+
+    def _emit_checked_neg(self, res, src, src_type, type_):
+        self.used_c_runtime.add("exit")
+        bad = f"{res.lstrip('%')}_negoof"
+        ok = f"{res.lstrip('%')}_negok"
+        if self._is_unsigned(type_):
+            msg = "Error: Unsigned integer underflow in negation\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            ctx = self._string_global(f"Unary negate on {type_}")
+            is_zero = f"{res}_iszero"
+            return [
+                f"{is_zero} = icmp eq {src_type} {src}, 0",
+                f"br i1 {is_zero}, label %{ok}, label %{bad}",
+                "",
+                f"{bad}:",
+                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
+                "  unreachable",
+                "",
+                f"{ok}:",
+                f"{res} = sub {src_type} 0, {src}",
+            ]
+        width = INT_LLVM_BITS[src_type]
+        min_val = -(1 << (width - 1))
+        msg = "Error: Integer overflow in negation\n"
+        msg_global = self._string_global(msg)
+        msg_size = len(msg.encode("utf-8")) + 1
+        ctx = self._string_global(f"Unary negate on {type_}")
+        is_min = f"{res}_ismin"
+        return [
+            f"{is_min} = icmp eq {src_type} {src}, {min_val}",
+            f"br i1 {is_min}, label %{bad}, label %{ok}",
+            "",
+            f"{bad}:",
+            f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+            f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
+            "  unreachable",
+            "",
+            f"{ok}:",
+            f"{res} = sub {src_type} 0, {src}",
+        ]
+    def _emit_finite_check(self, res, rtype, ctx):
+        self.used_c_runtime.add("exit")
+        bad = f"{res.lstrip('%')}_nonfinite"
+        ok = f"{res.lstrip('%')}_okfinite"
+        msg = "Error: Non-finite float value (inf or NaN)\n"
+        msg_global = self._string_global(msg)
+        msg_size = len(msg.encode("utf-8")) + 1
+        is_nan = f"{res}_isnan"
+        is_pinf = f"{res}_ispinf"
+        is_ninf = f"{res}_isninf"
+        bad1 = f"{res}_nonfin1"
+        bad2 = f"{res}_nonfin2"
+        return [
+            f"{is_nan} = fcmp uno {rtype} {res}, 0.0",
+            f"{is_pinf} = fcmp oeq {rtype} {res}, 0x7FF0000000000000",
+            f"{is_ninf} = fcmp oeq {rtype} {res}, 0xFFF0000000000000",
+            f"{bad1} = or i1 {is_nan}, {is_pinf}",
+            f"{bad2} = or i1 {bad1}, {is_ninf}",
+            f"br i1 {bad2}, label %{bad}, label %{ok}",
+            "",
+            f"{bad}:",
+            f"  %{res.lstrip('%')}_femsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+            f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_femsg, i8* {ctx})",
+            "  unreachable",
+            "",
+            f"{ok}:",
+        ]
+
     def _float_suffix(self, ltype):
         return {"half": "f16", "float": "f32", "double": "f64"}[ltype]
 
@@ -1247,8 +1397,8 @@ class LLVMIRCompiler:
                 self._emit_to_string_i256()
             self.out.append("")
 
-        for width in sorted(self.used_checked_pow_widths):
-            self._emit_pow_helper_checked(width)
+        for width, unsigned in sorted(self.used_checked_pow_widths):
+            self._emit_pow_helper_checked(width, unsigned)
             self.out.append("")
 
         for width in sorted(self.used_pow_widths):
@@ -1297,9 +1447,11 @@ class LLVMIRCompiler:
         self.out.append("body:")
         self.out.append("  ret i8* %s")
         self.out.append("}")
-    def _emit_pow_helper_checked(self, width):
+    def _emit_pow_helper_checked(self, width, unsigned):
         t = f"i{width}"
-        self.out.append(f"define {t} @__threadon_pow_i{width}_checked({t} %base, {t} %exp) {{")
+        ext = "zext" if unsigned else "sext"
+        sign = "u" if unsigned else "i"
+        self.out.append(f"define {t} @__threadon_pow_{sign}{width}_checked({t} %base, {t} %exp) {{")
         self.out.append("entry:")
         self.out.append(f"  %res = alloca {t}")
         self.out.append(f"  store {t} 1, {t}* %res")
@@ -1312,21 +1464,29 @@ class LLVMIRCompiler:
         self.out.append("  br i1 %cmp, label %body, label %done")
         self.out.append("body:")
         self.out.append(f"  %r0 = load {t}, {t}* %res")
-        self.out.append(f"  %ovf_res = call {{{t}, i1}} @llvm.smul.with.overflow.{t}({t} %r0, {t} %base)")
-        self.out.append(f"  %ovf_bit = extractvalue {{{t}, i1}} %ovf_res, 1")
+        if width == 256:
+            self.out.append(f"  %re = {ext} {t} %r0 to i512")
+            self.out.append(f"  %be = {ext} {t} %base to i512")
+            self.out.append("  %pe = mul i512 %re, %be")
+            self.out.append(f"  %ovf_val = trunc i512 %pe to {t}")
+            self.out.append(f"  %pte = {ext} {t} %ovf_val to i512")
+            self.out.append("  %ovf_bit = icmp ne i512 %pe, %pte")
+        else:
+            self.out.append(f"  %ovf_res = call {{{t}, i1}} @llvm.{'umul' if unsigned else 'smul'}.with.overflow.{t}({t} %r0, {t} %base)")
+            self.out.append(f"  %ovf_val = extractvalue {{{t}, i1}} %ovf_res, 0")
+            self.out.append(f"  %ovf_bit = extractvalue {{{t}, i1}} %ovf_res, 1")
         self.out.append("  br i1 %ovf_bit, label %overflow, label %cont")
         self.out.append("overflow:")
-        
+
         msg = "Error: Integer overflow in power operation\n"
         msg_g = self._string_global(msg)
         msg_sz = len(msg.encode("utf-8")) + 1
-        ctx = self._string_global(f"i{width} power overflow")
+        ctx = self._string_global(f"{sign}{width} power overflow")
         self.out.append(f"  %emsg = getelementptr inbounds [{msg_sz} x i8], [{msg_sz} x i8]* {msg_g}, i64 0, i64 0")
         self.out.append(f"  call void @__threadon_debug_error(i8* %emsg, i8* {ctx})")
         self.out.append("  unreachable")
         self.out.append("cont:")
-        self.out.append(f"  %val = extractvalue {{{t}, i1}} %ovf_res, 0")
-        self.out.append(f"  store {t} %val, {t}* %res")
+        self.out.append(f"  store {t} %ovf_val, {t}* %res")
         self.out.append(f"  %c1 = load {t}, {t}* %cnt")
         self.out.append(f"  %n = add {t} %c1, 1")
         self.out.append(f"  store {t} %n, {t}* %cnt")
@@ -1335,7 +1495,8 @@ class LLVMIRCompiler:
         self.out.append(f"  %r = load {t}, {t}* %res")
         self.out.append(f"  ret {t} %r")
         self.out.append("}")
-        self.used_intrinsics.add(f"llvm.smul.with.overflow.{t}")
+        if width != 256:
+            self.used_intrinsics.add(f"llvm.{'umul' if unsigned else 'smul'}.with.overflow.{t}")
     def _emit_tailcall(self, res, instr):
         fname = instr.args[0]
         args = instr.args[1:]

@@ -7,12 +7,13 @@ from .to_high_ir import IRBlock, IRInstr, IRPhi, SSAValue
 class IROptimizer:
 
 
-    def __init__(self, inline_threshold=30, unroll_factor=4):
+    def __init__(self, inline_threshold=30, unroll_factor=4, debug_mode=False):
         self.module = None
         self.func = None
         self.inline_threshold = inline_threshold
         self.unroll_factor = unroll_factor
         self._temp_counter = 0
+        self.debug_mode = debug_mode
 
 
     def optimize(self, module):
@@ -34,10 +35,11 @@ class IROptimizer:
             func.build_cfg()
             changed |= self._sccp()
             changed |= self._constant_folding()
-            changed |= self._strength_reduction()
+            if not self.debug_mode:
+                changed |= self._strength_reduction()
+                changed |= self._reassociation()
             changed |= self._algebraic_simplification()
             changed |= self._peephole()
-            changed |= self._reassociation()
             changed |= self._constant_propagation()
             changed |= self._copy_propagation()
             changed |= self._gvn()
@@ -101,17 +103,40 @@ class IROptimizer:
         n = self._to_number(v)
         return n == 0 if n is not None else False
 
+    def _int_bounds(self, rtype):
+        if rtype in ALL_INT_TYPES:
+            width = {
+                "Int8": 8, "Int16": 16, "Int32": 32, "Int64": 64, "Int256": 256,
+                "UInt8": 8, "UInt16": 16, "UInt32": 32, "UInt64": 64, "UInt256": 256,
+            }[rtype]
+            if rtype.startswith("UInt"):
+                return 0, (1 << width) - 1
+            return -(1 << (width - 1)), (1 << (width - 1)) - 1
+        return None, None
+
+    def _fits(self, value, rtype):
+        lo, hi = self._int_bounds(rtype)
+        if lo is None:
+            return True
+        return lo <= value <= hi
+
     def _fold_number(self, op, ln, rn, rtype):
         if rtype in ALL_INT_TYPES:
             if op == "div":
                 if rn == 0:
                     return None
                 q = abs(ln) // abs(rn)
-                return -q if (ln < 0) != (rn < 0) else q
+                res = -q if (ln < 0) != (rn < 0) else q
+                if self.debug_mode and not self._fits(res, rtype):
+                    return None
+                return res
             if op == "floordiv":
                 if rn == 0:
                     return None
-                return ln // rn
+                res = ln // rn
+                if self.debug_mode and not self._fits(res, rtype):
+                    return None
+                return res
             if op == "mod":
                 if rn == 0:
                     return None
@@ -119,15 +144,27 @@ class IROptimizer:
                 q = -q if (ln < 0) != (rn < 0) else q
                 return ln - q * rn
             if op == "add":
-                return ln + rn
+                res = ln + rn
+                if self.debug_mode and not self._fits(res, rtype):
+                    return None
+                return res
             if op == "sub":
-                return ln - rn
+                res = ln - rn
+                if self.debug_mode and not self._fits(res, rtype):
+                    return None
+                return res
             if op == "mul":
-                return ln * rn
+                res = ln * rn
+                if self.debug_mode and not self._fits(res, rtype):
+                    return None
+                return res
             if op == "pow":
                 if isinstance(ln, bool) or isinstance(rn, bool) or rn < 0:
                     return None
-                return ln ** rn
+                res = ln ** rn
+                if self.debug_mode and not self._fits(res, rtype):
+                    return None
+                return res
             return None
         if op == "add":
             return ln + rn
@@ -136,13 +173,22 @@ class IROptimizer:
         if op == "mul":
             return ln * rn
         if op == "div":
+            if rn == 0:
+                return None
             return ln / rn
         if op == "floordiv":
+            if rn == 0:
+                return None
             return ln // rn
         if op == "mod":
+            if rn == 0:
+                return None
             return ln % rn
         if op == "pow":
-            return ln ** rn
+            try:
+                return ln ** rn
+            except (ZeroDivisionError, ValueError, OverflowError):
+                return None
         return None
 
     def _is_one(self, val):
@@ -279,7 +325,11 @@ class IROptimizer:
                     n = self._to_number(v)
                     if n is None:
                         return set()
-                    if op == "neg": return -n
+                    if op == "neg":
+                        res = -n
+                        if self.debug_mode and not self._fits(res, instr.result.type):
+                            return set()
+                        return res
                     if op == "pos": return n
                     if op == "not": return not n
                 except (TypeError, ValueError):
@@ -415,7 +465,11 @@ class IROptimizer:
                     if v is not None:
                         n = self._to_number(v)
                         if n is not None:
-                            if instr.op == "neg": res = -n
+                            if instr.op == "neg":
+                                res = -n
+                                if self.debug_mode and not self._fits(res, instr.result.type):
+                                    i += 1
+                                    continue
                             elif instr.op == "pos": res = n
                             elif instr.op == "not": res = not n
                             old_args = instr.args

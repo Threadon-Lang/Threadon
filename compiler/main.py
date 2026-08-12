@@ -200,6 +200,11 @@ def main(argv=None):
         help="optimizer inline threshold (default: 0 = no inlining)",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug runtime checks")
+    parser.add_argument(
+        "--flag-inf",
+        action="store_true",
+        help="Allow float constants that are infinite (inf) or NaN",
+    )
     
     args = parser.parse_args(argv)
 
@@ -216,7 +221,8 @@ def main(argv=None):
         path,
         importer=importer,
         inline_threshold=args.inline_threshold,
-        debug_mode=args.debug
+        debug_mode=args.debug,
+        flag_inf=args.flag_inf,
     )
 
     if args.output:
