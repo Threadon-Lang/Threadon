@@ -597,6 +597,72 @@ class LLVMIRCompiler:
                 else:
                     lines.append(f"{res} = {'zext' if tgt_unsigned else 'sext'} i64 {tmp} to {rtype}")
                 return lines
+
+            if rtype in FLOAT_LLVM_TYPES:
+                self.used_c_runtime.add("strtod")
+                tmp = f"{res}_tmp"
+
+                lines = []
+
+                if self.debug_mode:
+                    self.used_c_runtime.add("exit")
+                    msg = "Invalid float conversion"
+                    ctx = self._string_global("String → Float cast")
+                    msg_global = self._string_global(msg)
+                    msg_size = len(msg.encode("utf-8")) + 1
+                    endptr = f"{res}_endptr"
+                    end_val = f"{res}_endval"
+                    is_null = f"{res}_isnull"
+                    bad_label = f"{res.lstrip('%')}_badconv"
+                    ok_label = f"{res.lstrip('%')}_okconv"
+
+                    lines.extend([
+                        f"{endptr} = alloca i8*",
+                        f"{tmp} = call double @strtod(i8* {src_op}, i8** {endptr})",
+                        f"{end_val} = load i8*, i8** {endptr}",
+                        f"{is_null} = icmp eq i8* {end_val}, {src_op}",
+                        f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
+                        "",
+                        f"{bad_label}:",
+                        f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
+                        f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})",
+                        "  unreachable",
+                        "",
+                        f"{ok_label}:",
+                    ])
+                else:
+                    lines.append(f"{tmp} = call double @strtod(i8* {src_op}, i8** null)")
+
+                if rtype == "double":
+                    lines.append(f"{res} = fadd double {tmp}, 0.0")
+                else:
+                    lines.append(f"{res} = fptrunc double {tmp} to {rtype}")
+                return lines
+
+            if rtype == "i1":
+                self.used_c_runtime.add("strcasecmp")
+                false_g = self._string_global("false")
+                zero_g = self._string_global("0")
+                b0 = f"{res}_b0"
+                is_empty = f"{res}_isempty"
+                fcmp = f"{res}_fcmp"
+                is_false = f"{res}_isfalse"
+                zcmp = f"{res}_zcmp"
+                is_zero = f"{res}_iszero"
+                any_false = f"{res}_anyfalse"
+                any_false2 = f"{res}_anyfalse2"
+
+                return [
+                    f"{b0} = load i8, i8* {src_op}",
+                    f"{is_empty} = icmp eq i8 {b0}, 0",
+                    f"{fcmp} = call i32 @strcasecmp(i8* {src_op}, i8* {false_g})",
+                    f"{is_false} = icmp eq i32 {fcmp}, 0",
+                    f"{zcmp} = call i32 @strcasecmp(i8* {src_op}, i8* {zero_g})",
+                    f"{is_zero} = icmp eq i32 {zcmp}, 0",
+                    f"{any_false} = or i1 {is_empty}, {is_false}",
+                    f"{any_false2} = or i1 {any_false}, {is_zero}",
+                    f"{res} = xor i1 {any_false2}, true",
+                ]
         if rtype == "i8*":
             if src_type in INT_LLVM_BITS:
                 self.used_c_runtime.add("snprintf")
@@ -916,6 +982,10 @@ class LLVMIRCompiler:
 
         if op == "store":
             return self._emit_store(instr.args[0], instr.args[1])
+
+
+            bind(instr.result.name, current)
+      
         return f"; UNHANDLED INSTRUCTION: {op}"
 
     def _emit_alloca(self, res, var_type):
@@ -1281,7 +1351,7 @@ class LLVMIRCompiler:
         struct_name = instr.args[0]
         llvm_type = f"%struct.{struct_name}"
         lines = []
-        current = "zeroinitializer"
+        current = "undef"
 
         field_updates = []
         for k in range(1, len(instr.args), 2):
@@ -1293,7 +1363,7 @@ class LLVMIRCompiler:
             field_updates.append((idx, ftype, foperand))
 
         if not field_updates:
-            return f"{res} = select i1 false, {llvm_type} zeroinitializer, {llvm_type} zeroinitializer"
+            return f"{res} = select i1 false, {llvm_type} undef, {llvm_type} undef"
 
         field_updates.sort(key=lambda x: x[0])
 
@@ -1304,6 +1374,7 @@ class LLVMIRCompiler:
                 tmp = f"{res}_s{i}"
                 lines.append(f"{tmp} = insertvalue {llvm_type} {current}, {ftype} {foperand}, {idx}")
                 current = tmp
+
         return lines
 
     def _emit_field(self, res, instr):

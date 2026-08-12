@@ -1058,7 +1058,7 @@ def run() -> Int32
 def test_default_int8_narrows_literal():
     ast = parse_ok(
         """
-def f(a: Int8 = 300) -> Int8
+def f(a: Int8 = 100) -> Int8
     return a
 """
     )
