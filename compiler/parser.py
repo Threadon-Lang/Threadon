@@ -1,10 +1,17 @@
-from .builtins import BUILTIN_SIGS, builtin_return_type
+from .builtins import (
+    ALL_INT_TYPES,
+    BUILTIN_SIGS,
+    FLOAT_TYPES,
+    NUMERIC_TYPES,
+    builtin_return_type,
+)
 from .importer import Importer, ImporterError
 from .lexer import Token, TokenType, lex_lines
 from .nodes import *
 
-int_types = ("Int8", "Int16", "Int32", "Int64")
+int_types = ALL_INT_TYPES
 
+VALID_PRIMITIVE_TYPES = ALL_INT_TYPES + FLOAT_TYPES + ("Bool", "String")
 
 def strip_indent_tokens(line_tokens):
     indent = 0
@@ -859,7 +866,11 @@ class Parser:
                 )
             default_type = self.detect_expr_type(pdefault)
             if default_type != ptype:
-                if self._is_const_int_expr(pdefault) and ptype in self._INT_TYPES:
+                if (
+                    self._is_const_int_expr(pdefault) and ptype in self._INT_TYPES
+                ) or (
+                    self._is_const_float_expr(pdefault) and ptype in self._FLOAT_TYPES
+                ):
                     self._set_expr_type(pdefault, ptype)
                 else:
                     self.give_error(
@@ -1133,9 +1144,10 @@ class Parser:
                         expected = decl.var_type
                         actual = self.detect_expr_type(fexpr)
                         if expected != actual:
-                            self.give_error(
-                                f"Struct '{struct_name}' field '{fname}' expects {expected}, got {actual}"
-                            )
+                            if not self._try_adapt_literal(fexpr, actual, expected):
+                                self.give_error(
+                                    f"Struct '{struct_name}' field '{fname}' expects {expected}, got {actual}"
+                                )
                         break
 
                 if not found:
@@ -1170,13 +1182,13 @@ class Parser:
 
             if expr.op == "-":
                 inner = self.detect_expr_type(expr.expr)
-                if inner not in ("Int32", "Float32"):
+                if inner not in NUMERIC_TYPES:
                     self.give_error("Unary '-' requires numeric type")
                 return inner
 
             if expr.op == "+":
                 inner = self.detect_expr_type(expr.expr)
-                if inner not in ("Int32", "Float32"):
+                if inner not in NUMERIC_TYPES:
                     self.give_error("Unary '+' requires numeric type")
                 return inner
 
@@ -1210,17 +1222,26 @@ class Parser:
 
             for (arg_expr, (param_name, param_type, _)) in zip(expr.args, params):
                 arg_type = self.detect_expr_type(arg_expr)
+                if not self._is_valid_type(param_type):
+                    self.give_error(f"Unknown type '{var_type}'")
                 if arg_type != param_type:
-                    self.give_error(
-                        f"Function '{func_name}' argument '{param_name}' "
-                        f"expects type {param_type}, got {arg_type}"
-                    )
+                    if not self._try_adapt_literal(arg_expr, arg_type, param_type):
+                        self.give_error(
+                            f"Function '{func_name}' argument '{param_name}' "
+                            f"expects type {param_type}, got {arg_type}"
+                        )
 
             return return_type
 
         if t == "BinaryExpr":
             left = self.detect_expr_type(expr.left)
             right = self.detect_expr_type(expr.right)
+
+            if left != right:
+                if self._try_adapt_literal(expr.left, left, right):
+                    left = right
+                elif self._try_adapt_literal(expr.right, right, left):
+                    right = left
 
             if expr.op in ("<", ">", "<=", ">=", "==", "!="):
                 if left != right:
@@ -1238,6 +1259,12 @@ class Parser:
         if t == "BinaryExpr":
             left = self.detect_expr_type(expr.left)
             right = self.detect_expr_type(expr.right)
+
+            if left != right:
+                if self._try_adapt_literal(expr.left, left, right):
+                    left = right
+                elif self._try_adapt_literal(expr.right, right, left):
+                    right = left
 
             if expr.op in ("<", ">", "<=", ">=", "==", "!="):
                 if left != right:
@@ -1269,11 +1296,12 @@ class Parser:
             self.give_error(f"Unknown operator '{expr.op}'")
         if t == "CastExpr":
             inner_type = self.detect_expr_type(expr.expr)
-            numeric_or_str = ("Int8","Int16","Int32","Int64","Float16","Float32","Float64","String","Bool")
+            numeric_or_str = NUMERIC_TYPES + ("String", "Bool")
             if inner_type not in numeric_or_str:
                 self.give_error(f"Cannot cast type '{inner_type}' to '{expr.target_type}'")
-            if expr.target_type not in ("Int8","Int16","Int32","Int64","Float16","Float32","Float64","Bool"):
+            if expr.target_type not in NUMERIC_TYPES + ("Bool", "String"):
                 self.give_error(f"Unknown cast target type '{expr.target_type}'")
+            self._try_adapt_literal(expr.expr, inner_type, expr.target_type)
             return expr.target_type
         self.give_error("Unknown expression type")
     def _const_eval(self, expr):
@@ -1282,9 +1310,9 @@ class Parser:
         
         if t == "LiteralExpr":
             val = expr.value.value
-            if expr.type in ("Int8", "Int16", "Int32", "Int64"):
+            if expr.type in ALL_INT_TYPES:
                 return (int(val), expr.type)
-            if expr.type in ("Float16", "Float32", "Float64"):
+            if expr.type in FLOAT_TYPES:
                 return (float(val), expr.type)
             return None
         
@@ -1353,7 +1381,8 @@ class Parser:
         detected = self.detect_expr_type(expr)
 
         if detected != self.return_type:
-            self.give_error(f"Expected {self.return_type}, got {detected}")
+            if not self._try_adapt_literal(expr, detected, self.return_type):
+                self.give_error(f"Expected {self.return_type}, got {detected}")
 
         return ReturnStmt(self.return_type, expr)
     def parse_variable_decl(self):
@@ -1400,11 +1429,16 @@ class Parser:
 
         detected = self.detect_expr_type(expr)
 
-
+        if not self._is_valid_type(var_type):
+            self.give_error(f"Unknown type '{var_type}'")
         if detected != var_type:
-            is_int_literal = self._is_const_int_expr(expr) and var_type in self._INT_TYPES
+            is_literal = (
+                self._is_const_int_expr(expr) and var_type in self._INT_TYPES
+            ) or (
+                self._is_const_float_expr(expr) and var_type in self._FLOAT_TYPES
+            )
 
-            if is_int_literal:
+            if is_literal:
                 self._set_expr_type(expr, var_type)
             else:
                 self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
@@ -1415,7 +1449,8 @@ class Parser:
 
         return VarDecl(name, var_type, expr)
 
-    _INT_TYPES = ("Int8", "Int16", "Int32", "Int64")
+    _INT_TYPES = ALL_INT_TYPES
+    _FLOAT_TYPES = FLOAT_TYPES
 
     def _is_const_expr(self, e):
         t = type(e).__name__
@@ -1426,7 +1461,16 @@ class Parser:
         if t == "UnaryExpr" and e.op in ("+", "-"):
             return self._is_const_expr(e.expr)
         return False
-
+    def _is_valid_type(self, t):
+        if t in VALID_PRIMITIVE_TYPES:
+            return True
+        if t in self.struct_defs:
+            return True
+        if t in self.struct_import_aliases.values():
+            return True
+        if t.endswith("*") and self._is_valid_type(t[:-1]):
+            return True
+        return False
     def _is_const_int_expr(self, e):
         t = type(e).__name__
         if t == "LiteralExpr" and e.type in self._INT_TYPES:
@@ -1437,15 +1481,41 @@ class Parser:
             return self._is_const_int_expr(e.expr)
         return False
 
+    def _is_const_float_expr(self, e):
+        t = type(e).__name__
+        if t == "LiteralExpr" and e.type in self._FLOAT_TYPES:
+            return True
+        if t == "BinaryExpr" and e.op in ("+", "-", "*", "/", "//", "%", "**"):
+            return self._is_const_float_expr(e.left) and self._is_const_float_expr(e.right)
+        if t == "UnaryExpr" and e.op in ("+", "-"):
+            return self._is_const_float_expr(e.expr)
+        return False
+
     def _set_expr_type(self, e, new_type):
         t = type(e).__name__
-        if t == "LiteralExpr" and e.type in self._INT_TYPES:
-            e.type = new_type
+        if t == "LiteralExpr":
+            if e.type in self._INT_TYPES and new_type in self._INT_TYPES:
+                e.type = new_type
+            elif e.type in self._FLOAT_TYPES and new_type in self._FLOAT_TYPES:
+                e.type = new_type
         elif t == "BinaryExpr":
             self._set_expr_type(e.left, new_type)
             self._set_expr_type(e.right, new_type)
         elif t == "UnaryExpr":
             self._set_expr_type(e.expr, new_type)
+
+    def _try_adapt_literal(self, node, node_type, want_type):
+        if node_type == want_type:
+            return True
+        if node_type in self._INT_TYPES and want_type in self._INT_TYPES:
+            if self._is_const_int_expr(node):
+                self._set_expr_type(node, want_type)
+                return True
+        elif node_type in self._FLOAT_TYPES and want_type in self._FLOAT_TYPES:
+            if self._is_const_float_expr(node):
+                self._set_expr_type(node, want_type)
+                return True
+        return False
 
     def parse_struct_init(self, struct_name, tokens):
         fields = {}
@@ -1489,6 +1559,8 @@ class Parser:
         var_type = self.lookup_var(name)
         rhs_type = self.detect_expr_type(rhs)
 
+        if not self._is_valid_type(var_type):
+            self.give_error(f"Unknown type '{var_type}'")
         if var_type != rhs_type:
             self.give_error(
                 f"Variable '{name}' expects type {var_type}, got {rhs_type}"
@@ -1521,7 +1593,8 @@ class Parser:
 
         rhs = self.parse_expr(tokens[4:])
         rhs_type = self.detect_expr_type(rhs)
-
+        if not self._is_valid_type(var_type):
+            self.give_error(f"Unknown type '{var_type}'")
         if ftype != rhs_type:
             self.give_error(
                 f"Field '{name}.{field}' expects type {ftype}, got {rhs_type}"
@@ -1537,9 +1610,14 @@ class Parser:
 
         rhs = self.parse_expr(tokens[2:])
         rhs_type = self.detect_expr_type(rhs)
-
+        if not self._is_valid_type(var_type):
+            self.give_error(f"Unknown type '{var_type}'")
         if var_type != rhs_type:
-            if self._is_const_int_expr(rhs) and var_type in self._INT_TYPES:
+            if (
+                self._is_const_int_expr(rhs) and var_type in self._INT_TYPES
+            ) or (
+                self._is_const_float_expr(rhs) and var_type in self._FLOAT_TYPES
+            ):
                 self._set_expr_type(rhs, var_type)
             else:
                 self.give_error(

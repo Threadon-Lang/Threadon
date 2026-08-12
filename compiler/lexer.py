@@ -99,8 +99,9 @@ KEYWORDS = {
 }
 
 TYPES = {
-    "Int8", "Int16", "Int32",
-    "Float16", "Float32",
+    "Int8", "Int16", "Int32", "Int64", "Int256",
+    "UInt8", "UInt16", "UInt32", "UInt64", "UInt256",
+    "Float16", "Float32", "Float64",
     "Boolean", "Bool", "String",
     "NoneType"
 }

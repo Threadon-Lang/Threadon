@@ -5,6 +5,13 @@ from .to_high_ir import SSAValue
 
 FLOAT_LLVM_TYPES = ("half", "float", "double")
 
+INT_LLVM_BITS = {"i8": 8, "i16": 16, "i32": 32, "i64": 64, "i256": 256}
+
+THREADON_INT_BITS = {
+    "Int8": 8, "Int16": 16, "Int32": 32, "Int64": 64, "Int256": 256,
+    "UInt8": 8, "UInt16": 16, "UInt32": 32, "UInt64": 64, "UInt256": 256,
+}
+
 class LLVMIRCompiler:
 
 
@@ -17,6 +24,8 @@ class LLVMIRCompiler:
         self.struct_field_indices = {}
         self.used_intrinsics = set()
         self.used_c_runtime = set()
+        self.used_bigint_helpers = set()
+        self.used_pow_widths = set()
         self.string_globals = {}
         self.out = []
         self.debug_mode = debug_mode
@@ -27,6 +36,8 @@ class LLVMIRCompiler:
         self.struct_field_indices = {}
         self.used_intrinsics = set()
         self.used_c_runtime = set()
+        self.used_bigint_helpers = set()
+        self.used_pow_widths = set()
         self.string_globals = {}
         self.out = []
 
@@ -47,6 +58,8 @@ class LLVMIRCompiler:
 
         for func in module.funcs:
             self.emit_function(func)
+
+        self._emit_bigint_helpers()
 
 
         self.out.append("")
@@ -122,6 +135,8 @@ class LLVMIRCompiler:
                 self.out.append("declare i64 @strcspn(i8*, i8*)")
             if "strtol" in self.used_c_runtime:
                 self.out.append("declare i64 @strtol(i8*, i8**, i32)")
+            if "strtoull" in self.used_c_runtime:
+                self.out.append("declare i64 @strtoull(i8*, i8**, i32)")
             if "strtod" in self.used_c_runtime:
                 self.out.append("declare double @strtod(i8*, i8**)")
             if "strcasecmp" in self.used_c_runtime:
@@ -144,8 +159,8 @@ class LLVMIRCompiler:
         if isinstance(t, str) and t.endswith("*"):
             base = self.to_llvm_type(t[:-1])
             return f"{base}*"
-        if t == "int" or t == "Unknown" or t in ("Int8", "Int16", "Int32", "Int64"):
-            return {"Int8": "i8", "Int16": "i16", "Int32": "i32", "Int64": "i64"}.get(t, "i32")
+        if t == "int" or t == "Unknown" or t in THREADON_INT_BITS:
+            return f"i{THREADON_INT_BITS.get(t, 32)}"
         if t == "float" or t in ("Float16", "Float32", "Float64"):
             return {"Float16": "half", "Float32": "float", "Float64": "double"}.get(t, "float")
         if t == "bool" or t in ("Bool", "Boolean"):
@@ -163,6 +178,9 @@ class LLVMIRCompiler:
 
     def is_float_type(self, t):
         return self.to_llvm_type(t) in FLOAT_LLVM_TYPES
+
+    def _is_unsigned(self, t):
+        return isinstance(t, str) and t.startswith("UInt")
 
     def emit_function(self, func):
         entry = func.blocks[0] if func.blocks else None
@@ -258,11 +276,12 @@ class LLVMIRCompiler:
     def _emit_cast(self, res, rtype, src, target_type):
         src_type = self.to_llvm_type(src.type)
         src_op = self.operand(src)
-        int_bits = {"i8": 8, "i16": 16, "i32": 32, "i64": 64}
+        src_unsigned = self._is_unsigned(src.type)
+        tgt_unsigned = self._is_unsigned(target_type)
 
         if src_type == "i8*":
-            if rtype in int_bits:
-                self.used_c_runtime.add("strtol")
+            if rtype in INT_LLVM_BITS:
+                self.used_c_runtime.add("strtoull" if tgt_unsigned else "strtol")
                 tmp = f"{res}_tmp"
                 endptr = f"{res}_endptr"
                 end_val = f"{res}_endval"
@@ -282,7 +301,7 @@ class LLVMIRCompiler:
                     
                     lines.extend([
                         f"{endptr} = alloca i8*",
-                        f"{tmp} = call i64 @strtol(i8* {src_op}, i8** {endptr}, i32 10)",
+                        f"{tmp} = call i64 @{'strtoull' if tgt_unsigned else 'strtol'}(i8* {src_op}, i8** {endptr}, i32 10)",
                         f"{end_val} = load i8*, i8** {endptr}",
                         f"{is_null} = icmp eq i8* {end_val}, {src_op}",
                         f"br i1 {is_null}, label %{bad_label}, label %{ok_label}",
@@ -295,12 +314,15 @@ class LLVMIRCompiler:
                         f"{ok_label}:",
                     ])
                 else:
-                    lines.append(f"{tmp} = call i64 @strtol(i8* {src_op}, i8** null, i32 10)")
+                    lines.append(f"{tmp} = call i64 @{'strtoull' if tgt_unsigned else 'strtol'}(i8* {src_op}, i8** null, i32 10)")
                 
-                if rtype != "i64":
+                tb = INT_LLVM_BITS[rtype]
+                if tb == 64:
+                    lines.append(f"{res} = add i64 {tmp}, 0")
+                elif tb < 64:
                     lines.append(f"{res} = trunc i64 {tmp} to {rtype}")
                 else:
-                    lines.append(f"{res} = add i64 {tmp}, 0")
+                    lines.append(f"{res} = {'zext' if tgt_unsigned else 'sext'} i64 {tmp} to {rtype}")
                 return lines
 
             if rtype in FLOAT_LLVM_TYPES:
@@ -373,10 +395,23 @@ class LLVMIRCompiler:
             raise Exception(f"Cannot cast String to {target_type}")
 
         if rtype == "i8*":
-            if src_type in int_bits:
+            if src_type in INT_LLVM_BITS:
                 self.used_c_runtime.add("snprintf")
                 buf = f"{res}_buf"
-                fmt = self._string_global("%lld") if src_type == "i64" else self._string_global("%d")
+                if src_type == "i256":
+                    self.used_bigint_helpers.add("u256" if src_unsigned else "i256")
+                    helper = "__threadon_to_string_u256" if src_unsigned else "__threadon_to_string_i256"
+                    buf = f"{res}_buf"
+                    ptr = f"{res}_ptr"
+                    return [
+                        f"{buf} = alloca [256 x i8]",
+                        f"{ptr} = getelementptr [256 x i8], [256 x i8]* {buf}, i64 0, i64 0",
+                        f"{res} = call i8* @{helper}(i256 {src_op}, i8* {ptr})"
+                    ]
+                if src_type == "i64":
+                    fmt = self._string_global("%llu" if src_unsigned else "%lld")
+                else:
+                    fmt = self._string_global("%u" if src_unsigned else "%d")
                 return [
                     f"{buf} = alloca [32 x i8]",
                     f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 32, i8* {fmt}, {src_type} {src_op})",
@@ -386,9 +421,19 @@ class LLVMIRCompiler:
                 self.used_c_runtime.add("snprintf")
                 buf = f"{res}_buf"
                 fmt = self._string_global("%f")
+                if src_type == "double":
+                    val = src_op
+                else:
+                    val = f"{res}_fd"
+                    return [
+                        f"{buf} = alloca [64 x i8]",
+                        f"{val} = fpext {src_type} {src_op} to double",
+                        f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 64, i8* {fmt}, double {val})",
+                        f"{res} = getelementptr [64 x i8], [64 x i8]* {buf}, i64 0, i64 0"
+                    ]
                 return [
                     f"{buf} = alloca [64 x i8]",
-                    f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 64, i8* {fmt}, {src_type} {src_op})",
+                    f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 64, i8* {fmt}, double {val})",
                     f"{res} = getelementptr [64 x i8], [64 x i8]* {buf}, i64 0, i64 0"
                 ]
             if src_type == "i1":
@@ -402,19 +447,19 @@ class LLVMIRCompiler:
                 ]
             raise Exception(f"Cannot cast {src.type} to String")
 
-        if src_type in int_bits and rtype in int_bits:
-            sb, tb = int_bits[src_type], int_bits[rtype]
+        if src_type in INT_LLVM_BITS and rtype in INT_LLVM_BITS:
+            sb, tb = INT_LLVM_BITS[src_type], INT_LLVM_BITS[rtype]
             if sb == tb:
                 return f"{res} = add {rtype} {src_op}, 0"
             if sb > tb:
                 return f"{res} = trunc {src_type} {src_op} to {rtype}"
-            return f"{res} = sext {src_type} {src_op} to {rtype}"
+            return f"{res} = {'zext' if src_unsigned else 'sext'} {src_type} {src_op} to {rtype}"
 
-        if src_type in int_bits and rtype in FLOAT_LLVM_TYPES:
-            return f"{res} = sitofp {src_type} {src_op} to {rtype}"
+        if src_type in INT_LLVM_BITS and rtype in FLOAT_LLVM_TYPES:
+            return f"{res} = {'uitofp' if src_unsigned else 'sitofp'} {src_type} {src_op} to {rtype}"
 
-        if src_type in FLOAT_LLVM_TYPES and rtype in int_bits:
-            return f"{res} = fptosi {src_type} {src_op} to {rtype}"
+        if src_type in FLOAT_LLVM_TYPES and rtype in INT_LLVM_BITS:
+            return f"{res} = {'fptoui' if tgt_unsigned else 'fptosi'} {src_type} {src_op} to {rtype}"
 
         if src_type in FLOAT_LLVM_TYPES and rtype in FLOAT_LLVM_TYPES:
             order = {"half": 0, "float": 1, "double": 2}
@@ -425,7 +470,7 @@ class LLVMIRCompiler:
             return f"{res} = fptrunc {src_type} {src_op} to {rtype}"
 
         if rtype == "i1":
-            if src_type in int_bits:
+            if src_type in INT_LLVM_BITS:
                 return f"{res} = icmp ne {src_type} {src_op}, 0"
             if src_type in FLOAT_LLVM_TYPES:
                 return f"{res} = fcmp une {src_type} {src_op}, 0.0"
@@ -433,7 +478,7 @@ class LLVMIRCompiler:
                 return f"{res} = xor i1 {src_op}, false"
             raise Exception(f"Cannot cast {src.type} to Bool")
 
-        if src_type == "i1" and rtype in int_bits:
+        if src_type == "i1" and rtype in INT_LLVM_BITS:
             return f"{res} = zext i1 {src_op} to {rtype}"
 
         if src_type == "i1" and rtype in FLOAT_LLVM_TYPES:
@@ -537,8 +582,13 @@ class LLVMIRCompiler:
                 fval = struct.unpack('<f', struct.pack('<f', fval))[0]
                 return f"{res} = fadd half 0.0, 0x{self._f64_hex(fval)}"
             return f"{res} = fadd {rtype} 0.0, {fval}"
-        if isinstance(val, int):
-            return f"{res} = add {rtype} 0, {val}"
+        if isinstance(val, int) or (isinstance(val, str) and '.' not in val):
+            v = int(val)
+            width = int(rtype[1:])
+            v %= (1 << width)
+            if v >= (1 << (width - 1)):
+                v -= (1 << width)
+            return f"{res} = add {rtype} 0, {v}"
         if isinstance(val, str):
             if '.' in val:
                 return f"{res} = fadd {rtype} 0.0, {val}"
@@ -596,86 +646,33 @@ class LLVMIRCompiler:
     def _float_suffix(self, ltype):
         return {"half": "f16", "float": "f32", "double": "f64"}[ltype]
 
-    def _emit_binary(self, res, op, left, right):
-        l = self.operand(left)
-        r = self.operand(right)
-        ltype = self.to_llvm_type(left.type)
-        is_float = ltype in FLOAT_LLVM_TYPES
 
-        if op == "pow":
-            if is_float:
-                intrin = f"llvm.pow.{self._float_suffix(ltype)}"
-                self.used_intrinsics.add(intrin)
-                return f"{res} = call {ltype} @{intrin}({ltype} {l}, {ltype} {r})"
-            else:
-                self.used_intrinsics.add("llvm.pow.i32")
-                return f"{res} = call i32 @llvm.pow.i32(i32 {l}, i32 {r})"
-
-        if op == "floordiv" and is_float:
-            intrin = f"llvm.floor.{self._float_suffix(ltype)}"
-            self.used_intrinsics.add(intrin)
-            tmp = f"{res}_div"
-            return [
-                f"{tmp} = fdiv {ltype} {l}, {r}",
-                f"{res} = call {ltype} @{intrin}({ltype} {tmp})"
-            ]
-
-        op_map = {
-            "add": "fadd" if is_float else "add",
-            "sub": "fsub" if is_float else "sub",
-            "mul": "fmul" if is_float else "mul",
-            "div": "fdiv" if is_float else "sdiv",
-            "floordiv": "sdiv",
-            "mod": "frem" if is_float else "srem",
-            "and": "and",
-            "or": "or",
-        }
-        llvm_op = op_map.get(op, "add")
-
-        if self.debug_mode and op in ("div", "floordiv", "mod") and not is_float:
-            self.used_c_runtime.add("exit")
-            is_zero = f"{res}_iszero"
-            bad_label = f"{res.lstrip('%')}_divzero"
-            ok_label = f"{res.lstrip('%')}_divok"
-            msg = "Error: Division by zero\n"
-            msg_global = self._string_global(msg)
-            msg_size = len(msg.encode("utf-8")) + 1
-            return [
-                f"{is_zero} = icmp eq {ltype} {r}, 0",
-                f"br i1 {is_zero}, label %{bad_label}, label %{ok_label}",
-                "",
-                f"{bad_label}:",
-                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds [{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0",
-                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg)",
-                "  unreachable",
-                "",
-                f"{ok_label}:",
-                f"  {res} = {llvm_op} {ltype} {l}, {r}",
-            ]
-        return f"{res} = {llvm_op} {ltype} {l}, {r}"
     def _emit_bitwise(self, res, op, left, right):
         l = self.operand(left)
         r = self.operand(right)
+        ltype = self.to_llvm_type(left.type)
+        unsigned = self._is_unsigned(left.type)
         op_map = {
             "shl": "shl",
-            "shr": "ashr",
+            "shr": "lshr" if unsigned else "ashr",
             "bit_and": "and",
             "bit_or": "or",
             "bit_xor": "xor",
         }
         llvm_op = op_map[op]
-        return f"{res} = {llvm_op} i32 {l}, {r}"
+        return f"{res} = {llvm_op} {ltype} {l}, {r}"
     def _emit_cmp(self, res, op, left, right):
         l = self.operand(left)
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
         is_float = ltype in FLOAT_LLVM_TYPES
+        unsigned = self._is_unsigned(left.type)
 
         pred_map = {
-            "cmp_lt": "olt" if is_float else "slt",
-            "cmp_gt": "ogt" if is_float else "sgt",
-            "cmp_le": "ole" if is_float else "sle",
-            "cmp_ge": "oge" if is_float else "sge",
+            "cmp_lt": "olt" if is_float else ("ult" if unsigned else "slt"),
+            "cmp_gt": "ogt" if is_float else ("ugt" if unsigned else "sgt"),
+            "cmp_le": "ole" if is_float else ("ule" if unsigned else "sle"),
+            "cmp_ge": "oge" if is_float else ("uge" if unsigned else "sge"),
             "cmp_eq": "oeq" if is_float else "eq",
             "cmp_ne": "one" if is_float else "ne",
         }
@@ -714,20 +711,30 @@ class LLVMIRCompiler:
         for i, arg in enumerate(args):
             atype = self.to_llvm_type(arg.type)
             val = self.operand(arg)
+            unsigned = self._is_unsigned(arg.type)
 
-            if atype in ("i8", "i16", "i32"):
-                spec = "%d"
-                if atype != "i32":
-                    ext = f"{res}_ext{i}"
-                    lines.append(f"{ext} = sext {atype} {val} to i32")
-                    val = ext
-                call_args.append(f"i32 {val}")
-            elif atype == "i64":
-                spec = "%lld"
-                call_args.append(f"i64 {val}")
-            elif atype == "double":
-                spec = "%f"
-                call_args.append(f"double {val}")
+            if atype in ("i8", "i16", "i32", "i64"):
+                if atype == "i64":
+                    spec = "%llu" if unsigned else "%lld"
+                    call_args.append(f"i64 {val}")
+                else:
+                    spec = "%u" if unsigned else "%d"
+                    if atype != "i32":
+                        ext = f"{res}_ext{i}"
+                        lines.append(f"{ext} = {'zext' if unsigned else 'sext'} {atype} {val} to i32")
+                        val = ext
+                    call_args.append(f"i32 {val}")
+            elif atype == "i256":
+                self.used_bigint_helpers.add("u256" if unsigned else "i256")
+                helper = "__threadon_to_string_u256" if unsigned else "__threadon_to_string_i256"
+                buf = f"{res}_b{i}"
+                ptr = f"{res}_p{i}"
+                tmp = f"{res}_s{i}"
+                lines.append(f"{buf} = alloca [256 x i8]")
+                lines.append(f"{ptr} = getelementptr [256 x i8], [256 x i8]* {buf}, i64 0, i64 0")
+                lines.append(f"{tmp} = call i8* @{helper}(i256 {val}, i8* {ptr})")
+                spec = "%s"
+                call_args.append(f"i8* {tmp}")
             elif atype == "i1":
                 spec = "%d"
                 btmp = f"{res}_b{i}"
@@ -804,6 +811,91 @@ class LLVMIRCompiler:
         self.out.append("")
         self.out.append(f"@__threadon_input_buf = private global [{buf_size} x i8] zeroinitializer")
         self.out.append("")
+
+    def _emit_bigint_helpers(self):
+        kinds = set(self.used_bigint_helpers)
+        if "i256" in kinds:
+            kinds.add("u256")
+        for kind in sorted(kinds):
+            if kind == "u256":
+                self._emit_to_string_u256()
+            elif kind == "i256":
+                self._emit_to_string_i256()
+            self.out.append("")
+
+        for width in sorted(self.used_pow_widths):
+            self._emit_pow_helper(width)
+            self.out.append("")
+
+    def _emit_to_string_u256(self):
+        self.out.append("define i8* @__threadon_to_string_u256(i256 %v, i8* %buf) {")
+        self.out.append("entry:")
+        self.out.append("  %end = getelementptr i8, i8* %buf, i64 255")
+        self.out.append("  store i8 0, i8* %end")
+        self.out.append("  %idx0 = getelementptr i8, i8* %end, i64 -1")
+        self.out.append("  %iszero = icmp eq i256 %v, 0")
+        self.out.append("  br i1 %iszero, label %zero, label %loop")
+        self.out.append("zero:")
+        self.out.append("  store i8 48, i8* %idx0")
+        self.out.append("  ret i8* %idx0")
+        self.out.append("loop:")
+        self.out.append("  %vphi = phi i256 [ %v, %entry ], [ %q, %cont ]")
+        self.out.append("  %iphi = phi i8* [ %idx0, %entry ], [ %p, %cont ]")
+        self.out.append("  %r = urem i256 %vphi, 10")
+        self.out.append("  %rt = trunc i256 %r to i8")
+        self.out.append("  %d = add i8 48, %rt")
+        self.out.append("  store i8 %d, i8* %iphi")
+        self.out.append("  %q = udiv i256 %vphi, 10")
+        self.out.append("  %qd = icmp eq i256 %q, 0")
+        self.out.append("  br i1 %qd, label %done, label %cont")
+        self.out.append("cont:")
+        self.out.append("  %p = getelementptr i8, i8* %iphi, i64 -1")
+        self.out.append("  br label %loop")
+        self.out.append("done:")
+        self.out.append("  ret i8* %iphi")
+        self.out.append("}")
+
+    def _emit_to_string_i256(self):
+        self.out.append("define i8* @__threadon_to_string_i256(i256 %v, i8* %buf) {")
+        self.out.append("entry:")
+        self.out.append("  %neg = icmp slt i256 %v, 0")
+        self.out.append("  %negv = sub i256 0, %v")
+        self.out.append("  %abs = select i1 %neg, i256 %negv, i256 %v")
+        self.out.append("  %s = call i8* @__threadon_to_string_u256(i256 %abs, i8* %buf)")
+        self.out.append("  br i1 %neg, label %dash, label %body")
+        self.out.append("dash:")
+        self.out.append("  %dp = getelementptr i8, i8* %s, i64 -1")
+        self.out.append("  store i8 45, i8* %dp")
+        self.out.append("  ret i8* %dp")
+        self.out.append("body:")
+        self.out.append("  ret i8* %s")
+        self.out.append("}")
+
+    def _emit_pow_helper(self, width):
+        t = f"i{width}"
+        self.out.append(f"define {t} @__threadon_pow_i{width}({t} %base, {t} %exp) {{")
+        self.out.append("entry:")
+        self.out.append(f"  %res = alloca {t}")
+        self.out.append(f"  store {t} 1, {t}* %res")
+        self.out.append(f"  %cnt = alloca {t}")
+        self.out.append(f"  store {t} 0, {t}* %cnt")
+        self.out.append("  br label %loop")
+        self.out.append("loop:")
+        self.out.append(f"  %c = load {t}, {t}* %cnt")
+        self.out.append(f"  %cmp = icmp ult {t} %c, %exp")
+        self.out.append("  br i1 %cmp, label %body, label %done")
+        self.out.append("body:")
+        self.out.append(f"  %r0 = load {t}, {t}* %res")
+        self.out.append(f"  %m = mul {t} %r0, %base")
+        self.out.append(f"  store {t} %m, {t}* %res")
+        self.out.append(f"  %c1 = load {t}, {t}* %cnt")
+        self.out.append(f"  %n = add {t} %c1, 1")
+        self.out.append(f"  store {t} %n, {t}* %cnt")
+        self.out.append("  br label %loop")
+        self.out.append("done:")
+        self.out.append(f"  %r = load {t}, {t}* %res")
+        self.out.append(f"  ret {t} %r")
+        self.out.append("}")
 
 
 

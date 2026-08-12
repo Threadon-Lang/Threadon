@@ -1,5 +1,6 @@
 from collections import defaultdict, deque
 
+from .builtins import ALL_INT_TYPES, FLOAT_TYPES
 from .to_high_ir import IRBlock, IRInstr, IRPhi, SSAValue
 
 
@@ -99,6 +100,50 @@ class IROptimizer:
         v = self._get_const_value(val)
         n = self._to_number(v)
         return n == 0 if n is not None else False
+
+    def _fold_number(self, op, ln, rn, rtype):
+        if rtype in ALL_INT_TYPES:
+            if op == "div":
+                if rn == 0:
+                    return None
+                q = abs(ln) // abs(rn)
+                return -q if (ln < 0) != (rn < 0) else q
+            if op == "floordiv":
+                if rn == 0:
+                    return None
+                return ln // rn
+            if op == "mod":
+                if rn == 0:
+                    return None
+                q = abs(ln) // abs(rn)
+                q = -q if (ln < 0) != (rn < 0) else q
+                return ln - q * rn
+            if op == "add":
+                return ln + rn
+            if op == "sub":
+                return ln - rn
+            if op == "mul":
+                return ln * rn
+            if op == "pow":
+                if isinstance(ln, bool) or isinstance(rn, bool) or rn < 0:
+                    return None
+                return ln ** rn
+            return None
+        if op == "add":
+            return ln + rn
+        if op == "sub":
+            return ln - rn
+        if op == "mul":
+            return ln * rn
+        if op == "div":
+            return ln / rn
+        if op == "floordiv":
+            return ln // rn
+        if op == "mod":
+            return ln % rn
+        if op == "pow":
+            return ln ** rn
+        return None
 
     def _is_one(self, val):
         v = self._get_const_value(val)
@@ -252,13 +297,12 @@ class IROptimizer:
                     rn = self._to_number(r)
                     if ln is None or rn is None:
                         return set()
-                    if op == "add": return ln + rn
-                    if op == "sub": return ln - rn
-                    if op == "mul": return ln * rn
-                    if op == "div": return ln / rn
-                    if op == "floordiv": return ln // rn
-                    if op == "mod": return ln % rn
-                    if op == "pow": return ln ** rn
+                    rtype = instr.result.type
+                    if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow"):
+                        res = self._fold_number(op, ln, rn, rtype)
+                        if res is None:
+                            return set()
+                        return res
                     if op == "cmp_lt": return ln < rn
                     if op == "cmp_gt": return ln > rn
                     if op == "cmp_le": return ln <= rn
@@ -343,19 +387,21 @@ class IROptimizer:
                             ln = self._to_number(l)
                             rn = self._to_number(r)
                             if ln is not None and rn is not None:
-                                if instr.op == "add": res = ln + rn
-                                elif instr.op == "sub": res = ln - rn
-                                elif instr.op == "mul": res = ln * rn
-                                elif instr.op == "div": res = ln / rn
-                                elif instr.op == "floordiv": res = ln // rn
-                                elif instr.op == "mod": res = ln % rn
-                                elif instr.op == "pow": res = ln ** rn
+                                rtype = instr.result.type
+                                if instr.op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow"):
+                                    res = self._fold_number(instr.op, ln, rn, rtype)
+                                    if res is None:
+                                        i += 1
+                                        continue
                                 elif instr.op == "cmp_lt": res = ln < rn
                                 elif instr.op == "cmp_gt": res = ln > rn
                                 elif instr.op == "cmp_le": res = ln <= rn
                                 elif instr.op == "cmp_ge": res = ln >= rn
                                 elif instr.op == "cmp_eq": res = ln == rn
                                 elif instr.op == "cmp_ne": res = ln != rn
+                                else:
+                                    i += 1
+                                    continue
                                 old_args = instr.args
                                 instr.op = "const"
                                 instr.args = [res]
