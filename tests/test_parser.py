@@ -131,16 +131,6 @@ def f(x: Int32) -> Int32
     """
 struct A:
     x: Int32
-def g(a: Int32, b: Int32) -> Int32
-    return a + b
-def f() -> Int32
-    a: A = A(x=g(1,2))
-    return a.x
-""",
-
-    """
-struct A:
-    x: Int32
 def f() -> Int32
     a: A = A(y=1)
     return 0
@@ -254,6 +244,37 @@ def f(x: Int32, y: Float32) -> Bool
 def f(x: Int32, y: Int32) -> Bool
     b: Bool = x and y
     return b
+""",
+
+    """
+def f(x: Int32) -> Int32
+    return x[0]
+""",
+
+    """
+def f() -> Int32
+    xs: List[Int32] = [1, 2]
+    return xs[1.5]
+""",
+
+    """
+def f() -> Int32
+    xs: List[Int32] = [1, 2.5]
+    return xs[0]
+""",
+
+    """
+def f() -> Int32
+    x: Int32 = 5
+    x[0] = 1
+    return 0
+""",
+
+    """
+def f() -> Int32
+    xs: List[Int32] = [1, 2]
+    xs[0] = "hi"
+    return 0
 """,
 ]
 

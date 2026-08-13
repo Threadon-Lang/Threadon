@@ -70,9 +70,18 @@ class IfStmt:
     elif_blocks: list
     else_body: list | None
 @dataclass
+class WhileStmt:
+    condition: any
+    body: list
+@dataclass
 class Assign:
     name: str
     expr: list[Expr]
+@dataclass
+class IndexAssign:
+    target: Expr
+    index: Expr
+    value: Expr
 @dataclass
 class FieldAssign:
     name: str
@@ -94,6 +103,15 @@ class StructInitExpr:
 @dataclass
 class RefExpr(Expr):
     inner: Expr
+
+@dataclass
+class ListLiteralExpr(Expr):
+    elements: list
+
+@dataclass
+class IndexExpr(Expr):
+    obj: Expr
+    index: Expr
 
 @dataclass
 class ImportStmt(Node):

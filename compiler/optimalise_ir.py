@@ -1346,7 +1346,7 @@ class IROptimizer:
                     if tgt in dom[block.label]:
                         back_edges.append((block.label, tgt))
 
-        for header, tail in back_edges:
+        for tail, header in back_edges:
             loop_blocks = {header}
             queue = [tail]
             while queue:
@@ -1394,8 +1394,10 @@ class IROptimizer:
         preds = [p for p in header.predecessors]
         non_back = []
         for p in preds:
-            if p not in dom[header_label] or p == header_label:
+            if header_label not in dom[p] and p != header_label:
                 non_back.append(p)
+        if not non_back:
+            return None
         if len(non_back) == 1:
             return self.func.block_map[non_back[0]]
         pre = IRBlock(f"pre_{header_label}")
@@ -1440,7 +1442,7 @@ class IROptimizer:
                     if tgt in dom[block.label]:
                         back_edges.append((block.label, tgt))
 
-        for header_label, tail_label in back_edges:
+        for tail_label, header_label in back_edges:
             header = self.func.block_map[header_label]
             for instr in header.instructions:
                 if not isinstance(instr, IRPhi):

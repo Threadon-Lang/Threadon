@@ -485,6 +485,210 @@ def main() -> Int32
         assert result.stdout == "None None\nx None 5\n"
 
 
+def test_list_literal_get_set_print():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3, 4]
+    xs[3] = 2
+    print(xs)
+    print(xs[0] + xs[1])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3, 2]\n3\n"
+
+
+def test_list_float_string_bool_none():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    fs: List[Float64] = [1.5, 2.5]
+    print(fs)
+    ss: List[String] = ["a", "bb"]
+    print(ss)
+    bs: List[Bool] = [True, False]
+    print(bs)
+    ns: List[NoneType] = [None, None]
+    print(ns)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "[1.500000, 2.500000]\n[a, bb]\n[true, false]\n[None, None]\n"
+    )
+
+
+def test_list_empty_and_reassign():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = []
+    print(xs)
+    xs = [1, 2]
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[]\n[1, 2]\n"
+
+
+def test_list_type_adapts_literals():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int64] = [1, 2, 3]
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3]\n"
+
+
+def test_list_as_function_param_and_return():
+    result = compile_stdlib_run(
+        """
+def first(xs: List[Int32]) -> Int32
+    return xs[0]
+
+def sum2(xs: List[Int32]) -> Int32
+    return xs[0] + xs[1]
+
+def make() -> List[Int32]
+    return [7, 8, 9]
+
+def main() -> Int32
+    xs: List[Int32] = [10, 20, 30]
+    print(first(xs))
+    print(first(make()))
+    print(sum2([5, 6]))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "10\n7\n11\n"
+
+
+def test_list_in_struct():
+    result = compile_stdlib_run(
+        """
+struct Bag:
+    items: List[Int32]
+
+def main() -> Int32
+    b: Bag = Bag(items=[1, 2, 3])
+    b.items[1] = 7
+    print(b.items)
+    print(b.items[0] + b.items[1] + b.items[2])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 7, 3]\n11\n"
+
+
+def test_list_index_types():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [10, 20, 30]
+    i8: Int8 = 2
+    ui: UInt64 = 0
+    print(xs[i8])
+    print(xs[ui])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "30\n10\n"
+
+
+def test_list_index_out_of_bounds_errors():
+    for src in (
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2]
+    print(xs[5])
+    return 0
+""",
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2]
+    print(xs[-1])
+    return 0
+""",
+    ):
+        result = compile_stdlib_run(src)
+        assert result.returncode != 0
+        assert "List index out of bounds" in result.stderr
+
+
+def test_index_assign_uses_values():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3]
+    i: Int32 = 1
+    xs[i] = xs[0] + xs[2]
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 4, 3]\n"
+
+
+def test_nested_list_chained_index():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xd: List[List[Int32]] = [[1, 2], [3, 4]]
+    xd[0][1] = 9
+    print(xd)
+    print(xd[1][0])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[[1, 9], [3, 4]]\n3\n"
+
+
+def test_deeply_nested_list_print():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xdd: List[List[List[Int32]]] = [[[1, 3]]]
+    print(xdd)
+    xdd[0][0][1] = 7
+    print(xdd)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[[[1, 3]]]\n[[[1, 7]]]\n"
+
+
+def test_nested_list_struct_field():
+    result = compile_stdlib_run(
+        """
+struct Grid:
+    rows: List[List[Int32]]
+
+def main() -> Int32
+    g: Grid = Grid(rows=[[1, 2], [3, 4]])
+    g.rows[1][0] = 8
+    print(g.rows)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[[1, 2], [8, 4]]\n"
+
+
 if __name__ == "__main__":
     test_complex_program_runs()
     test_complex_program_inlined()
@@ -506,4 +710,16 @@ if __name__ == "__main__":
     test_float_div_zero_not_folded()
     test_none_type_variables()
     test_print_none_type()
+    test_list_literal_get_set_print()
+    test_list_float_string_bool_none()
+    test_list_empty_and_reassign()
+    test_list_type_adapts_literals()
+    test_list_as_function_param_and_return()
+    test_list_in_struct()
+    test_list_index_types()
+    test_list_index_out_of_bounds_errors()
+    test_index_assign_uses_values()
+    test_nested_list_chained_index()
+    test_deeply_nested_list_print()
+    test_nested_list_struct_field()
     print("compile_test OK")

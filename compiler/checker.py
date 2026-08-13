@@ -124,6 +124,31 @@ class UnreachableChecker:
 
             return merge_block
 
+        if t == "WhileStmt":
+            current_block["stmts"].append((stmt, True))
+
+            cond_block = self.new_block(f"whilecond_{len(blocks)}")
+            blocks.append(cond_block)
+            current_block["succ"].append(cond_block["name"])
+
+            cb = cond_block
+            for s in stmt.body:
+                nb = self.process_stmt(s, cb, blocks)
+                if nb is None:
+                    cb = None
+                    break
+                else:
+                    cb = nb
+
+            if cb is not None:
+                cb["succ"].append(cond_block["name"])
+
+            merge_block = self.new_block(f"whilemerge_{len(blocks)}")
+            blocks.append(merge_block)
+            cond_block["succ"].append(merge_block["name"])
+
+            return merge_block
+
         current_block["stmts"].append((stmt, True))
         return current_block
 
@@ -171,6 +196,9 @@ class ShadowChecker:
                 if stmt.else_body:
                     self.visit_block(stmt.else_body, local.copy())
 
+            elif t == "WhileStmt":
+                self.visit_block(stmt.body, local.copy())
+
             elif t == "FunctionDef":
                 func_scope = {pname: True for pname, _, _ in stmt.params}
                 self.visit_block(stmt.body, func_scope)
@@ -202,6 +230,9 @@ class DuplicateChecker:
 
         if t == "IfStmt":
             return self.visit_if(node, scope)
+
+        if t == "WhileStmt":
+            return self.visit_while(node, scope)
 
         if t == "ReturnStmt":
             return None
@@ -264,6 +295,12 @@ class DuplicateChecker:
 
         for v in common_vars:
             parent_scope[v] = True
+
+    def visit_while(self, node, parent_scope):
+        while_scope = parent_scope.copy()
+        for stmt in node.body:
+            self.visit(stmt, while_scope)
+
 class UnusedVariableChecker:
     def __init__(self):
         self.warnings = []
@@ -327,6 +364,10 @@ class UnusedVariableChecker:
             used.add(stmt.name)
             self.visit_expr(stmt.expr, used)
 
+        elif t == "IndexAssign":
+            self.visit_expr(stmt.target, used)
+            self.visit_expr(stmt.value, used)
+
         elif t == "ExprStmt":
             self.visit_expr(stmt.expr, used)
 
@@ -346,6 +387,11 @@ class UnusedVariableChecker:
                 for s in stmt.else_body:
                     self.visit_stmt(s, declared, used)
 
+        elif t == "WhileStmt":
+            self.visit_expr(stmt.condition, used)
+            for s in stmt.body:
+                self.visit_stmt(s, declared, used)
+
     def visit_expr(self, expr, used):
         t = type(expr).__name__
 
@@ -364,6 +410,12 @@ class UnusedVariableChecker:
                 self.visit_expr(e, used)
         elif t == "FieldAccessExpr":
             self.visit_expr(expr.obj, used)
+        elif t == "IndexExpr":
+            self.visit_expr(expr.obj, used)
+            self.visit_expr(expr.index, used)
+        elif t == "ListLiteralExpr":
+            for e in expr.elements:
+                self.visit_expr(e, used)
         elif t == "RefExpr":
             self.visit_expr(expr.inner, used)
 
@@ -409,6 +461,10 @@ class DeadStoreChecker:
                 self.walk_expr(stmt.expr, reads)
                 reads.add(stmt.name)
 
+            elif t == "IndexAssign":
+                self.walk_expr(stmt.target, reads)
+                self.walk_expr(stmt.value, reads)
+
             elif t == "ReturnStmt":
                 if stmt.value:
                     self.walk_expr(stmt.value, reads)
@@ -421,6 +477,10 @@ class DeadStoreChecker:
                     self.walk_block(body, writes, reads)
                 if stmt.else_body:
                     self.walk_block(stmt.else_body, writes, reads)
+
+            elif t == "WhileStmt":
+                self.walk_expr(stmt.condition, reads)
+                self.walk_block(stmt.body, writes, reads)
 
     def walk_expr(self, expr, reads):
         t = type(expr).__name__
@@ -445,6 +505,14 @@ class DeadStoreChecker:
 
         elif t == "FieldAccessExpr":
             self.walk_expr(expr.obj, reads)
+
+        elif t == "IndexExpr":
+            self.walk_expr(expr.obj, reads)
+            self.walk_expr(expr.index, reads)
+
+        elif t == "ListLiteralExpr":
+            for e in expr.elements:
+                self.walk_expr(e, reads)
 
         elif t == "RefExpr":
             self.walk_expr(expr.inner, reads)
@@ -533,6 +601,10 @@ class AliasChecker:
             if stmt.else_body:
                 for s in stmt.else_body:
                     self.visit_stmt(s, declared)
+
+        elif t == "WhileStmt":
+            for s in stmt.body:
+                self.visit_stmt(s, declared)
 
     def check_ref_decl(self, var_decl, declared):
         name = var_decl.name

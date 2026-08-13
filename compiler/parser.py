@@ -55,6 +55,12 @@ def print_expr(expr):
     if t == "RefExpr":
         return f"{print_expr(expr.inner)}^"
 
+    if t == "ListLiteralExpr":
+        return "[" + ", ".join(print_expr(e) for e in expr.elements) + "]"
+
+    if t == "IndexExpr":
+        return f"{print_expr(expr.obj)}[{print_expr(expr.index)}]"
+
     return "<unknown expr>"
 def print_ast(ast, indent=0):
     pad = "    " * indent
@@ -82,6 +88,13 @@ def print_ast(ast, indent=0):
 
         if t == "Assign":
             print(f"{pad}Assign {node.name} = {print_expr(node.expr)}")
+            continue
+
+        if t == "IndexAssign":
+            print(
+                f"{pad}IndexAssign {print_expr(node.target)}"
+                f"[{print_expr(node.index)}] = {print_expr(node.value)}"
+            )
             continue
 
         if t == "FieldAssign":
@@ -113,6 +126,13 @@ def print_ast(ast, indent=0):
                 print_ast(node.else_body, indent + 1)
                 print(f"{pad}}}")
 
+            continue
+
+        if t == "WhileStmt":
+            print(f"{pad}While {print_expr(node.condition)}:")
+            print(f"{pad}{{")
+            print_ast(node.body, indent + 1)
+            print(f"{pad}}}")
             continue
 
         if t == "StructDef":
@@ -300,6 +320,8 @@ class Parser:
             return self.parse_variable_decl()
         if first == TokenType.IF:
             return self.parse_if()
+        if first == TokenType.WHILE:
+            return self.parse_while()
         if first == TokenType.STRUCT:
             return self.parse_struct()
 
@@ -326,8 +348,24 @@ class Parser:
         ):
             return self.parse_field_assign()
 
-        if first == TokenType.IDENT and len(self.current_line) > 1 and self.current_line[1].type == TokenType.ASSIGN:
+        if (
+            first == TokenType.IDENT
+            and len(self.current_line) > 1
+            and self.current_line[1].type == TokenType.ASSIGN
+        ):
             return self.parse_assign()
+
+        if first == TokenType.IDENT and len(self.current_line) > 2 and self.current_line[1].type == TokenType.LBRACKET:
+            return self.parse_index_assign()
+
+        if (
+            first == TokenType.IDENT
+            and len(self.current_line) > 4
+            and self.current_line[1].type == TokenType.DOT
+            and self.current_line[2].type == TokenType.IDENT
+            and self.current_line[3].type == TokenType.LBRACKET
+        ):
+            return self.parse_field_index_assign()
 
         if first == TokenType.IDENT and len(self.current_line) > 1:
             if self.current_line[1].type == TokenType.LPAREN:
@@ -388,12 +426,15 @@ class Parser:
         j = start
         while j < len(ts):
             tok = ts[j]
-            if tok.type == TokenType.LPAREN:
+            if tok.type in (TokenType.LPAREN, TokenType.LBRACKET):
                 depth += 1
                 current.append(tok)
             elif tok.type == TokenType.RPAREN:
                 if depth == 0:
                     break
+                depth -= 1
+                current.append(tok)
+            elif tok.type == TokenType.RBRACKET:
                 depth -= 1
                 current.append(tok)
             elif tok.type == TokenType.COMMA and depth == 0:
@@ -546,6 +587,59 @@ class Parser:
             if resolved in self.struct_defs:
                 return resolved
             self.give_error(f"Unknown type '{tok.value}' in {ctx}")
+        self.give_error(f"Expected a type in {ctx}")
+
+    def parse_type_from_tokens(self, tokens, ctx, start=0):
+        """Parse a type starting at ``tokens[start]``.
+
+        Returns ``(type_str, next_index)``. Supports primitives, dotted
+        struct names and ``List[T]``.
+        """
+        if start >= len(tokens):
+            self.give_error(f"Expected a type in {ctx}")
+
+        tok = tokens[start]
+
+        if tok.type == TokenType.IDENT and tok.value == "List":
+            if start + 1 >= len(tokens) or tokens[start + 1].type != TokenType.LBRACKET:
+                self.give_error("Expected '[' after 'List' in type")
+
+            depth = 0
+            end = None
+            for k in range(start + 1, len(tokens)):
+                if tokens[k].type == TokenType.LBRACKET:
+                    depth += 1
+                elif tokens[k].type == TokenType.RBRACKET:
+                    depth -= 1
+                    if depth == 0:
+                        end = k
+                        break
+            if end is None:
+                self.give_error("Unmatched '[' in type")
+
+            elem_type, _ = self.parse_type_from_tokens(
+                tokens[start + 2:end], ctx, 0
+            )
+            return f"List[{elem_type}]", end + 1
+
+        if tok.type == TokenType.TYPE:
+            return tok.value, start + 1
+
+        if tok.type == TokenType.IDENT:
+            parts = [tok.value]
+            i = start + 1
+            while (
+                i + 1 < len(tokens)
+                and tokens[i].type == TokenType.DOT
+                and tokens[i + 1].type == TokenType.IDENT
+            ):
+                parts.append(tokens[i + 1].value)
+                i += 2
+            resolved = self.resolve_type(".".join(parts))
+            if resolved in self.struct_defs:
+                return resolved, i
+            self.give_error(f"Unknown type '{'.'.join(parts)}' in {ctx}")
+
         self.give_error(f"Expected a type in {ctx}")
 
     def import_member(self, module_path, member):
@@ -780,6 +874,31 @@ class Parser:
     def parse_elif_error(self):
         self.give_error("'elif' without matching 'if'")
 
+    def parse_while(self):
+        tokens = self.current_line
+
+        if len(tokens) < 2:
+            self.give_error("Invalid 'while' statement")
+
+        parent_indent = self.current_indent
+        cond_tokens = tokens[1:]
+
+        if cond_tokens[-1].type != TokenType.COLON:
+            self.give_error("Expected ':' after 'while' condition")
+
+        cond_tokens = cond_tokens[:-1]
+
+        condition = self.parse_expr(cond_tokens)
+
+        cond_type = self.detect_expr_type(condition)
+        if cond_type != "Bool":
+            self.give_error(f"While condition must be Bool, got {cond_type}")
+
+        body = self.parse_block(parent_indent)
+        self.pop_scope()
+
+        return WhileStmt(condition, body)
+
     def parse_function(self):
         tokens = self.current_line
 
@@ -802,18 +921,28 @@ class Parser:
                 self.give_error("Expected ':' after parameter name")
             i += 1
 
-            param_type = self.parse_type_token(tokens[i], "function signature")
-            i += 1
+            param_type, consumed = self.parse_type_from_tokens(
+                tokens, "function signature", i
+            )
+            i = consumed
 
             default = None
             if i < len(tokens) and tokens[i].type == TokenType.ASSIGN:
                 i += 1
                 default_tokens = []
-                while i < len(tokens) and tokens[i].type not in (
-                    TokenType.COMMA,
-                    TokenType.RPAREN,
-                ):
-                    default_tokens.append(tokens[i])
+                depth = 0
+                while i < len(tokens):
+                    tok = tokens[i]
+                    if depth == 0 and tok.type in (
+                        TokenType.COMMA,
+                        TokenType.RPAREN,
+                    ):
+                        break
+                    if tok.type in (TokenType.LBRACKET, TokenType.LPAREN):
+                        depth += 1
+                    elif tok.type in (TokenType.RBRACKET, TokenType.RPAREN):
+                        depth -= 1
+                    default_tokens.append(tok)
                     i += 1
                 if not default_tokens:
                     self.give_error("Expected default value after '='")
@@ -834,10 +963,9 @@ class Parser:
             self.give_error("Expected '->' after ')'")
         i += 1
 
-        return_type = self.parse_type_token(
-            tokens[i] if i < len(tokens) else None, "return type"
+        return_type, _ = self.parse_type_from_tokens(
+            tokens, "return type", i
         )
-        i += 1
 
         func_name_q = self.qualify(func_name)
         params = [
@@ -923,9 +1051,9 @@ class Parser:
             for k, tok in enumerate(ts):
                 if k < start:
                     continue
-                if tok.type == TokenType.LPAREN:
+                if tok.type in (TokenType.LPAREN, TokenType.LBRACKET):
                     depth += 1
-                elif tok.type == TokenType.RPAREN:
+                elif tok.type in (TokenType.RPAREN, TokenType.RBRACKET):
                     depth -= 1
                 elif depth == 0 and tok.type in op_types:
                     if last or idx is None:
@@ -1039,6 +1167,110 @@ class Parser:
                     return VarExpr(tok.value)
 
             self.give_error("Invalid expression")
+
+        def parse_list_literal(ts):
+            if not ts or ts[0].type != TokenType.LBRACKET:
+                return None
+
+            depth = 0
+            end = None
+            for k, tok in enumerate(ts):
+                if tok.type == TokenType.LBRACKET:
+                    depth += 1
+                elif tok.type == TokenType.RBRACKET:
+                    depth -= 1
+                    if depth == 0:
+                        end = k
+                        break
+            if end is None:
+                self.give_error("Unmatched '[' in list literal")
+            if end != len(ts) - 1:
+                self.give_error("Unexpected tokens after list literal")
+
+            inner = ts[1:end]
+            if not inner:
+                return ListLiteralExpr([])
+
+            elements = []
+            current = []
+            depth = 0
+            for tok in inner:
+                if tok.type in (TokenType.LBRACKET, TokenType.LPAREN):
+                    depth += 1
+                elif tok.type in (TokenType.RBRACKET, TokenType.RPAREN):
+                    depth -= 1
+                if tok.type == TokenType.COMMA and depth == 0:
+                    if not current:
+                        self.give_error("Empty element in list literal")
+                    elements.append(self.parse_expr(current))
+                    current = []
+                else:
+                    current.append(tok)
+
+            if current:
+                elements.append(self.parse_expr(current))
+            return ListLiteralExpr(elements)
+
+        def index_postfix(ts):
+            lit = parse_list_literal(ts)
+            if lit is not None:
+                return lit
+
+            lb = None
+            depth = 0
+            for k, tok in enumerate(ts):
+                if tok.type == TokenType.LPAREN:
+                    depth += 1
+                elif tok.type == TokenType.RPAREN:
+                    depth -= 1
+                elif tok.type == TokenType.LBRACKET and depth == 0:
+                    lb = k
+                    break
+            if lb is None:
+                return factor(ts)
+
+            base = factor(ts[:lb])
+            rest = ts[lb:]
+
+            while True:
+                if not rest:
+                    break
+                if (
+                    rest[0].type == TokenType.DOT
+                    and len(rest) >= 2
+                    and rest[1].type == TokenType.IDENT
+                ):
+                    base = FieldAccessExpr(base, rest[1].value)
+                    rest = rest[2:]
+                    continue
+
+                if rest[0].type == TokenType.LBRACKET:
+                    depth = 1
+                    end = None
+                    for k in range(1, len(rest)):
+                        tok = rest[k]
+                        if tok.type == TokenType.LBRACKET:
+                            depth += 1
+                        elif tok.type == TokenType.RBRACKET:
+                            depth -= 1
+                            if depth == 0:
+                                end = k
+                                break
+                    if end is None:
+                        self.give_error("Unmatched '[' in index expression")
+                    index_tokens = rest[1:end]
+                    if not index_tokens:
+                        self.give_error("Empty index expression")
+                    index = self.parse_expr(index_tokens)
+                    base = IndexExpr(base, index)
+                    rest = rest[end + 1:]
+                    continue
+
+                if not rest:
+                    break
+                self.give_error("Unexpected tokens after index expression")
+            return base
+
         def unary(ts):
             if ts and ts[0].type == TokenType.MINUS:
                 return UnaryExpr("-", unary(ts[1:]))
@@ -1083,7 +1315,7 @@ class Parser:
                 if type(right).__name__ == "BinaryExpr" and right.op == "**":
                     self.give_error("Chained '**' is not allowed")
                 return BinaryExpr(left, "**", right)
-            return factor(ts)
+            return index_postfix(ts)
 
         def mul_div(ts):
             i = find_op(ts, (TokenType.MUL, TokenType.DIV, TokenType.MOD, TokenType.FLOORDIV))
@@ -1116,6 +1348,31 @@ class Parser:
         if t == "RefExpr":
             inner_type = self.detect_expr_type(expr.inner)
             return inner_type
+        if t == "ListLiteralExpr":
+            if getattr(expr, "type", None) is not None:
+                return expr.type
+            if not expr.elements:
+                return "List[Unknown]"
+            first = self.detect_expr_type(expr.elements[0])
+            for i in range(1, len(expr.elements)):
+                elem_type = self.detect_expr_type(expr.elements[i])
+                if elem_type != first:
+                    if not self._try_adapt_literal(
+                        expr.elements[i], elem_type, first
+                    ):
+                        self.give_error(
+                            "All elements of a list must have the same type"
+                        )
+            expr.type = f"List[{first}]"
+            return expr.type
+        if t == "IndexExpr":
+            obj_type = self.detect_expr_type(expr.obj)
+            if not (isinstance(obj_type, str) and obj_type.startswith("List[")):
+                self.give_error(f"'{obj_type}' is not a list, cannot index")
+            index_type = self.detect_expr_type(expr.index)
+            if index_type not in ALL_INT_TYPES:
+                self.give_error(f"List index must be an integer, got {index_type}")
+            return obj_type[5:-1]
         if t == "FieldAccessExpr":
             obj_type = self.detect_expr_type(expr.obj)
 
@@ -1392,13 +1649,9 @@ class Parser:
         name = tokens[0].value
 
         i = 2
-        type_parts = [tokens[i].value]
-        i += 1
-        while i + 1 < len(tokens) and tokens[i].type == TokenType.DOT and tokens[i + 1].type == TokenType.IDENT:
-            type_parts.append(tokens[i + 1].value)
-            i += 2
-
-        var_type = self.resolve_type(".".join(type_parts))
+        var_type, i = self.parse_type_from_tokens(
+            tokens, "variable declaration", i
+        )
 
         if i >= len(tokens):
             self.declare_var(name, var_type)
@@ -1439,6 +1692,8 @@ class Parser:
             if is_literal:
                 self._set_expr_type(expr, var_type)
                 self._check_literal_range(expr,var_type)
+            elif self._try_adapt_literal(expr, detected, var_type):
+                pass
             else:
                 self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
         if isinstance(expr, RefExpr) and isinstance(expr.inner, VarExpr):
@@ -1467,7 +1722,9 @@ class Parser:
             return True
         if t in self.struct_import_aliases.values():
             return True
-        if t.endswith("*") and self._is_valid_type(t[:-1]):
+        if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):
+            return self._is_valid_type(t[5:-1])
+        if isinstance(t, str) and t.endswith("*") and self._is_valid_type(t[:-1]):
             return True
         return False
     def _is_const_int_expr(self, e):
@@ -1526,6 +1783,23 @@ class Parser:
     def _try_adapt_literal(self, node, node_type, want_type):
         if node_type == want_type:
             return True
+        if (
+            isinstance(node_type, str)
+            and node_type.startswith("List[")
+            and isinstance(want_type, str)
+            and want_type.startswith("List[")
+        ):
+            if type(node).__name__ != "ListLiteralExpr":
+                return False
+            dst_elem = want_type[5:-1]
+            for elem in node.elements:
+                elem_type = self.detect_expr_type(elem)
+                if elem_type == dst_elem:
+                    continue
+                if not self._try_adapt_literal(elem, elem_type, dst_elem):
+                    return False
+            node.type = want_type
+            return True
         if node_type in self._INT_TYPES and want_type in self._INT_TYPES:
             if self._is_const_int_expr(node):
                 self._check_literal_range(node, want_type)
@@ -1553,8 +1827,16 @@ class Parser:
             i += 1
 
             expr_tokens = []
-            while i < len(tokens) and tokens[i].type != TokenType.COMMA:
-                expr_tokens.append(tokens[i])
+            depth = 0
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok.type in (TokenType.LBRACKET, TokenType.LPAREN):
+                    depth += 1
+                elif tok.type in (TokenType.RBRACKET, TokenType.RPAREN):
+                    depth -= 1
+                if tok.type == TokenType.COMMA and depth == 0:
+                    break
+                expr_tokens.append(tok)
                 i += 1
 
             expr = self.parse_expr(expr_tokens)
@@ -1639,12 +1921,90 @@ class Parser:
             ):
                 self._set_expr_type(rhs, var_type)
                 self._check_literal_range(rhs,var_type)
+            elif self._try_adapt_literal(rhs, rhs_type, var_type):
+                pass
             else:
                 self.give_error(
                     f"Variable '{name}' expects type {var_type}, got {rhs_type}"
                 )
 
         return Assign(name, rhs)
+
+    def parse_index_assign(self):
+        tokens = self.current_line
+
+        depth = 0
+        assign_idx = None
+        last_rb = None
+        for k in range(1, len(tokens)):
+            tok = tokens[k]
+            if tok.type in (TokenType.LBRACKET, TokenType.LPAREN):
+                depth += 1
+            elif tok.type in (TokenType.RBRACKET, TokenType.RPAREN):
+                depth -= 1
+                if depth == 0 and tok.type == TokenType.RBRACKET:
+                    last_rb = k
+            elif tok.type == TokenType.ASSIGN and depth == 0:
+                assign_idx = k
+                break
+        if assign_idx is None or last_rb is None or last_rb + 1 != assign_idx:
+            self.give_error("Expected '=' after index expression")
+
+        target = self.parse_expr(tokens[:assign_idx])
+        if type(target).__name__ != "IndexExpr":
+            self.give_error("Invalid index assignment target")
+
+        value = self.parse_expr(tokens[assign_idx + 1:])
+
+        target_type = self.detect_expr_type(target)
+        value_type = self.detect_expr_type(value)
+        if not self._is_valid_type(target_type):
+            self.give_error(f"Unknown type '{target_type}'")
+        if value_type != target_type:
+            if not self._try_adapt_literal(value, value_type, target_type):
+                self.give_error(
+                    f"List element expects type {target_type}, got {value_type}"
+                )
+
+        return IndexAssign(target, target.index, value)
+
+    def parse_field_index_assign(self):
+        tokens = self.current_line
+
+        depth = 0
+        assign_idx = None
+        last_rb = None
+        for k in range(1, len(tokens)):
+            tok = tokens[k]
+            if tok.type in (TokenType.LBRACKET, TokenType.LPAREN):
+                depth += 1
+            elif tok.type in (TokenType.RBRACKET, TokenType.RPAREN):
+                depth -= 1
+                if depth == 0 and tok.type == TokenType.RBRACKET:
+                    last_rb = k
+            elif tok.type == TokenType.ASSIGN and depth == 0:
+                assign_idx = k
+                break
+        if assign_idx is None or last_rb is None or last_rb + 1 != assign_idx:
+            self.give_error("Expected '=' after index expression")
+
+        target = self.parse_expr(tokens[:assign_idx])
+        if type(target).__name__ != "IndexExpr":
+            self.give_error("Invalid index assignment target")
+
+        value = self.parse_expr(tokens[assign_idx + 1:])
+
+        target_type = self.detect_expr_type(target)
+        value_type = self.detect_expr_type(value)
+        if not self._is_valid_type(target_type):
+            self.give_error(f"Unknown type '{target_type}'")
+        if value_type != target_type:
+            if not self._try_adapt_literal(value, value_type, target_type):
+                self.give_error(
+                    f"List element expects type {target_type}, got {value_type}"
+                )
+
+        return IndexAssign(target, target.index, value)
 
 if __name__ == "__main__":
     code = """

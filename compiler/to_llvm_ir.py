@@ -36,6 +36,7 @@ class LLVMIRCompiler:
         self.max_stack_depth = max_stack_depth
         self.block_end_label = {}
         self.used_checked_pow_widths = set()
+        self.used_list_print = set()
 
     def compile(self, module):
         self.module = module 
@@ -58,6 +59,15 @@ class LLVMIRCompiler:
             self.emit_function(func)
 
         self._emit_bigint_helpers()
+
+        emitted = set()
+        while True:
+            pending = set(self.used_list_print) - emitted
+            if not pending:
+                break
+            for elem_t in pending:
+                self._emit_list_str_helper(elem_t)
+                emitted.add(elem_t)
 
 
         self.out.append("")
@@ -147,6 +157,8 @@ class LLVMIRCompiler:
                 self.out.append("declare i32 @snprintf(i8*, i64, i8*, ...)")
             if "strlen" in self.used_c_runtime:
                 self.out.append("declare i64 @strlen(i8*)")
+            if "malloc" in self.used_c_runtime:
+                self.out.append("declare i8* @malloc(i64)")
             self.out.append("")
 
         return "\n".join(self.out)
@@ -167,6 +179,9 @@ class LLVMIRCompiler:
             return "i8*"
         if t == "NoneType":
             return "i8"
+        if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):
+            elem = self.to_llvm_type(t[5:-1])
+            return f"{{ i64, {elem}* }}"
         if t in self.module.types:
             return f"%struct.{t}"
         for name in self.module.types:
@@ -1039,6 +1054,15 @@ class LLVMIRCompiler:
         if op == "store_field":
             return self._emit_store_field(res, instr)
 
+        if op == "list_init":
+            return self._emit_list_init(res, rtype, instr)
+
+        if op == "list_get":
+            return self._emit_list_get(res, instr)
+
+        if op == "list_set":
+            return self._emit_list_set(res, instr)
+
         if op == "select":
             return self._emit_select(res, instr)
         if op == "alloca":
@@ -1128,6 +1152,8 @@ class LLVMIRCompiler:
     def _emit_undef(self, res, rtype):
         if rtype.startswith("%struct"):
             return f"{res} = select i1 false, {rtype} undef, {rtype} undef"
+        if rtype.startswith("{"):
+            return f"{res} = insertvalue {rtype} undef, i64 0, 0"
         if rtype in FLOAT_LLVM_TYPES:
             return f"{res} = fadd {rtype} 0.0, 0.0"
         if rtype == "i1":
@@ -1144,6 +1170,13 @@ class LLVMIRCompiler:
         if src_type == "i8*" or (src_type.startswith("%struct") and src_type.endswith("*")):
             return f"{res} = getelementptr {src_type[:-1]}, {src_type} {src_op}, i32 0"
         if src_type.startswith("%struct"):
+            ptr = f"{res}_ptr"
+            return [
+                f"{ptr} = alloca {src_type}",
+                f"store {src_type} {src_op}, {src_type}* {ptr}",
+                f"{res} = load {src_type}, {src_type}* {ptr}",
+            ]
+        if src_type.startswith("{"):
             ptr = f"{res}_ptr"
             return [
                 f"{ptr} = alloca {src_type}",
@@ -1336,6 +1369,18 @@ class LLVMIRCompiler:
             elif atype == "double":
                 spec = "%f"
                 call_args.append(f"double {val}")
+            elif isinstance(arg.type, str) and arg.type.startswith("List["):
+                elem_t = arg.type[5:-1]
+                if self.to_llvm_type(elem_t).startswith("%struct"):
+                    raise Exception(f"print: unsupported list element type '{elem_t}'")
+                tag = re.sub(r"[^A-Za-z0-9]", "_", elem_t)
+                self.used_list_print.add(elem_t)
+                spec = "%s"
+                tmp = f"{res}_list{i}"
+                lines.append(
+                    f"{tmp} = call i8* @__threadon_list_str_{tag}({atype} {val})"
+                )
+                call_args.append(f"i8* {tmp}")
             else:
                 raise Exception(f"print: unsupported type {atype}")
 
@@ -1519,6 +1564,152 @@ class LLVMIRCompiler:
         args_str = ", ".join(arg_strs)
         ret_type = self.to_llvm_type(instr.result.type)
         return f"{res} = tail call {ret_type} @{fname}({args_str})"
+    def _emit_list_str_helper(self, elem_t):
+        elem_llvm = self.to_llvm_type(elem_t)
+        list_llvm = f"{{ i64, {elem_llvm}* }}"
+        tag = re.sub(r"[^A-Za-z0-9]", "_", elem_t)
+        buf_size = 4096
+
+        self.used_c_runtime.update(["snprintf", "strlen"])
+        bracket_open = self._string_global("[")
+        bracket_close = self._string_global("]")
+        separator = self._string_global(", ")
+
+        out = []
+        out.append(f"define i8* @__threadon_list_str_{tag}({list_llvm} %list) {{")
+        out.append("entry:")
+        out.append(f"  %len = extractvalue {list_llvm} %list, 0")
+        out.append(f"  %data = extractvalue {list_llvm} %list, 1")
+        out.append(f"  %buf = alloca [{buf_size} x i8]")
+        out.append(f"  %bufp = getelementptr inbounds [{buf_size} x i8], [{buf_size} x i8]* %buf, i64 0, i64 0")
+        out.append(f"  %f1 = getelementptr inbounds [2 x i8], [2 x i8]* {bracket_open}, i64 0, i64 0")
+        out.append(f"  %c1 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %bufp, i64 {buf_size}, i8* %f1)")
+        out.append("  %e0 = icmp eq i64 %len, 0")
+        out.append("  br i1 %e0, label %close, label %loop")
+        out.append("")
+        out.append("loop:")
+        out.append("  %i = phi i64 [ 0, %entry ], [ %inc, %elem ]")
+        out.append("  %off = phi i64 [ 1, %entry ], [ %newoff, %elem ]")
+        out.append("  %nz = icmp ne i64 %i, 0")
+        out.append("  br i1 %nz, label %sep, label %elem")
+        out.append("")
+        out.append("sep:")
+        out.append("  %psep = getelementptr i8, i8* %bufp, i64 %off")
+        out.append(f"  %fsep = getelementptr inbounds [3 x i8], [3 x i8]* {separator}, i64 0, i64 0")
+        out.append(f"  %csep = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %psep, i64 {buf_size}, i8* %fsep)")
+        out.append("  %offsep = add i64 %off, 2")
+        out.append("  br label %elem")
+        out.append("")
+        out.append("elem:")
+        out.append("  %boff = phi i64 [ %off, %loop ], [ %offsep, %sep ]")
+        out.append(f"  %dp = getelementptr {elem_llvm}, {elem_llvm}* %data, i64 %i")
+        out.append(f"  %v = load {elem_llvm}, {elem_llvm}* %dp")
+        out.append(f"  %pe = getelementptr i8, i8* %bufp, i64 %boff")
+
+        tmp = 0
+
+        def fresh(base):
+            nonlocal tmp
+            tmp += 1
+            return f"%{base}{tmp}"
+
+        if elem_t.startswith("List["):
+            inner_elem = elem_t[5:-1]
+            inner_tag = re.sub(r"[^A-Za-z0-9]", "_", inner_elem)
+            inner_llvm = self.to_llvm_type(elem_t)
+            self.used_list_print.add(inner_elem)
+            es = fresh("es")
+            out.append(f"  {es} = call i8* @__threadon_list_str_{inner_tag}({inner_llvm} %v)")
+            out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%s')}, i64 0, i64 0")
+            out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, i8* {es})")
+        elif elem_t == "NoneType":
+            none_g = self._string_global("None")
+            np = fresh("np")
+            out.append(f"  {np} = getelementptr inbounds [5 x i8], [5 x i8]* {none_g}, i64 0, i64 0")
+            out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%s')}, i64 0, i64 0")
+            out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, i8* {np})")
+        elif elem_llvm in INT_LLVM_BITS:
+            unsigned = self._is_unsigned(elem_t)
+            if elem_llvm == "i64":
+                fmt = "%llu" if unsigned else "%lld"
+                out.append(f"  %f = getelementptr inbounds [5 x i8], [5 x i8]* {self._string_global(fmt)}, i64 0, i64 0")
+                out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, {elem_llvm} %v)")
+            elif elem_llvm == "i32":
+                fmt = "%u" if unsigned else "%d"
+                out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global(fmt)}, i64 0, i64 0")
+                out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, i32 %v)")
+            else:
+                ext = "zext" if unsigned else "sext"
+                fmt = "%u" if unsigned else "%d"
+                ve = fresh("ve")
+                out.append(f"  {ve} = {ext} {elem_llvm} %v to i32")
+                out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global(fmt)}, i64 0, i64 0")
+                out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, i32 {ve})")
+        elif elem_llvm == "i256":
+            unsigned = self._is_unsigned(elem_t)
+            self.used_bigint_helpers.add("u256" if unsigned else "i256")
+            helper = "__threadon_to_string_u256" if unsigned else "__threadon_to_string_i256"
+            eb = fresh("eb")
+            ep = fresh("ep")
+            es = fresh("es")
+            out.append(f"  {eb} = alloca [256 x i8]")
+            out.append(f"  {ep} = getelementptr [256 x i8], [256 x i8]* {eb}, i64 0, i64 0")
+            out.append(f"  {es} = call i8* @{helper}(i256 %v, i8* {ep})")
+            out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%s')}, i64 0, i64 0")
+            out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, i8* {es})")
+        elif elem_llvm in ("half", "float"):
+            ve = fresh("ve")
+            out.append(f"  {ve} = fpext {elem_llvm} %v to double")
+            out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%f')}, i64 0, i64 0")
+            out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, double {ve})")
+        elif elem_llvm == "double":
+            out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%f')}, i64 0, i64 0")
+            out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, double %v)")
+        elif elem_llvm == "i1":
+            ttrue = self._string_global("true")
+            tfalse = self._string_global("false")
+            tpt = fresh("tpt")
+            tpf = fresh("tpf")
+            tsel = fresh("tsel")
+            out.append(f"  {tpt} = getelementptr inbounds [5 x i8], [5 x i8]* {ttrue}, i64 0, i64 0")
+            out.append(f"  {tpf} = getelementptr inbounds [6 x i8], [6 x i8]* {tfalse}, i64 0, i64 0")
+            out.append(f"  {tsel} = select i1 %v, i8* {tpt}, i8* {tpf}")
+            out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%s')}, i64 0, i64 0")
+            out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, i8* {tsel})")
+        elif elem_llvm == "i8*":
+            out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%s')}, i64 0, i64 0")
+            out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, i8* %v)")
+        else:
+            raise Exception(f"list print: unsupported element type '{elem_t}'")
+
+        out.append("  %inc = add i64 %i, 1")
+        out.append("  %newoff = call i64 @strlen(i8* %bufp)")
+        out.append("  %done = icmp eq i64 %inc, %len")
+        out.append("  br i1 %done, label %close, label %loop")
+        out.append("")
+        out.append("close:")
+        out.append("  %coff = phi i64 [ 1, %entry ], [ %newoff, %elem ]")
+        out.append("  %pc = getelementptr i8, i8* %bufp, i64 %coff")
+        out.append(f"  %f2 = getelementptr inbounds [2 x i8], [2 x i8]* {bracket_close}, i64 0, i64 0")
+        out.append(f"  %c2 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pc, i64 {buf_size}, i8* %f2)")
+        out.append("  ret i8* %bufp")
+        out.append("}")
+        out.append("")
+
+        for line in out:
+            self.out.append(line)
+
+    def _zero_value(self, t):
+        if t == "bool" or t in ("Bool", "Boolean"):
+            return "false"
+        if t in THREADON_INT_BITS or t == "int":
+            return "0"
+        if t == "float" or t in ("Float16", "Float32", "Float64"):
+            return "0.0"
+        if t == "String":
+            return "null"
+        return None
+
     def _emit_struct_init(self, res, instr):
         struct_name = instr.args[0]
         llvm_type = f"%struct.{struct_name}"
@@ -1526,6 +1717,7 @@ class LLVMIRCompiler:
         current = "undef"
 
         field_updates = []
+        filled = set()
         for k in range(1, len(instr.args), 2):
             fname = instr.args[k]
             fval = instr.args[k + 1]
@@ -1533,6 +1725,15 @@ class LLVMIRCompiler:
             foperand = self.operand(fval)
             idx = self.struct_field_indices[struct_name][fname]
             field_updates.append((idx, ftype, foperand))
+            filled.add(fname)
+
+        for fname, ftype in self.module.types[struct_name].items():
+            if fname in filled:
+                continue
+            zv = self._zero_value(ftype)
+            if zv is not None:
+                idx = self.struct_field_indices[struct_name][fname]
+                field_updates.append((idx, self.to_llvm_type(ftype), zv))
 
         if not field_updates:
             return f"{res} = select i1 false, {llvm_type} undef, {llvm_type} undef"
@@ -1569,6 +1770,179 @@ class LLVMIRCompiler:
         ftype = self.to_llvm_type(fval.type)
         foperand = self.operand(fval)
         return f"{res} = insertvalue {llvm_type} {base}, {ftype} {foperand}, {idx}"
+
+    def _split_llvm_fields(self, inner):
+        fields = []
+        depth = 0
+        current = []
+        for ch in inner:
+            if ch in "{<":
+                depth += 1
+            elif ch in "}>":
+                depth -= 1
+            if ch == "," and depth == 0:
+                fields.append("".join(current).strip())
+                current = []
+            else:
+                current.append(ch)
+        if current:
+            fields.append("".join(current).strip())
+        return fields
+
+    def _size_and_align(self, llvm_type):
+        if llvm_type in ("i1", "i8"):
+            return (1, 1)
+        if llvm_type in ("i16", "half"):
+            return (2, 2)
+        if llvm_type in ("i32", "float"):
+            return (4, 4)
+        if llvm_type in ("i64", "double", "i8*"):
+            return (8, 8)
+        if llvm_type == "i256":
+            return (32, 32)
+        if llvm_type.endswith("*"):
+            return (8, 8)
+        if llvm_type.startswith("%struct."):
+            name = llvm_type[len("%struct."):]
+            fields = self.module.types.get(name)
+            if fields is None:
+                raise Exception(f"Cannot determine layout of unknown struct '{name}'")
+            size = 0
+            max_align = 1
+            for ftype in fields.values():
+                fs, fa = self._size_and_align(self.to_llvm_type(ftype))
+                size = (size + fa - 1) // fa * fa
+                size += fs
+                max_align = max(max_align, fa)
+            size = (size + max_align - 1) // max_align * max_align
+            return (size, max_align)
+        if llvm_type.startswith("{") and llvm_type.endswith("}"):
+            inner = llvm_type[1:-1].strip()
+            size = 0
+            max_align = 1
+            for field in self._split_llvm_fields(inner):
+                fs, fa = self._size_and_align(field)
+                size = (size + fa - 1) // fa * fa
+                size += fs
+                max_align = max(max_align, fa)
+            size = (size + max_align - 1) // max_align * max_align
+            return (size, max_align)
+        raise Exception(f"Cannot determine size of LLVM type '{llvm_type}'")
+
+    def _llvm_sizeof(self, llvm_type):
+        size, _ = self._size_and_align(llvm_type)
+        return size
+
+    def _emit_list_init(self, res, rtype, instr):
+        elem_type = instr.args[0]
+        elems = instr.args[1:]
+        elem_llvm = self.to_llvm_type(elem_type)
+        n = len(elems)
+        elem_size = self._llvm_sizeof(elem_llvm)
+        total = n * elem_size
+        self.used_c_runtime.add("malloc")
+        lines = []
+        raw = f"{res}_raw"
+        lines.append(f"{raw} = call i8* @malloc(i64 {total})")
+        data = f"{res}_data"
+        lines.append(f"{data} = bitcast i8* {raw} to {elem_llvm}*")
+        for i, e in enumerate(elems):
+            val = self.operand(e)
+            if i == 0:
+                lines.append(f"store {elem_llvm} {val}, {elem_llvm}* {data}")
+            else:
+                ptr = f"{res}_p{i}"
+                lines.append(
+                    f"{ptr} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {i}"
+                )
+                lines.append(f"store {elem_llvm} {val}, {elem_llvm}* {ptr}")
+        v0 = f"{res}_v0"
+        lines.append(f"{v0} = insertvalue {rtype} undef, i64 {n}, 0")
+        lines.append(f"{res} = insertvalue {rtype} {v0}, {elem_llvm}* {data}, 1")
+        return lines
+
+    def _emit_list_access_lines(self, res, instr):
+        obj = instr.args[0]
+        idx = instr.args[1]
+        obj_type = obj.type
+        elem_type = obj_type[5:-1]
+        elem_llvm = self.to_llvm_type(elem_type)
+        llvm_type = self.to_llvm_type(obj_type)
+        obj_op = self.operand(obj)
+        idx_op = self.operand(idx)
+        idx_llvm = self.to_llvm_type(idx.type)
+
+        lenv = f"{res}_len"
+        data = f"{res}_data"
+        lines = [
+            f"{lenv} = extractvalue {llvm_type} {obj_op}, 0",
+            f"{data} = extractvalue {llvm_type} {obj_op}, 1",
+        ]
+
+        if idx_llvm == "i64":
+            idx64 = f"{res}_idx64"
+            lines.append(f"{idx64} = add i64 {idx_op}, 0")
+        elif idx_llvm in INT_LLVM_BITS:
+            ext = "zext" if self._is_unsigned(idx.type) else "sext"
+            idx64 = f"{res}_idx64"
+            lines.append(f"{idx64} = {ext} {idx_llvm} {idx_op} to i64")
+        else:
+            raise Exception(f"list index must be an integer, got {idx.type}")
+
+        if self.debug_mode:
+            self.used_c_runtime.add("exit")
+            msg = "Error: List index out of bounds\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            ctx = self._string_global(f"List index on {obj_type}")
+            bad = f"{res.lstrip('%')}_oob"
+            ok = f"{res.lstrip('%')}_ok"
+            oob = f"{res}_oobc"
+            if self._is_unsigned(idx.type):
+                lines.append(f"{oob} = icmp uge i64 {idx64}, {lenv}")
+                lines.append(f"br i1 {oob}, label %{bad}, label %{ok}")
+            else:
+                neg = f"{res}_neg"
+                lines.append(f"{neg} = icmp slt {idx_llvm} {idx_op}, 0")
+                lines.append(f"br i1 {neg}, label %{bad}, label %chk_{res.lstrip('%')}")
+                lines.append(f"chk_{res.lstrip('%')}:")
+                lines.append(f"{oob} = icmp uge i64 {idx64}, {lenv}")
+                lines.append(f"br i1 {oob}, label %{bad}, label %{ok}")
+            lines.append(f"{bad}:")
+            lines.append(
+                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds "
+                f"[{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0"
+            )
+            lines.append(
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})"
+            )
+            lines.append("  unreachable")
+            lines.append(f"{ok}:")
+
+        return lines, elem_llvm, lenv, data
+
+    def _emit_list_get(self, res, instr):
+        lines, elem_llvm, _, _ = self._emit_list_access_lines(res, instr)
+        idx64 = f"{res}_idx64"
+        data = f"{res}_data"
+        gep = f"{res}_gep"
+        lines.append(f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {idx64}")
+        lines.append(f"{res} = load {elem_llvm}, {elem_llvm}* {gep}")
+        return lines
+
+    def _emit_list_set(self, res, instr):
+        obj = instr.args[0]
+        val = instr.args[2]
+        lines, elem_llvm, lenv, data = self._emit_list_access_lines(res, instr)
+        idx64 = f"{res}_idx64"
+        llvm_type = self.to_llvm_type(obj.type)
+        gep = f"{res}_gep"
+        lines.append(f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {idx64}")
+        lines.append(f"store {elem_llvm} {self.operand(val)}, {elem_llvm}* {gep}")
+        v0 = f"{res}_v0"
+        lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {lenv}, 0")
+        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {data}, 1")
+        return lines
 
     def _emit_select(self, res, instr):
         cond = self.operand(instr.args[0])
