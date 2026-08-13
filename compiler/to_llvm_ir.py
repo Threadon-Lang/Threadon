@@ -166,7 +166,7 @@ class LLVMIRCompiler:
         if t == "String":
             return "i8*"
         if t == "NoneType":
-            return "void"
+            return "i8"
         if t in self.module.types:
             return f"%struct.{t}"
         for name in self.module.types:
@@ -194,7 +194,7 @@ class LLVMIRCompiler:
                     param_types.append(self.to_llvm_type(instr.result.type))
 
         params_str = ", ".join(f"{t} {n}" for t, n in zip(param_types, param_names))
-        ret_type = self.to_llvm_type(func.return_type)
+        ret_type = "void" if func.return_type == "NoneType" else self.to_llvm_type(func.return_type)
 
         self.out.append(f"define {ret_type} @{func.name}({params_str}) {{")
 
@@ -1077,6 +1077,8 @@ class LLVMIRCompiler:
         return format(struct.unpack('<Q', struct.pack('<d', fval))[0], '016X')
 
     def _emit_const(self, res, rtype, val):
+        if rtype == "i8" and str(val) == "None":
+            return f"{res} = add i8 0, 0"
         if rtype == "i1":
             vstr = "1" if str(val).lower() in ("true", "1") else "0"
             return f"{res} = add i1 0, {vstr}"
@@ -1265,8 +1267,11 @@ class LLVMIRCompiler:
             arg_strs.append(f"{atype} {aval}")
         args_str = ", ".join(arg_strs)
         ret_type = self.to_llvm_type(instr.result.type)
-        if ret_type == "void":
-            return f"call {ret_type} @{fname}({args_str})"
+        if instr.result.type == "NoneType":
+            call = f"call void @{fname}({args_str})"
+            if res is None:
+                return call
+            return [call, f"{res} = add i8 0, 0"]
         return f"{res} = call {ret_type} @{fname}({args_str})"
 
     def _emit_builtin(self, res, fname, args):
@@ -1287,7 +1292,13 @@ class LLVMIRCompiler:
             val = self.operand(arg)
             unsigned = self._is_unsigned(arg.type)
 
-            if atype in ("i8", "i16", "i32", "i64"):
+            if arg.type == "NoneType":
+                none_global = self._string_global("None")
+                ptr = f"{res}_none{i}"
+                lines.append(f"{ptr} = getelementptr inbounds [5 x i8], [5 x i8]* {none_global}, i64 0, i64 0")
+                spec = "%s"
+                call_args.append(f"i8* {ptr}")
+            elif atype in ("i8", "i16", "i32", "i64"):
                 if atype == "i64":
                     spec = "%llu" if unsigned else "%lld"
                     call_args.append(f"i64 {val}")

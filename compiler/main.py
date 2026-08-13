@@ -203,7 +203,8 @@ def main(argv=None):
     parser.add_argument(
         "--flag-inf",
         action="store_true",
-        help="Allow float constants that are infinite (inf) or NaN",
+        help="Flag non-finite float values (inf/NaN): constants error at compile time, "
+        "runtime values raise a runtime error (independent of --debug)",
     )
     
     args = parser.parse_args(argv)

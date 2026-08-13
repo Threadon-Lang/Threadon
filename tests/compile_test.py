@@ -441,6 +441,50 @@ def main() -> Int32
     assert result.stdout == "inf\n"
 
 
+def test_none_type_variables():
+    source = """
+def noop() -> NoneType
+    return None
+
+def take(x: NoneType) -> NoneType
+    return x
+
+def main() -> Int32
+    ab: NoneType = None
+    cd: NoneType
+    ef: NoneType = noop()
+    if ab == None:
+        ab = None
+    cd = ef
+    take(ab)
+    take(ef)
+    print(1)
+    return 0
+"""
+    for threshold in (0, 10000):
+        result = compile_stdlib_run(source, inline_threshold=threshold)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "1\n"
+
+
+def test_print_none_type():
+    source = """
+def noop() -> NoneType
+    return None
+
+def main() -> Int32
+    ab: NoneType = None
+    ac: NoneType = noop()
+    print(ab, ac)
+    print("x", ab, 5)
+    return 0
+"""
+    for threshold in (0, 10000):
+        result = compile_stdlib_run(source, inline_threshold=threshold)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "None None\nx None 5\n"
+
+
 if __name__ == "__main__":
     test_complex_program_runs()
     test_complex_program_inlined()
@@ -460,4 +504,6 @@ if __name__ == "__main__":
     test_float_inf_constant_allowed_without_flag()
     test_float_inf_runtime_errors_with_flag()
     test_float_div_zero_not_folded()
+    test_none_type_variables()
+    test_print_none_type()
     print("compile_test OK")

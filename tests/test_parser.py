@@ -175,7 +175,7 @@ def f(x: Int32, y: Int32) -> Int32
 
     """
 def f() -> NoneType
-    x: NoneType = None
+    x: NoneType = 5
     return x
 """,
 ]
@@ -897,8 +897,18 @@ def test_nonetype_variable_fails():
     parse_fail(
         """
 def f() -> Int32
-    x: NoneType = None
+    x: NoneType = 5
     return 0
+"""
+    )
+
+
+def test_nonetype_variable_ok():
+    parse_ok(
+        """
+def f() -> NoneType
+    x: NoneType = None
+    return x
 """
     )
 

@@ -447,10 +447,13 @@ class SSABuilder:
         self.set_var(node.name, res)
 
     def emit_return(self, node: ReturnStmt):
-        if node.value is None or isinstance(node.value, LiteralExpr) and node.value.type == "NoneType":
+        if node.value is None:
+            self.current_block.set_terminator(IRInstr("ret_void", []))
+            return
+        val = self.emit_expr(node.value)
+        if val.type == "NoneType":
             self.current_block.set_terminator(IRInstr("ret_void", []))
         else:
-            val = self.emit_expr(node.value)
             self.current_block.set_terminator(IRInstr("ret", [val]))
 
     def emit_if(self, node: IfStmt):

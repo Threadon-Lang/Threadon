@@ -11,7 +11,7 @@ from .nodes import *
 
 int_types = ALL_INT_TYPES
 
-VALID_PRIMITIVE_TYPES = ALL_INT_TYPES + FLOAT_TYPES + ("Bool", "String")
+VALID_PRIMITIVE_TYPES = ALL_INT_TYPES + FLOAT_TYPES + ("Bool", "String", "NoneType")
 
 def strip_indent_tokens(line_tokens):
     indent = 0
@@ -1399,9 +1399,6 @@ class Parser:
             i += 2
 
         var_type = self.resolve_type(".".join(type_parts))
-
-        if var_type == "NoneType":
-            self.give_error("Variables cannot have type NoneType")
 
         if i >= len(tokens):
             self.declare_var(name, var_type)

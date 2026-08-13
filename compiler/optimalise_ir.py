@@ -1532,6 +1532,7 @@ class IROptimizer:
     def _inline_call(self, caller, block, idx, call_instr, callee):
         suffix = f"_inl{self._inline_counter}"
         self._inline_counter += 1
+        after_label = f"after{suffix}"
         value_map = {}
         label_map = {}
 
@@ -1590,7 +1591,7 @@ class IROptimizer:
                         ],
                     )
                 elif old_term.op == "ret_void":
-                    new_term = IRInstr("ret_void", [])
+                    new_term = IRInstr("br", [after_label])
                 else:
                     new_term = IRInstr(
                         old_term.op, [map_val(a) for a in old_term.args]
@@ -1617,7 +1618,6 @@ class IROptimizer:
                 a.users.remove(call_instr)
 
         inlined_entry_label = map_label(callee.blocks[0].label)
-        after_label = f"after{suffix}"
         after_block = IRBlock(after_label)
         caller.add_block(after_block)
         after_block.instructions = block.instructions[idx:]
@@ -1641,6 +1641,10 @@ class IROptimizer:
             if isinstance(call_result, SSAValue) and incoming:
                 phi = IRPhi(call_result, incoming)
                 after_block.instructions.insert(0, phi)
+        elif isinstance(call_instr.result, SSAValue) and call_instr.result.type == "NoneType":
+            undef_instr = IRInstr("undef", [], result=call_instr.result)
+            after_block.instructions.insert(0, undef_instr)
+            call_instr.result.def_instr = undef_instr
 
         for instr in after_block.instructions:
             if isinstance(instr, IRPhi):
