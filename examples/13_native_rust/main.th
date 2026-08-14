@@ -1,0 +1,5 @@
+import rsum
+
+def main() -> Int32
+    print(rsum.sum(2, 40))
+    return 0

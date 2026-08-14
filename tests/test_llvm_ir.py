@@ -1,5 +1,6 @@
 import io
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import redirect_stdout
@@ -498,7 +499,12 @@ def test_float_unary_plus_execution():
 
 
 from compiler.compiler import compile_file, compile_source
-from compiler.importer import Importer
+from compiler.importer import (
+    Importer,
+    STDLIB_DIR,
+    parse_manifest,
+    toolchain_for,
+)
 
 MATH_SOURCE = """
 def abs(x: Int32) -> Int32
@@ -821,15 +827,148 @@ def run() -> Float32
 
 
 def build_native_lib(module_dir, name, tmp_path):
-    src = module_dir / f"{name}.cpp"
+    """Compile a native module's source into a shared library using its toolchain."""
+    man = parse_manifest(
+        (module_dir / "manifest").read_text(), module_dir / "manifest"
+    )
+    tc = toolchain_for(man.lang)
+    src = module_dir / man.source
     so = tmp_path / f"lib{name}.so"
     subprocess.run(
-        ["g++", "-shared", "-fPIC", "-std=c++17", "-o", str(so), str(src)],
+        [tc.compiler, *tc.shared_args, *man.flags, "-o", str(so), str(src)],
         check=True,
         capture_output=True,
         text=True,
     )
     return so
+
+
+def make_native_module(tmp_path, name, lang, source, export=None, extra=""):
+    ext = {"c": "c", "cpp": "cpp", "rust": "rs"}[lang]
+    mod_dir = tmp_path / name
+    mod_dir.mkdir()
+    (mod_dir / f"{name}.{ext}").write_text(source)
+    export_line = f"export {export}\n" if export else ""
+    (mod_dir / "manifest").write_text(
+        f"module {name}\nlang {lang}\nsource {name}.{ext}\n{export_line}{extra}"
+    )
+    return mod_dir
+
+
+C_ADD_SOURCE = "int add(int a, int b) { return a + b; }\n"
+
+CPP_SQUARE_SOURCE = (
+    'extern "C" int square(int x) { return x * x; }\n'
+)
+
+RUST_SUM_SOURCE = (
+    "#[no_mangle]\n"
+    "pub extern \"C\" fn sum(a: i32, b: i32) -> i32 {\n"
+    "    a + b\n"
+    "}\n"
+)
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not available")
+def test_native_c_module_runtime(tmp_path):
+    make_native_module(tmp_path, "cadd", "c", C_ADD_SOURCE, export="add Int32 Int32 Int32")
+    imp = Importer()
+    imp.add_search_path(tmp_path)
+    llvm = compile_source(
+        "import cadd\ndef run() -> Int32\n    return cadd.add(20, 22)\n",
+        importer=imp,
+    )
+    so = build_native_lib(tmp_path / "cadd", "cadd", tmp_path)
+    patched = patch_for_execution(llvm, INT_HARNESS)
+    result = ct.run_llvm(patched, loads=[str(so)])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"
+
+
+@pytest.mark.skipif(shutil.which("g++") is None, reason="g++ not available")
+def test_native_cpp_module_runtime(tmp_path):
+    make_native_module(tmp_path, "cpppow", "cpp", CPP_SQUARE_SOURCE, export="square Int32 Int32")
+    imp = Importer()
+    imp.add_search_path(tmp_path)
+    llvm = compile_source(
+        "import cpppow\ndef run() -> Int32\n    return cpppow.square(6)\n",
+        importer=imp,
+    )
+    so = build_native_lib(tmp_path / "cpppow", "cpppow", tmp_path)
+    patched = patch_for_execution(llvm, INT_HARNESS)
+    result = ct.run_llvm(patched, loads=[str(so)])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "36\n"
+
+
+@pytest.mark.skipif(shutil.which("rustc") is None, reason="rustc not available")
+def test_native_rust_module_runtime(tmp_path):
+    make_native_module(tmp_path, "rsum", "rust", RUST_SUM_SOURCE, export="sum Int32 Int32 Int32")
+    imp = Importer()
+    imp.add_search_path(tmp_path)
+    llvm = compile_source(
+        "import rsum\ndef run() -> Int32\n    return rsum.sum(2, 40)\n",
+        importer=imp,
+    )
+    so = build_native_lib(tmp_path / "rsum", "rsum", tmp_path)
+    patched = patch_for_execution(llvm, INT_HARNESS)
+    result = ct.run_llvm(patched, loads=[str(so)])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not available")
+def test_native_c_module_exe(tmp_path):
+    from compiler.main import build_executable, patch_llvm
+
+    mod_dir = make_native_module(tmp_path, "cadd", "c", C_ADD_SOURCE, export="add Int32 Int32 Int32")
+    imp = Importer()
+    imp.add_search_path(tmp_path)
+    llvm = compile_source(
+        "import cadd\ndef main() -> Int32\n    return cadd.add(20, 22)\n",
+        importer=imp,
+    )
+    final = patch_llvm(llvm)
+    exe = tmp_path / "cadd_prog"
+    build_executable(final, exe, native=[imp.load("cadd")])
+    result = subprocess.run([str(exe)], capture_output=True, text=True)
+    assert result.returncode == 42, result.stderr
+
+
+@pytest.mark.skipif(shutil.which("g++") is None, reason="g++ not available")
+def test_native_cpp_module_exe(tmp_path):
+    from compiler.main import build_executable, patch_llvm
+
+    mod_dir = make_native_module(tmp_path, "cpppow", "cpp", CPP_SQUARE_SOURCE, export="square Int32 Int32")
+    imp = Importer()
+    imp.add_search_path(tmp_path)
+    llvm = compile_source(
+        "import cpppow\ndef main() -> Int32\n    return cpppow.square(6)\n",
+        importer=imp,
+    )
+    final = patch_llvm(llvm)
+    exe = tmp_path / "cpppow_prog"
+    build_executable(final, exe, native=[imp.load("cpppow")])
+    result = subprocess.run([str(exe)], capture_output=True, text=True)
+    assert result.returncode == 36, result.stderr
+
+
+@pytest.mark.skipif(shutil.which("rustc") is None, reason="rustc not available")
+def test_native_rust_module_exe(tmp_path):
+    from compiler.main import build_executable, patch_llvm
+
+    mod_dir = make_native_module(tmp_path, "rsum", "rust", RUST_SUM_SOURCE, export="sum Int32 Int32 Int32")
+    imp = Importer()
+    imp.add_search_path(tmp_path)
+    llvm = compile_source(
+        "import rsum\ndef main() -> Int32\n    return rsum.sum(2, 40)\n",
+        importer=imp,
+    )
+    final = patch_llvm(llvm)
+    exe = tmp_path / "rsum_prog"
+    build_executable(final, exe, native=[imp.load("rsum")])
+    result = subprocess.run([str(exe)], capture_output=True, text=True)
+    assert result.returncode == 42, result.stderr
 
 
 def test_native_module_declares_and_call_symbols():
@@ -850,8 +989,6 @@ def test_native_module_declares_and_call_symbols():
 
 
 def test_native_time_diff_runtime(tmp_path):
-    from compiler.importer import STDLIB_DIR
-
     so = build_native_lib(STDLIB_DIR / "time", "time", tmp_path)
     llvm = compile_imported(
         (
@@ -872,8 +1009,6 @@ def test_native_time_diff_runtime(tmp_path):
 
 
 def test_native_time_monotonic_sleep_runtime(tmp_path):
-    from compiler.importer import STDLIB_DIR
-
     so = build_native_lib(STDLIB_DIR / "time", "time", tmp_path)
     llvm = compile_imported(
         (

@@ -1,0 +1,6 @@
+module cpppow
+lang cpp
+source cpppow.cpp
+flag -std=c++17
+
+export square Int64 Int64

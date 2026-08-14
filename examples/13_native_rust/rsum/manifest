@@ -1,0 +1,6 @@
+module rsum
+lang rust
+source rsum.rs
+flag -C opt-level=2
+
+export sum Int32 Int32 Int32

@@ -1,5 +1,5 @@
 module time
-type native
+lang cpp
 source time.cpp
 flag -std=c++17
 

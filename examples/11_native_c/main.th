@@ -1,0 +1,5 @@
+import cadd
+
+def main() -> Int32
+    print(cadd.add(20, 22))
+    return 0

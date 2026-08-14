@@ -1,0 +1,5 @@
+import cpppow
+
+def main() -> Int32
+    print(cpppow.square(6))
+    return 0

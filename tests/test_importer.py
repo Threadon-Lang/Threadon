@@ -20,7 +20,7 @@ struct Point:
 
 NATIVE_MANIFEST = """
 module vecmath
-type native
+lang cpp
 source vecmath.cpp
 flag -std=c++17
 flag -O2
@@ -107,7 +107,7 @@ class TestManifest:
     def test_parse_manifest(self):
         man = parse_manifest(NATIVE_MANIFEST, "manifest")
         assert man.module == "vecmath"
-        assert man.type == "native"
+        assert man.lang == "cpp"
         assert man.source == "vecmath.cpp"
         assert man.flags == ["-std=c++17", "-O2"]
         assert man.links == ["m"]
@@ -118,7 +118,7 @@ class TestManifest:
 
     def test_parse_manifest_defaults(self):
         man = parse_manifest("module util\nsource util.th\n", "manifest")
-        assert man.type == "threadon"
+        assert man.lang == "threadon"
         assert man.flags == []
         assert man.links == []
         assert man.exports == []
@@ -127,9 +127,13 @@ class TestManifest:
         with pytest.raises(ImporterError, match="unknown directive"):
             parse_manifest("module x\nbogus foo\n", "manifest")
 
-    def test_parse_manifest_bad_type(self):
-        with pytest.raises(ImporterError, match="unknown type"):
-            parse_manifest("module x\ntype banana\n", "manifest")
+    def test_parse_manifest_bad_lang(self):
+        with pytest.raises(ImporterError, match="unknown language"):
+            parse_manifest("module x\nlang banana\n", "manifest")
+
+    def test_parse_manifest_type_replaced(self):
+        with pytest.raises(ImporterError, match="replaced by 'lang'"):
+            parse_manifest("module x\ntype native\n", "manifest")
 
     def test_parse_manifest_export_needs_return_type(self):
         with pytest.raises(ImporterError, match="export"):
@@ -148,7 +152,7 @@ class TestManifest:
     def test_find_source_native_without_th(self, tmp_path):
         mod_dir = tmp_path / "time"
         mod_dir.mkdir(parents=True)
-        (mod_dir / "manifest").write_text("module time\ntype native\nsource time.cpp\n")
+        (mod_dir / "manifest").write_text("module time\nlang cpp\nsource time.cpp\n")
         (mod_dir / "time.cpp").write_text("// noop")
 
         imp = Importer()
@@ -166,7 +170,9 @@ class TestManifest:
         mod = imp.load("vecmath")
 
         assert mod.is_native is True
-        assert mod.type_ == "native"
+        assert mod.lang == "cpp"
+        assert mod.toolchain is not None
+        assert mod.toolchain.name == "cpp"
         assert mod.ast is None
         assert mod.source is None
         assert mod.native_source == mod_dir / "vecmath.cpp"
@@ -182,6 +188,57 @@ class TestManifest:
             [("a0", "Int32", None), ("a1", "Int32", None), ("a2", "Int32", None)],
             "Int32",
         )
+
+    def test_load_c_module_toolchain(self, tmp_path):
+        mod_dir = tmp_path / "cadd"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "manifest").write_text(
+            "module cadd\nlang c\nsource cadd.c\nflag -O2\n"
+        )
+        (mod_dir / "cadd.c").write_text("int add(int a, int b) { return a + b; }\n")
+
+        imp = Importer()
+        imp.add_search_path(tmp_path)
+        mod = imp.load("cadd")
+
+        assert mod.is_native is True
+        assert mod.lang == "c"
+        assert mod.toolchain.name == "c"
+        assert mod.toolchain.compiler == "gcc"
+        assert mod.toolchain.cxx is False
+        assert mod.toolchain.object_ext == "o"
+
+    def test_load_rust_module_toolchain(self, tmp_path):
+        mod_dir = tmp_path / "rsum"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "manifest").write_text(
+            "module rsum\nlang rust\nsource rsum.rs\nflag -C opt-level=2\n"
+        )
+        (mod_dir / "rsum.rs").write_text("// noop")
+
+        imp = Importer()
+        imp.add_search_path(tmp_path)
+        mod = imp.load("rsum")
+
+        assert mod.is_native is True
+        assert mod.lang == "rust"
+        assert mod.toolchain.name == "rust"
+        assert mod.toolchain.compiler == "rustc"
+        assert mod.toolchain.object_ext == "a"
+
+    def test_load_cpp_alias_language(self, tmp_path):
+        mod_dir = tmp_path / "x"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "manifest").write_text("module x\nlang c++\nsource x.cpp\n")
+        (mod_dir / "x.cpp").write_text("// noop")
+
+        imp = Importer()
+        imp.add_search_path(tmp_path)
+        mod = imp.load("x")
+
+        assert mod.lang == "c++"
+        assert mod.toolchain.name == "c++"
+        assert mod.toolchain.cxx is True
 
     def test_load_native_module_name_mismatch(self, tmp_path):
         mod_dir = tmp_path / "wrong"

@@ -145,22 +145,27 @@ def native_modules(importer):
     return [m for m in importer.modules() if m.is_native]
 
 
-def build_native_shared_libs(modules, output_dir, cxx="g++"):
+def build_native_shared_libs(modules, output_dir):
     """Compile each native module's source into a shared library."""
     output_dir = Path(output_dir)
     libs = []
     for mod in modules:
+        if mod.toolchain is None:
+            raise SystemExit(f"error: module '{mod.name}' has no registered toolchain")
         if mod.native_source is None or not mod.native_source.is_file():
             raise SystemExit(f"error: native module '{mod.name}' has no source file")
+        tc = mod.toolchain
         so = output_dir / f"lib{mod.name}.so"
         flags = mod.flags or []
         result = subprocess.run(
-            [cxx, "-shared", "-fPIC", *flags, "-o", str(so), str(mod.native_source)],
+            [tc.compiler, *tc.shared_args, *flags, "-o", str(so), str(mod.native_source)],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            raise SystemExit(f"error: {cxx} failed compiling {mod.name}:\n{result.stderr}")
+            raise SystemExit(
+                f"error: {tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
+            )
         libs.append(so)
     return libs
 
@@ -183,25 +188,29 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
             raise SystemExit(f"error: {llc} failed:\n{result.stderr}")
         objs = [str(obj)]
         link_flags = []
-        use_cxx = False
-        cxx = "g++"
+        linker = cc
         for mod in native:
+            if mod.toolchain is None:
+                raise SystemExit(f"error: module '{mod.name}' has no registered toolchain")
             for lib in mod.links:
                 link_flags.append(f"-l{lib}")
             if mod.native_source is None or not mod.native_source.is_file():
                 raise SystemExit(f"error: native module '{mod.name}' has no source file")
-            mod_obj = td / f"{mod.name}.o"
+            tc = mod.toolchain
+            if tc.cxx:
+                linker = "g++"
+            mod_obj = td / f"{mod.name}.{tc.object_ext}"
             flags = mod.flags or []
             result = subprocess.run(
-                [cxx, "-c", *flags, "-o", str(mod_obj), str(mod.native_source)],
+                [tc.compiler, *tc.object_args, *flags, "-o", str(mod_obj), str(mod.native_source)],
                 capture_output=True,
                 text=True,
             )
             if result.returncode != 0:
-                raise SystemExit(f"error: {cxx} failed compiling {mod.name}:\n{result.stderr}")
+                raise SystemExit(
+                    f"error: {tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
+                )
             objs.append(str(mod_obj))
-            use_cxx = True
-        linker = cxx if use_cxx else cc
         result = subprocess.run(
             [linker, *objs, "-o", str(out_path), "-no-pie", "-lm", *link_flags],
             capture_output=True,

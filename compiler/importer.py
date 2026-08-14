@@ -9,13 +9,53 @@ class ImporterError(Exception):
     pass
 
 
+class Toolchain:
+    """How to build a native module written in a given language.
+
+    A toolchain knows the compiler to invoke, the extra arguments needed to
+    build a shared library (``--run``/``lli -load``) and an object/archive
+    file (``--exe``), and the object file extension.  ``cxx`` marks languages
+    whose objects must be linked with ``g++``.
+    """
+
+    def __init__(self, name, compiler, shared_args, object_args,
+                 object_ext="o", cxx=False):
+        self.name = name
+        self.compiler = compiler
+        self.shared_args = list(shared_args)
+        self.object_args = list(object_args)
+        self.object_ext = object_ext
+        self.cxx = cxx
+
+
+LANGUAGES = {
+    "threadon": None,
+    "c": Toolchain("c", "gcc", ["-shared", "-fPIC"], ["-c"]),
+    "cpp": Toolchain("cpp", "g++", ["-shared", "-fPIC"], ["-c"], cxx=True),
+    "c++": Toolchain("c++", "g++", ["-shared", "-fPIC"], ["-c"], cxx=True),
+    "rust": Toolchain(
+        "rust",
+        "rustc",
+        ["--crate-type", "cdylib"],
+        ["--crate-type", "staticlib"],
+        object_ext="a",
+    ),
+}
+
+
+def toolchain_for(lang):
+    if lang in LANGUAGES:
+        return LANGUAGES[lang]
+    raise ImporterError(f"unknown language '{lang}'")
+
+
 class Manifest:
     """Parsed contents of a module's ``manifest`` file.
 
     A manifest describes a module without (or alongside) its source::
 
         module math
-        type native
+        lang cpp
         source math.cpp
         flag -std=c++17 -O2
         link m
@@ -23,18 +63,20 @@ class Manifest:
         export sin Float64 Float64
         export cos Float64 Float64
 
-    ``type`` is either ``threadon`` (the default) or ``native``.  For a
-    threadon module the ``source`` field points at the ``.th`` file.  For a
-    native module there is no ``.th`` source; the ``export`` lines declare the
-    C symbols the module makes available, the ``source`` field points at the
-    C/C++ implementation, ``flag`` lists its compile flags and ``link`` lists
-    the libraries it should be linked against.
+    ``lang`` names the language of ``source``.  It defaults to ``threadon``
+    and can be any language with a registered toolchain (``c``, ``cpp``,
+    ``c++``, ``rust``, ...).  For a threadon module the ``source`` field
+    points at the ``.th`` file.  For any other language the ``export`` lines
+    declare the C symbols the module makes available, ``flag`` lists the
+    compile flags and ``link`` lists the libraries to link against.  Adding a
+    new language only requires registering a :class:`Toolchain` in
+    ``LANGUAGES``.
     """
 
-    def __init__(self, module=None, type_="threadon", source=None, flags=None,
+    def __init__(self, module=None, lang="threadon", source=None, flags=None,
                  links=None, exports=None):
         self.module = module
-        self.type = type_
+        self.lang = lang
         self.source = source
         self.flags = flags or []
         self.links = links or []
@@ -53,15 +95,20 @@ def parse_manifest(text, path):
             if len(parts) < 2:
                 raise ImporterError(f"Manifest '{path}': 'module' needs a name")
             man.module = parts[1]
-        elif directive == "type":
+        elif directive == "lang":
             if len(parts) < 2:
-                raise ImporterError(f"Manifest '{path}': 'type' needs a value")
-            if parts[1] not in ("threadon", "native"):
+                raise ImporterError(f"Manifest '{path}': 'lang' needs a value")
+            if parts[1] not in LANGUAGES:
                 raise ImporterError(
-                    f"Manifest '{path}': unknown type '{parts[1]}' "
-                    "(expected 'threadon' or 'native')"
+                    f"Manifest '{path}': unknown language '{parts[1]}' "
+                    f"(known: {', '.join(LANGUAGES)})"
                 )
-            man.type = parts[1]
+            man.lang = parts[1]
+        elif directive == "type":
+            raise ImporterError(
+                f"Manifest '{path}': directive 'type' was replaced by 'lang' "
+                "(e.g. 'lang cpp' instead of 'type native')"
+            )
         elif directive == "source":
             if len(parts) < 2:
                 raise ImporterError(f"Manifest '{path}': 'source' needs a file")
@@ -95,7 +142,8 @@ class Module:
         self.func_exports = set()
         self.struct_exports = set()
         self.var_exports = set()
-        self.type_ = "threadon"
+        self.lang = "threadon"
+        self.toolchain = None
         self.manifest_dir = None
         self.flags = []
         self.links = []
@@ -152,7 +200,7 @@ class Importer:
         manifest_path = self._find_manifest_path(name)
         if manifest_path is not None:
             man = parse_manifest(manifest_path.read_text(), manifest_path)
-            if man.type != "threadon":
+            if man.lang != "threadon":
                 return None
             source_name = man.source or f"{name.split('.')[-1]}.th"
             source_path = manifest_path.parent / source_name
@@ -173,7 +221,8 @@ class Importer:
 
     def _build_native_module(self, name, man, manifest_path):
         module = Module(name, None, None)
-        module.type_ = "native"
+        module.lang = man.lang
+        module.toolchain = toolchain_for(man.lang)
         module.is_native = True
         module.manifest_dir = manifest_path.parent
         module.flags = list(man.flags)
@@ -199,7 +248,7 @@ class Importer:
         manifest_path = self._find_manifest_path(name)
         man = self._load_manifest(name) if manifest_path is not None else None
 
-        if man is not None and man.type == "native":
+        if man is not None and man.lang != "threadon":
             module = self._build_native_module(name, man, manifest_path)
             self.cache[name] = module
             return module
@@ -232,6 +281,7 @@ class Importer:
 
         if man is not None:
             module.manifest_dir = manifest_path.parent
+            module.lang = man.lang
             module.flags = list(man.flags)
             module.links = list(man.links)
 
