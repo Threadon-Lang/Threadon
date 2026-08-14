@@ -807,6 +807,9 @@ class IROptimizer:
                 if instr.op == "const":
                     i += 1
                     continue
+                if isinstance(instr, IRPhi):
+                    i += 1
+                    continue
                 new_args = list(instr.args)
                 replaced = False
                 for j, a in enumerate(instr.args):
@@ -1148,7 +1151,16 @@ class IROptimizer:
             elif t.op == "br":
                 tgt = self.func.block_map.get(t.args[0])
                 if tgt and tgt.terminator and tgt.terminator.op == "br" and len(tgt.instructions) == 0:
-                    t.args[0] = tgt.terminator.args[0]
+                    new_target = tgt.terminator.args[0]
+                    new_tgt = self.func.block_map.get(new_target)
+                    if new_tgt:
+                        for instr in new_tgt.instructions:
+                            if isinstance(instr, IRPhi):
+                                instr.incoming = [
+                                    (block.label if blk == tgt.label else blk, val)
+                                    for blk, val in instr.incoming
+                                ]
+                    t.args[0] = new_target
                     changed = True
         return changed
 
@@ -1246,6 +1258,13 @@ class IROptimizer:
                     pred.successors.append(target_label)
                 if block.label in pred.successors:
                     pred.successors.remove(block.label)
+            for t_instr in target.instructions:
+                if isinstance(t_instr, IRPhi):
+                    t_instr.incoming = [
+                        (blk, val)
+                        for blk, val in t_instr.incoming
+                        if blk != block.label
+                    ]
             to_remove.append(block)
             changed = True
         for block in to_remove:
@@ -1654,6 +1673,24 @@ class IROptimizer:
                     (after_label if blk == block.label else blk, val)
                     for blk, val in instr.incoming
                 ]
+
+        succ_labels = []
+        if after_block.terminator:
+            term = after_block.terminator
+            if term.op == "br":
+                succ_labels = [term.args[0]]
+            elif term.op == "cond_br":
+                succ_labels = [term.args[1], term.args[2]]
+        for succ_label in succ_labels:
+            succ_block = caller.block_map.get(succ_label)
+            if not succ_block:
+                continue
+            for instr in succ_block.instructions:
+                if isinstance(instr, IRPhi):
+                    instr.incoming = [
+                        (after_label if blk == block.label else blk, val)
+                        for blk, val in instr.incoming
+                    ]
 
         for old_block, new_block in new_blocks:
             new_block.instructions = [i for i in new_block.instructions if not (i.op == "param" and i.result.users == [])]

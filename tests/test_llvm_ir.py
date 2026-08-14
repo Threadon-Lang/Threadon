@@ -10,6 +10,7 @@ import compile_test as ct
 import pytest
 
 from compiler.checker import CombinedChecker
+from compiler.optimalise_ir import IROptimizer
 from compiler.parser import Parser
 from compiler.to_high_ir import SSABuilder
 from compiler.to_llvm_ir import LLVMIRCompiler
@@ -127,6 +128,57 @@ def run() -> Int32
 """
     )
     assert "= phi i32 [" in llvm
+
+
+def test_while_loop_runs():
+    assert_run_output(
+        """
+def run() -> Int32
+    i: Int32 = 0
+    while i < 3:
+        i += 1
+    return i
+""",
+        "3\n",
+    )
+
+
+def test_inline_into_loop_runs():
+    assert_run_output(
+        """
+def helper(x: Int32) -> Int32
+    return x * 2
+
+def run() -> Int32
+    i: Int32 = 0
+    s: Int32 = 0
+    while i < 4:
+        s += helper(i)
+        i += 1
+    return s
+""",
+        "12\n",
+    )
+
+
+def test_while_loop_debug_mode_runs():
+    source = """
+def run() -> Int32
+    i: Int32 = 0
+    while i < 3:
+        i += 1
+    return i
+"""
+    with redirect_stdout(io.StringIO()):
+        ast = Parser().parse(source)
+        CombinedChecker().run_all(ast)
+        module = SSABuilder().build_from_ast(ast)
+        IROptimizer(debug_mode=True).optimize(module)
+    llvm = LLVMIRCompiler(debug_mode=True).compile(module)
+    patched = patch_for_execution(llvm, INT_HARNESS)
+    result = ct.run_llvm(patched)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3\n"
 
 
 def test_float_pow_intrinsic_emitted():

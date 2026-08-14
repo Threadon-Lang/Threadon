@@ -94,6 +94,19 @@ def assert_valid_ssa(module):
                         check_use(arg, block.terminator.op + " terminator")
 
 
+def assert_valid_phi_edges(func):
+    func.build_cfg()
+    for block in func.blocks:
+        preds = set(block.predecessors)
+        for instr in block.instructions:
+            if isinstance(instr, IRPhi):
+                for blk, _ in instr.incoming:
+                    assert blk in preds, (
+                        f"phi in '{block.label}' references '{blk}', "
+                        f"but predecessors are {sorted(preds)}"
+                    )
+
+
 def test_constant_folding():
     module = optimize(
         """
@@ -238,6 +251,49 @@ def max2(a: Int32, b: Int32) -> Int32
     assert len(phis) == 1
     incoming_labels = [blk for blk, _ in phis[0].incoming]
     assert incoming_labels == ["entry", "elsebody"]
+
+
+def test_while_loop_phi_edges_preserved():
+    module = optimize(
+        """
+def run() -> Int32
+    i: Int32 = 0
+    while i < 3:
+        i += 1
+    return i
+"""
+    )
+    f = module.funcs[0]
+    assert_valid_cfg(f)
+    assert_reachable(f)
+    assert_valid_phi_edges(f)
+    assert_valid_ssa(module)
+    phis = [i for b in f.blocks for i in b.instructions if isinstance(i, IRPhi)]
+    assert len(phis) == 1
+    assert len(phis[0].incoming) == 2
+
+
+def test_inline_into_loop_phi_edges_preserved():
+    module = optimize(
+        """
+def helper(x: Int32) -> Int32
+    return x * 2
+
+def run() -> Int32
+    i: Int32 = 0
+    s: Int32 = 0
+    while i < 4:
+        s += helper(i)
+        i += 1
+    return s
+""",
+        inline_threshold=100,
+    )
+    f = next(x for x in module.funcs if x.name == "run")
+    assert_valid_cfg(f)
+    assert_reachable(f)
+    assert_valid_phi_edges(f)
+    assert_valid_ssa(module)
 
 
 def test_optimized_module_structural_invariants():

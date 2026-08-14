@@ -20,7 +20,7 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
             merged = ast + [node for mod in importer.modules() for node in mod.ast]
             CombinedChecker().run_all(merged)
             module = SSABuilder().build_from_ast(merged)
-            #IROptimizer(inline_threshold=inline_threshold, debug_mode=debug_mode).optimize(module)
+            IROptimizer(inline_threshold=inline_threshold, debug_mode=debug_mode).optimize(module)
     except BaseException as e:
         raise RuntimeError(f"compiler error:\n{buf.getvalue()}") from e
 

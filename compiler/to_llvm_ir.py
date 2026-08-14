@@ -15,6 +15,10 @@ THREADON_INT_BITS = {
     "UInt8": 8, "UInt16": 16, "UInt32": 32, "UInt64": 64, "UInt256": 256,
 }
 
+class _NullOut:
+    def append(self, line):
+        pass
+
 class LLVMIRCompiler:
 
 
@@ -217,12 +221,17 @@ class LLVMIRCompiler:
         self.current_func_entry_label = func.blocks[0].label if func.blocks else None
 
         for block in func.blocks:
+            self.emit_block(block, dry=True)
+        for block in func.blocks:
             self.emit_block(block)
 
         self.out.append("}")
         self.out.append("")
         
-    def emit_block(self, block):
+    def emit_block(self, block, dry=False):
+        if dry:
+            old_out = self.out
+            self.out = _NullOut()
         self.out.append(f"{block.label}:")
         last_label = block.label
 
@@ -259,6 +268,8 @@ class LLVMIRCompiler:
 
             line = self.emit_terminator(block.terminator)
             self.out.append(f"  {line}")
+        if dry:
+            self.out = old_out
     def _emit_stack_overflow_protection(self):
 
 
