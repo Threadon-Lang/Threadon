@@ -1,0 +1,10 @@
+module time
+type native
+source time.cpp
+flag -std=c++17
+
+export now Int64
+export cpu_time Int64
+export diff Float64 Int64 Int64
+export monotonic Float64
+export sleep_ms Int64 Int64

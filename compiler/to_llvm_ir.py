@@ -42,8 +42,12 @@ class LLVMIRCompiler:
         self.used_checked_pow_widths = set()
         self.used_list_print = set()
 
-    def compile(self, module):
+    def compile(self, module, native_exports=None):
         self.module = module 
+        self.native_symbols = {}
+        for exp in (native_exports or []):
+            qname = f"{exp['module']}.{exp['name']}"
+            self.native_symbols[qname] = (exp["name"], exp["ret"], exp["args"])
         for name, fields in module.types.items():
             self.struct_field_indices[name] = {}
             for idx, (fname, _) in enumerate(fields.items()):
@@ -61,6 +65,8 @@ class LLVMIRCompiler:
 
         for func in module.funcs:
             self.emit_function(func)
+
+        self._emit_native_declares()
 
         self._emit_bigint_helpers()
 
@@ -226,6 +232,16 @@ class LLVMIRCompiler:
             self.emit_block(block)
 
         self.out.append("}")
+        self.out.append("")
+        
+    def _emit_native_declares(self):
+        if not self.native_symbols:
+            return
+        self.out.append("; native module exports")
+        for _, (symbol, ret, args) in sorted(self.native_symbols.items()):
+            ret_t = "void" if ret == "NoneType" else self.to_llvm_type(ret)
+            arg_ts = ", ".join(self.to_llvm_type(a) for a in args)
+            self.out.append(f"declare {ret_t} @{symbol}({arg_ts})")
         self.out.append("")
         
     def emit_block(self, block, dry=False):
@@ -1311,6 +1327,8 @@ class LLVMIRCompiler:
             arg_strs.append(f"{atype} {aval}")
         args_str = ", ".join(arg_strs)
         ret_type = self.to_llvm_type(instr.result.type)
+        if fname in self.native_symbols:
+            fname = self.native_symbols[fname][0]
         if instr.result.type == "NoneType":
             call = f"call void @{fname}({args_str})"
             if res is None:

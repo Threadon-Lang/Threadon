@@ -368,7 +368,15 @@ class Parser:
             return self.parse_field_index_assign()
 
         if first == TokenType.IDENT and len(self.current_line) > 1:
-            if self.current_line[1].type == TokenType.LPAREN:
+            second = self.current_line[1].type
+            is_call = second == TokenType.LPAREN
+            is_qualified_call = (
+                second == TokenType.DOT
+                and len(self.current_line) > 3
+                and self.current_line[2].type == TokenType.IDENT
+                and self.current_line[3].type == TokenType.LPAREN
+            )
+            if is_call or is_qualified_call:
                 expr = self.parse_expr(self.current_line)
                 self.detect_expr_type(expr)
                 return ExprStmt(expr)

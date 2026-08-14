@@ -125,20 +125,50 @@ def dedupe_decls(llvm):
     return "\n".join(out)
 
 
-def run_llvm(llvm, capture=False):
+def run_llvm(llvm, capture=False, loads=None):
     with tempfile.NamedTemporaryFile("w", suffix=".ll", delete=False) as f:
         f.write(llvm)
         path = f.name
     try:
         kwargs = {"capture_output": True, "text": True} if capture else {}
-        return subprocess.run(["lli", path], **kwargs)
+        cmd = ["lli"]
+        for so in (loads or []):
+            cmd.append("-load")
+            cmd.append(str(so))
+        cmd.append(path)
+        return subprocess.run(cmd, **kwargs)
     finally:
         Path(path).unlink(missing_ok=True)
 
 
-def build_executable(llvm, out_path, llc="llc", cc="gcc"):
+def native_modules(importer):
+    return [m for m in importer.modules() if m.is_native]
+
+
+def build_native_shared_libs(modules, output_dir, cxx="g++"):
+    """Compile each native module's source into a shared library."""
+    output_dir = Path(output_dir)
+    libs = []
+    for mod in modules:
+        if mod.native_source is None or not mod.native_source.is_file():
+            raise SystemExit(f"error: native module '{mod.name}' has no source file")
+        so = output_dir / f"lib{mod.name}.so"
+        flags = mod.flags or []
+        result = subprocess.run(
+            [cxx, "-shared", "-fPIC", *flags, "-o", str(so), str(mod.native_source)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise SystemExit(f"error: {cxx} failed compiling {mod.name}:\n{result.stderr}")
+        libs.append(so)
+    return libs
+
+
+def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
     """Compile the (patched, harnessed) LLVM IR to a native executable."""
     out_path = Path(out_path)
+    native = native or []
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         ir = td / "main.ll"
@@ -151,13 +181,34 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc"):
         )
         if result.returncode != 0:
             raise SystemExit(f"error: {llc} failed:\n{result.stderr}")
+        objs = [str(obj)]
+        link_flags = []
+        use_cxx = False
+        cxx = "g++"
+        for mod in native:
+            for lib in mod.links:
+                link_flags.append(f"-l{lib}")
+            if mod.native_source is None or not mod.native_source.is_file():
+                raise SystemExit(f"error: native module '{mod.name}' has no source file")
+            mod_obj = td / f"{mod.name}.o"
+            flags = mod.flags or []
+            result = subprocess.run(
+                [cxx, "-c", *flags, "-o", str(mod_obj), str(mod.native_source)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise SystemExit(f"error: {cxx} failed compiling {mod.name}:\n{result.stderr}")
+            objs.append(str(mod_obj))
+            use_cxx = True
+        linker = cxx if use_cxx else cc
         result = subprocess.run(
-            [cc, str(obj), "-o", str(out_path), "-no-pie", "-lm"],
+            [linker, *objs, "-o", str(out_path), "-no-pie", "-lm", *link_flags],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            raise SystemExit(f"error: {cc} failed:\n{result.stderr}")
+            raise SystemExit(f"error: {linker} failed:\n{result.stderr}")
 
 
 def main(argv=None):
@@ -233,14 +284,20 @@ def main(argv=None):
         final = dedupe_decls(
             patch_llvm(llvm) + "\n" + build_harness(llvm, args.entry) + "\n"
         )
-        result = run_llvm(final)
+        mods = native_modules(importer)
+        if mods:
+            with tempfile.TemporaryDirectory() as td:
+                libs = build_native_shared_libs(mods, output_dir=td)
+                result = run_llvm(final, loads=libs)
+        else:
+            result = run_llvm(final)
         sys.exit(result.returncode)
 
     if args.exe:
         final = dedupe_decls(
             patch_llvm(llvm) + "\n" + build_harness(llvm, args.entry) + "\n"
         )
-        build_executable(final, args.exe)
+        build_executable(final, args.exe, native=native_modules(importer))
         return 0
 
     if not args.output:

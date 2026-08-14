@@ -132,13 +132,18 @@ def patch_llvm(llvm):
     return llvm + "\n" + HARNESS_MAIN + "\n"
 
 
-def run_llvm(llvm, input=None):
+def run_llvm(llvm, input=None, loads=None):
     with tempfile.NamedTemporaryFile("w", suffix=".ll", delete=False) as f:
         f.write(llvm)
         path = f.name
     try:
+        cmd = ["lli"]
+        for so in (loads or []):
+            cmd.append("-load")
+            cmd.append(str(so))
+        cmd.append(path)
         result = subprocess.run(
-            ["lli", path], capture_output=True, text=True, timeout=60, input=input
+            cmd, capture_output=True, text=True, timeout=60, input=input
         )
     finally:
         Path(path).unlink(missing_ok=True)

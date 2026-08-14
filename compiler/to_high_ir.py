@@ -525,7 +525,7 @@ class SSABuilder:
             self.emit_stmt(stmt)
 
 
-    def build_from_ast(self, ast):
+    def build_from_ast(self, ast, native_sigs=None):
         for node in ast:
             if type(node).__name__ == "StructDef":
                 fields = [
@@ -547,6 +547,10 @@ class SSABuilder:
                 self.func_params[node.name] = (
                     node.params
                 )
+
+        for qname, (params, return_type) in (native_sigs or {}).items():
+            self.func_returns[qname] = return_type
+            self.func_params[qname] = params
 
         for node in ast:
             if isinstance(node, FunctionDef):

@@ -1,5 +1,6 @@
 import io
 import re
+import subprocess
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -817,3 +818,92 @@ def run() -> Float32
     result = ct.run_llvm(patched)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "2.500000\n"
+
+
+def build_native_lib(module_dir, name, tmp_path):
+    src = module_dir / f"{name}.cpp"
+    so = tmp_path / f"lib{name}.so"
+    subprocess.run(
+        ["g++", "-shared", "-fPIC", "-std=c++17", "-o", str(so), str(src)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return so
+
+
+def test_native_module_declares_and_call_symbols():
+    llvm = compile_imported(
+        (
+            "import time\n"
+            "def run() -> Int32\n"
+            "    a: Int64 = time.now()\n"
+            "    if a > 0:\n"
+            "        return 1\n"
+            "    return 0\n"
+        ),
+        {},
+    )
+    assert "declare i64 @now()" in llvm
+    assert "call i64 @now(" in llvm
+    assert "@time.now" not in llvm
+
+
+def test_native_time_diff_runtime(tmp_path):
+    from compiler.importer import STDLIB_DIR
+
+    so = build_native_lib(STDLIB_DIR / "time", "time", tmp_path)
+    llvm = compile_imported(
+        (
+            "import time\n"
+            "def run() -> Int32\n"
+            "    a: Int64 = time.now()\n"
+            "    d: Float64 = time.diff(a, a)\n"
+            "    if d == 0.0:\n"
+            "        return 7\n"
+            "    return 0\n"
+        ),
+        {},
+    )
+    patched = patch_for_execution(llvm, INT_HARNESS)
+    result = ct.run_llvm(patched, loads=[str(so)])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "7\n"
+
+
+def test_native_time_monotonic_sleep_runtime(tmp_path):
+    from compiler.importer import STDLIB_DIR
+
+    so = build_native_lib(STDLIB_DIR / "time", "time", tmp_path)
+    llvm = compile_imported(
+        (
+            "import time\n"
+            "def run() -> Int32\n"
+            "    t0: Float64 = time.monotonic()\n"
+            "    time.sleep_ms(30)\n"
+            "    t1: Float64 = time.monotonic()\n"
+            "    elapsed: Float64 = t1 - t0\n"
+            "    if elapsed >= 0.02 and elapsed < 2.0:\n"
+            "        return 1\n"
+            "    return 0\n"
+        ),
+        {},
+    )
+    patched = patch_for_execution(llvm, INT_HARNESS)
+    result = ct.run_llvm(patched, loads=[str(so)])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\n"
+
+
+def test_native_qualified_call_as_statement():
+    llvm = compile_imported(
+        (
+            "import time\n"
+            "def run() -> Int32\n"
+            "    time.sleep_ms(1)\n"
+            "    return 42\n"
+        ),
+        {},
+    )
+    assert "call i64 @sleep_ms(" in llvm
+    assert "declare i64 @sleep_ms(i64)" in llvm

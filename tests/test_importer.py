@@ -3,7 +3,7 @@ from contextlib import redirect_stdout
 
 import pytest
 
-from compiler.importer import Importer, ImporterError
+from compiler.importer import Importer, ImporterError, parse_manifest
 from compiler.nodes import ImportStmt
 
 MATH_SOURCE = """
@@ -16,6 +16,18 @@ def abs(x: Int32) -> Int32
 struct Point:
     x: Int32
     y: Int32
+"""
+
+NATIVE_MANIFEST = """
+module vecmath
+type native
+source vecmath.cpp
+flag -std=c++17
+flag -O2
+link m
+
+export length Float64 Float64 Float64
+export clamp Int32 Int32 Int32 Int32
 """
 
 
@@ -89,6 +101,112 @@ class TestLoad:
         ast = load_main(imp, "from std.math import abs\ndef run() -> Int32\n    return abs(-1)\n")
         assert any(type(n).__name__ == "ImportStmt" for n in ast)
         assert [m.name for m in imp.modules()] == ["std", "std.math"]
+
+
+class TestManifest:
+    def test_parse_manifest(self):
+        man = parse_manifest(NATIVE_MANIFEST, "manifest")
+        assert man.module == "vecmath"
+        assert man.type == "native"
+        assert man.source == "vecmath.cpp"
+        assert man.flags == ["-std=c++17", "-O2"]
+        assert man.links == ["m"]
+        assert man.exports == [
+            ("length", "Float64", ["Float64", "Float64"]),
+            ("clamp", "Int32", ["Int32", "Int32", "Int32"]),
+        ]
+
+    def test_parse_manifest_defaults(self):
+        man = parse_manifest("module util\nsource util.th\n", "manifest")
+        assert man.type == "threadon"
+        assert man.flags == []
+        assert man.links == []
+        assert man.exports == []
+
+    def test_parse_manifest_unknown_directive(self):
+        with pytest.raises(ImporterError, match="unknown directive"):
+            parse_manifest("module x\nbogus foo\n", "manifest")
+
+    def test_parse_manifest_bad_type(self):
+        with pytest.raises(ImporterError, match="unknown type"):
+            parse_manifest("module x\ntype banana\n", "manifest")
+
+    def test_parse_manifest_export_needs_return_type(self):
+        with pytest.raises(ImporterError, match="export"):
+            parse_manifest("module x\nsource x.cpp\nexport foo\n", "manifest")
+
+    def test_find_source_via_manifest(self, tmp_path):
+        mod_dir = tmp_path / "lib" / "util"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "manifest").write_text("module lib.util\nsource util.th\n")
+        (mod_dir / "util.th").write_text(MATH_SOURCE)
+
+        imp = Importer()
+        imp.add_search_path(tmp_path)
+        assert imp.find_source("lib.util") == MATH_SOURCE
+
+    def test_find_source_native_without_th(self, tmp_path):
+        mod_dir = tmp_path / "time"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "manifest").write_text("module time\ntype native\nsource time.cpp\n")
+        (mod_dir / "time.cpp").write_text("// noop")
+
+        imp = Importer()
+        imp.add_search_path(tmp_path)
+        assert imp.find_source("time") is None
+
+    def test_load_native_module(self, tmp_path):
+        mod_dir = tmp_path / "vecmath"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "manifest").write_text(NATIVE_MANIFEST)
+        (mod_dir / "vecmath.cpp").write_text("// noop")
+
+        imp = Importer()
+        imp.add_search_path(tmp_path)
+        mod = imp.load("vecmath")
+
+        assert mod.is_native is True
+        assert mod.type_ == "native"
+        assert mod.ast is None
+        assert mod.source is None
+        assert mod.native_source == mod_dir / "vecmath.cpp"
+        assert mod.flags == ["-std=c++17", "-O2"]
+        assert mod.links == ["m"]
+        assert "length" in mod.func_exports
+        assert "clamp" in mod.func_exports
+        assert mod.func_sigs["vecmath.length"] == (
+            [("a0", "Float64", None), ("a1", "Float64", None)],
+            "Float64",
+        )
+        assert mod.func_sigs["vecmath.clamp"] == (
+            [("a0", "Int32", None), ("a1", "Int32", None), ("a2", "Int32", None)],
+            "Int32",
+        )
+
+    def test_load_native_module_name_mismatch(self, tmp_path):
+        mod_dir = tmp_path / "wrong"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "manifest").write_text("module right\nsource x.cpp\n")
+
+        imp = Importer()
+        imp.add_search_path(tmp_path)
+        with pytest.raises(ImporterError, match="imported as 'wrong'"):
+            imp.load("wrong")
+
+    def test_load_threadon_module_with_manifest(self, tmp_path):
+        mod_dir = tmp_path / "util"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "manifest").write_text("module util\nsource util.th\n")
+        (mod_dir / "util.th").write_text(MATH_SOURCE)
+
+        imp = Importer()
+        imp.add_search_path(tmp_path)
+        mod = imp.load("util")
+
+        assert mod.is_native is False
+        assert mod.manifest_dir == mod_dir
+        assert "abs" in mod.func_exports
+        assert "std" not in [m.name for m in imp.modules()]
 
 
 class TestParserImportNode:
