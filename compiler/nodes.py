@@ -42,6 +42,12 @@ class LiteralExpr(Expr):
     type: str
 
 @dataclass
+class InterpolatedStringExpr(Expr):
+    kind: str
+    parts: list[tuple]
+    type: str = "String"
+
+@dataclass
 class VarExpr(Expr):
     name: str
 

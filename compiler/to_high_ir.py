@@ -6,6 +6,7 @@ from .nodes import (
     BinaryExpr,
     CallExpr,
     CastExpr,
+    Expr,
     ExprStmt,
     FieldAccessExpr,
     FieldAssign,
@@ -13,6 +14,7 @@ from .nodes import (
     IfStmt,
     IndexAssign,
     IndexExpr,
+    InterpolatedStringExpr,
     ListLiteralExpr,
     LiteralExpr,
     RefExpr,
@@ -436,6 +438,9 @@ class SSABuilder:
         self.ref_vars = set()
 
         self._if_seq = 0
+
+        self._render_funcs = {}
+        self._render_seq = 0
 
 
     def new_temp(self, type_):
@@ -1530,6 +1535,261 @@ class SSABuilder:
         )
 
 
+    def _is_expr_node(self, x):
+        return x is not None and (
+            isinstance(x, Expr)
+            or type(x).__name__ == "CastExpr"
+        )
+
+    def _var_names(self, expr):
+        names = []
+
+        if isinstance(expr, VarExpr):
+            return [expr.name]
+
+        if isinstance(expr, LiteralExpr):
+            return []
+
+        for attr in ("left", "right", "expr", "inner", "obj", "index"):
+            sub = getattr(expr, attr, None)
+
+            if self._is_expr_node(sub):
+                names += self._var_names(sub)
+
+        for attr in ("args", "elements"):
+            items = getattr(expr, attr, None)
+
+            if isinstance(items, list):
+                for item in items:
+                    if self._is_expr_node(item):
+                        names += self._var_names(item)
+
+        fields = getattr(expr, "fields", None)
+
+        if isinstance(fields, dict):
+            for fval in fields.values():
+                if self._is_expr_node(fval):
+                    names += self._var_names(fval)
+        elif isinstance(fields, list):
+            for item in fields:
+                if isinstance(item, tuple) and len(item) == 2:
+                    if self._is_expr_node(item[1]):
+                        names += self._var_names(item[1])
+                elif self._is_expr_node(item):
+                    names += self._var_names(item)
+
+        parts = getattr(expr, "parts", None)
+
+        if isinstance(parts, list):
+            for kind, val in parts:
+                if kind == "expr" and self._is_expr_node(val):
+                    names += self._var_names(val)
+
+        return names
+
+    def _emit_const_string(self, text):
+        v = self.new_temp("String")
+
+        self.current_block.add_instr(
+            IRInstr(
+                "const",
+                [text],
+                result=v,
+            )
+        )
+
+        return v
+
+    def _interp_part_to_string(self, part):
+        kind, val = part
+
+        if kind == "lit":
+            return self._emit_const_string(val)
+
+        v = self.emit_expr(val)
+
+        if v.type != "String":
+            cast = self.new_temp("String")
+
+            self.current_block.add_instr(
+                IRInstr(
+                    "cast",
+                    [v, "String"],
+                    result=cast,
+                )
+            )
+
+            return cast
+
+        return v
+
+    def emit_interpolated_string(self, node):
+        if node.kind == "f":
+            parts = [
+                self._interp_part_to_string(p)
+                for p in node.parts
+            ]
+
+            res = self.new_temp("String")
+
+            self.current_block.add_instr(
+                IRInstr(
+                    "tmpl_concat",
+                    parts,
+                    result=res,
+                )
+            )
+
+            return res
+
+        return self._emit_t_string(node)
+
+    def _emit_t_string(self, node):
+        captures = []
+
+        for kind, val in node.parts:
+            if kind == "lit":
+                continue
+
+            for name in self._var_names(val):
+                name = self._resolve_alias(name)
+
+                if name not in captures:
+                    captures.append(name)
+
+        ptrs = []
+
+        for name in captures:
+            val = self.get_var(name)
+            ptr = self._promote_to_alloca(
+                name,
+                val.type,
+                val,
+            )
+            ptrs.append(ptr)
+
+        shape = (
+            tuple(
+                (
+                    kind,
+                    val if kind == "lit" else type(val).__name__,
+                )
+                for kind, val in node.parts
+            ),
+            tuple(p.type for p in ptrs),
+        )
+
+        if shape in self._render_funcs:
+            render_name = self._render_funcs[shape]
+        else:
+            render_name = f"__threadon_render_{self._render_seq}"
+            self._render_seq += 1
+            self._render_funcs[shape] = render_name
+            self._build_render_function(
+                render_name,
+                node,
+                captures,
+                ptrs,
+            )
+
+        tmpl = self.new_temp("String")
+
+        self.current_block.add_instr(
+            IRInstr(
+                "template_new",
+                [render_name] + ptrs,
+                result=tmpl,
+            )
+        )
+
+        return tmpl
+
+    def _build_render_function(
+        self,
+        render_name,
+        node,
+        captures,
+        ptrs,
+    ):
+        render = IRFunction(render_name, [], "String")
+        self.module.add_func(render)
+
+        entry = IRBlock("entry")
+        render.add_block(entry)
+
+        saved_func = self.current_func
+        saved_block = self.current_block
+        saved_env = self.env_stack
+        saved_ptrs = self.ptr_vars
+        saved_aliases = self.aliases
+        saved_tc = self.temp_counter
+        saved_seq = self._if_seq
+
+        self.current_func = render
+        self.current_block = entry
+        self.env_stack = []
+        self.ptr_vars = {}
+        self.aliases = {}
+        self.temp_counter = 0
+        self._if_seq = 0
+
+        self.push_env()
+
+        payload = self.new_temp("TemplatePayload")
+
+        entry.add_instr(
+            IRInstr(
+                "param",
+                ["payload"],
+                result=payload,
+            )
+        )
+
+        render.payload_param_name = payload.name
+
+        for i, name in enumerate(captures):
+            vtype = ptrs[i].type[:-1]
+
+            pv = self.new_temp(vtype)
+
+            entry.add_instr(
+                IRInstr(
+                    "tmpl_payload_val",
+                    [i, vtype],
+                    result=pv,
+                )
+            )
+
+            self.env_stack[-1][name] = pv
+
+        parts = [
+            self._interp_part_to_string(p)
+            for p in node.parts
+        ]
+
+        res = self.new_temp("String")
+
+        entry.add_instr(
+            IRInstr(
+                "tmpl_concat",
+                parts,
+                result=res,
+            )
+        )
+
+        entry.set_terminator(
+            IRInstr("ret", [res])
+        )
+
+        self.current_func = saved_func
+        self.current_block = saved_block
+        self.env_stack = saved_env
+        self.ptr_vars = saved_ptrs
+        self.aliases = saved_aliases
+        self.temp_counter = saved_tc
+        self._if_seq = saved_seq
+
+
     def emit_expr(self, expr):
         if isinstance(expr, LiteralExpr):
             t = expr.type
@@ -1568,6 +1828,9 @@ class SSABuilder:
             )
 
             return v
+
+        if isinstance(expr, InterpolatedStringExpr):
+            return self.emit_interpolated_string(expr)
 
         if isinstance(expr, VarExpr):
             return self.get_var(

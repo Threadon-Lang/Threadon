@@ -1049,6 +1049,85 @@ class Parser:
         return False
 
 
+    def parse_interpolated_string(self, tok):
+        kind = "f" if tok.type == TokenType.FSTRING else "t"
+        raw = tok.value
+        parts = []
+        lit = []
+        escapes = {"n": "\n", "t": "\t", '"': '"', "\\": "\\", "{": "{", "}": "}"}
+        i = 0
+        n = len(raw)
+
+        while i < n:
+            c = raw[i]
+
+            if c == "\\":
+                if i + 1 < n:
+                    lit.append(escapes.get(raw[i + 1], raw[i + 1]))
+                    i += 2
+                else:
+                    lit.append(c)
+                    i += 1
+                continue
+
+            if c == "{":
+                depth = 1
+                j = i + 1
+                expr_chars = []
+
+                while j < n and depth > 0:
+                    cc = raw[j]
+
+                    if cc == "\\":
+                        expr_chars.append(cc)
+                        if j + 1 < n:
+                            expr_chars.append(raw[j + 1])
+                            j += 2
+                        else:
+                            j += 1
+                        continue
+
+                    if cc == "{":
+                        depth += 1
+                    elif cc == "}":
+                        depth -= 1
+
+                        if depth == 0:
+                            break
+
+                    expr_chars.append(cc)
+                    j += 1
+
+                if depth != 0:
+                    self.give_error("Unterminated '{' in interpolated string")
+
+                if lit:
+                    parts.append(("lit", "".join(lit)))
+                    lit = []
+
+                expr_text = "".join(expr_chars).strip()
+
+                if not expr_text:
+                    self.give_error("Empty interpolation in interpolated string")
+
+                tokens = [ln for ln in lex_lines(expr_text) if ln]
+
+                if not tokens:
+                    self.give_error("Invalid interpolation in interpolated string")
+
+                parts.append(("expr", self.parse_expr(tokens[0])))
+                i = j + 1
+                continue
+
+            lit.append(c)
+            i += 1
+
+        if lit:
+            parts.append(("lit", "".join(lit)))
+
+        return InterpolatedStringExpr(kind, parts)
+
+
     def parse_expr(self, tokens):
         def find_op(ts, op_types, last=True, skip_prefix_unary=False):
             idx = None
@@ -1164,6 +1243,8 @@ class Parser:
                 tok = ts[0]
                 if tok.type == TokenType.STRING:
                     return LiteralExpr(tok, "String")
+                if tok.type in (TokenType.FSTRING, TokenType.TSTRING):
+                    return self.parse_interpolated_string(tok)
                 if tok.type == TokenType.NUMBER:
                     lit_type = "Float32" if "." in tok.value else "Int32"
                     return LiteralExpr(tok, lit_type)
@@ -1353,6 +1434,8 @@ class Parser:
 
         if t == "LiteralExpr":
             return expr.type
+        if t == "InterpolatedStringExpr":
+            return "String"
         if t == "RefExpr":
             inner_type = self.detect_expr_type(expr.inner)
             return inner_type

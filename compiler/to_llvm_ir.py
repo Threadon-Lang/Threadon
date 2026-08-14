@@ -41,6 +41,9 @@ class LLVMIRCompiler:
         self.block_end_label = {}
         self.used_checked_pow_widths = set()
         self.used_list_print = set()
+        self.templates_enabled = False
+        self._tmp_seq = 0
+        self.current_func = None
 
     def compile(self, module, native_exports=None):
         self.module = module 
@@ -52,6 +55,13 @@ class LLVMIRCompiler:
             self.struct_field_indices[name] = {}
             for idx, (fname, _) in enumerate(fields.items()):
                 self.struct_field_indices[name][fname] = idx
+
+        self.templates_enabled = any(
+            instr.op in ("template_new", "tmpl_concat", "tmpl_payload_val")
+            for func in module.funcs
+            for block in func.blocks
+            for instr in block.instructions
+        )
 
         self.out.append('; ModuleID = "main"')
         self.out.append('source_filename = "main"')
@@ -78,6 +88,9 @@ class LLVMIRCompiler:
             for elem_t in pending:
                 self._emit_list_str_helper(elem_t)
                 emitted.add(elem_t)
+
+        if self.templates_enabled:
+            self._emit_template_runtime()
 
 
         self.out.append("")
@@ -133,7 +146,7 @@ class LLVMIRCompiler:
                 raw = content.encode("utf-8", "replace")
                 escaped = "".join(f"\\{b:02x}" for b in raw) + "\\00"
                 size = len(raw) + 1
-                self.out.append(f'{gname} = private unnamed_addr constant [{size} x i8] c"{escaped}"')
+                self.out.append(f'{gname} = private unnamed_addr constant [{size} x i8] c"{escaped}" align 8')
 
         if self.used_c_runtime:
             self.out.append("")
@@ -176,6 +189,8 @@ class LLVMIRCompiler:
     def to_llvm_type(self, t):
         if t is None:
             return "void"
+        if t == "TemplatePayload":
+            return "i8**"
         if isinstance(t, str) and t.endswith("*"):
             base = self.to_llvm_type(t[:-1])
             return f"{base}*"
@@ -223,6 +238,7 @@ class LLVMIRCompiler:
 
         self.out.append(f"define {ret_type} @{func.name}({params_str}) {{")
 
+        self.current_func = func
         self.current_func_name = func.name
         self.current_func_entry_label = func.blocks[0].label if func.blocks else None
 
@@ -769,7 +785,7 @@ class LLVMIRCompiler:
                     buf = f"{res}_buf"
                     ptr = f"{res}_ptr"
                     return [
-                        f"{buf} = alloca [256 x i8]",
+                        f"{buf} = alloca [256 x i8], align 8",
                         f"{ptr} = getelementptr [256 x i8], [256 x i8]* {buf}, i64 0, i64 0",
                         f"{res} = call i8* @{helper}(i256 {src_op}, i8* {ptr})"
                     ]
@@ -778,7 +794,7 @@ class LLVMIRCompiler:
                 else:
                     fmt = self._string_global("%u" if src_unsigned else "%d")
                 return [
-                    f"{buf} = alloca [32 x i8]",
+                    f"{buf} = alloca [32 x i8], align 8",
                     f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 32, i8* {fmt}, {src_type} {src_op})",
                     f"{res} = getelementptr [32 x i8], [32 x i8]* {buf}, i64 0, i64 0"
                 ]
@@ -791,13 +807,13 @@ class LLVMIRCompiler:
                 else:
                     val = f"{res}_fd"
                     return [
-                        f"{buf} = alloca [64 x i8]",
+                        f"{buf} = alloca [64 x i8], align 8",
                         f"{val} = fpext {src_type} {src_op} to double",
                         f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 64, i8* {fmt}, double {val})",
                         f"{res} = getelementptr [64 x i8], [64 x i8]* {buf}, i64 0, i64 0"
                     ]
                 return [
-                    f"{buf} = alloca [64 x i8]",
+                    f"{buf} = alloca [64 x i8], align 8",
                     f"call i32 (i8*, i64, i8*, ...) @snprintf(i8* {buf}, i64 64, i8* {fmt}, double {val})",
                     f"{res} = getelementptr [64 x i8], [64 x i8]* {buf}, i64 0, i64 0"
                 ]
@@ -1040,7 +1056,7 @@ class LLVMIRCompiler:
             return self._emit_cast(res, rtype, instr.args[0], instr.args[1])
         if op == "phi":
                     incoming = ", ".join(
-                        f"[ {self.operand(v)}, %{self.block_end_label.get(blk, blk)} ]"
+                        f"[ {self.operand(v, materialize=False)}, %{self.block_end_label.get(blk, blk)} ]"
                         for blk, v in instr.incoming
                     )
                     return f"{res} = phi {rtype} {incoming}"
@@ -1101,6 +1117,15 @@ class LLVMIRCompiler:
         if op == "store":
             return self._emit_store(instr.args[0], instr.args[1])
 
+        if op == "tmpl_concat":
+            return self._emit_tmpl_concat(res, instr.args)
+
+        if op == "template_new":
+            return self._emit_template_new(res, instr.args)
+
+        if op == "tmpl_payload_val":
+            return self._emit_tmpl_payload_val(res, instr.args)
+
 
             bind(instr.result.name, current)
       
@@ -1116,7 +1141,7 @@ class LLVMIRCompiler:
 
     def _emit_store(self, val, ptr_val):
         val_type = self.to_llvm_type(val.type)
-        val_op = self.operand(val)
+        val_op = self.operand(val, materialize=False)
         ptr_op = self.operand(ptr_val)
         return f"store {val_type} {val_op}, {val_type}* {ptr_op}"
 
@@ -1189,7 +1214,7 @@ class LLVMIRCompiler:
 
     def _emit_identity(self, res, src):
         src_type = self.to_llvm_type(src.type)
-        src_op = self.operand(src)
+        src_op = self.operand(src, materialize=False)
         if src_type in FLOAT_LLVM_TYPES:
             return f"{res} = fadd {src_type} {src_op}, 0.0"
         if src_type == "i1":
@@ -1377,7 +1402,7 @@ class LLVMIRCompiler:
                 buf = f"{res}_b{i}"
                 ptr = f"{res}_p{i}"
                 tmp = f"{res}_s{i}"
-                lines.append(f"{buf} = alloca [256 x i8]")
+                lines.append(f"{buf} = alloca [256 x i8], align 8")
                 lines.append(f"{ptr} = getelementptr [256 x i8], [256 x i8]* {buf}, i64 0, i64 0")
                 lines.append(f"{tmp} = call i8* @{helper}(i256 {val}, i8* {ptr})")
                 spec = "%s"
@@ -1468,7 +1493,7 @@ class LLVMIRCompiler:
         self.out.append("  ret i8* %buf")
         self.out.append("}")
         self.out.append("")
-        self.out.append(f"@__threadon_input_buf = private global [{buf_size} x i8] zeroinitializer")
+        self.out.append(f"@__threadon_input_buf = private global [{buf_size} x i8] zeroinitializer, align 8")
         self.out.append("")
 
     def _emit_bigint_helpers(self):
@@ -1609,7 +1634,7 @@ class LLVMIRCompiler:
         out.append("entry:")
         out.append(f"  %len = extractvalue {list_llvm} %list, 0")
         out.append(f"  %data = extractvalue {list_llvm} %list, 1")
-        out.append(f"  %buf = alloca [{buf_size} x i8]")
+        out.append(f"  %buf = alloca [{buf_size} x i8], align 8")
         out.append(f"  %bufp = getelementptr inbounds [{buf_size} x i8], [{buf_size} x i8]* %buf, i64 0, i64 0")
         out.append(f"  %f1 = getelementptr inbounds [2 x i8], [2 x i8]* {bracket_open}, i64 0, i64 0")
         out.append(f"  %c1 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %bufp, i64 {buf_size}, i8* %f1)")
@@ -1681,7 +1706,7 @@ class LLVMIRCompiler:
             eb = fresh("eb")
             ep = fresh("ep")
             es = fresh("es")
-            out.append(f"  {eb} = alloca [256 x i8]")
+            out.append(f"  {eb} = alloca [256 x i8], align 8")
             out.append(f"  {ep} = getelementptr [256 x i8], [256 x i8]* {eb}, i64 0, i64 0")
             out.append(f"  {es} = call i8* @{helper}(i256 %v, i8* {ep})")
             out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%s')}, i64 0, i64 0")
@@ -1751,7 +1776,7 @@ class LLVMIRCompiler:
             fname = instr.args[k]
             fval = instr.args[k + 1]
             ftype = self.to_llvm_type(fval.type)
-            foperand = self.operand(fval)
+            foperand = self.operand(fval, materialize=False)
             idx = self.struct_field_indices[struct_name][fname]
             field_updates.append((idx, ftype, foperand))
             filled.add(fname)
@@ -1797,8 +1822,181 @@ class LLVMIRCompiler:
         idx = self.struct_field_indices[base_type][field_name]
         llvm_type = self.to_llvm_type(base_type)
         ftype = self.to_llvm_type(fval.type)
-        foperand = self.operand(fval)
+        foperand = self.operand(fval, materialize=False)
         return f"{res} = insertvalue {llvm_type} {base}, {ftype} {foperand}, {idx}"
+
+    def _emit_tmpl_concat(self, res, parts):
+        self.used_c_runtime.update(["malloc", "strlen"])
+        n = len(parts)
+        lines = []
+
+        if n == 0:
+            lines.append(f"{res}_arr = alloca [0 x i8*]")
+        else:
+            lines.append(f"{res}_arr = alloca [{n} x i8*]")
+
+            for i, p in enumerate(parts):
+                po = self.operand(p)
+                lines.append(
+                    f"{res}_s{i} = getelementptr "
+                    f"[{n} x i8*], [{n} x i8*]* {res}_arr, i64 0, i64 {i}"
+                )
+                lines.append(f"store i8* {po}, i8** {res}_s{i}")
+
+        lines.append(
+            f"{res}_ptr = getelementptr "
+            f"[{n if n else 0} x i8*], [{n if n else 0} x i8*]* {res}_arr, i64 0, i64 0"
+        )
+        lines.append(
+            f"{res} = call i8* @__threadon_concat(i8** {res}_ptr, i64 {n})"
+        )
+
+        return lines
+
+    def _emit_template_new(self, res, args):
+        self.used_c_runtime.add("malloc")
+        render_name = args[0]
+        ptrs = args[1:]
+        n = len(ptrs)
+        lines = []
+
+        lines.append(f"{res}_payload = call i8* @malloc(i64 {8 * n})")
+
+        for i, p in enumerate(ptrs):
+            po = self.operand(p, materialize=False)
+            ptype = self.to_llvm_type(p.type)
+            lines.append(
+                f"{res}_pg{i} = getelementptr i8, i8* {res}_payload, i64 {8 * i}"
+            )
+            lines.append(f"{res}_bc{i} = bitcast {ptype} {po} to i8*")
+            lines.append(f"store i8* {res}_bc{i}, i8* {res}_pg{i}")
+
+        lines.append(
+            f"{res}_fn = bitcast i8* (i8**)* @{render_name} to i8*"
+        )
+        lines.append(
+            f"{res}_obj = call i8* "
+            f"@__threadon_tmpl_new(i8* {res}_fn, i8* {res}_payload)"
+        )
+        lines.append(f"{res}_ti = ptrtoint i8* {res}_obj to i64")
+        lines.append(f"{res}_or = or i64 {res}_ti, 1")
+        lines.append(f"{res} = inttoptr i64 {res}_or to i8*")
+
+        return lines
+
+    def _emit_tmpl_payload_val(self, res, args):
+        idx = args[0]
+        vtype = args[1]
+        llvm_t = self.to_llvm_type(vtype)
+        payload = self.current_func.payload_param_name
+        return [
+            f"{res}_p = getelementptr i8**, i8** {payload}, i64 {idx}",
+            f"{res}_a = load i8*, i8** {res}_p",
+            f"{res}_c = bitcast i8* {res}_a to {llvm_t}*",
+            f"{res} = load {llvm_t}, {llvm_t}* {res}_c",
+        ]
+
+    def _emit_template_runtime(self):
+        self.used_c_runtime.update(["malloc", "strlen"])
+
+        self.out.append("")
+        self.out.append("define i8* @__threadon_concat(i8** %parts, i64 %count) {")
+        self.out.append("entry:")
+        self.out.append("  %len = alloca i64")
+        self.out.append("  store i64 0, i64* %len")
+        self.out.append("  %i = alloca i64")
+        self.out.append("  store i64 0, i64* %i")
+        self.out.append("  br label %loop1")
+        self.out.append("loop1:")
+        self.out.append("  %c1 = load i64, i64* %i")
+        self.out.append("  %cl = load i64, i64* %len")
+        self.out.append("  %cmp1 = icmp slt i64 %c1, %count")
+        self.out.append("  br i1 %cmp1, label %body1, label %done1")
+        self.out.append("body1:")
+        self.out.append("  %pe1 = getelementptr i8*, i8** %parts, i64 %c1")
+        self.out.append("  %s1 = load i8*, i8** %pe1")
+        self.out.append("  %sl = call i64 @strlen(i8* %s1)")
+        self.out.append("  %nl = add i64 %cl, %sl")
+        self.out.append("  store i64 %nl, i64* %len")
+        self.out.append("  %n1 = add i64 %c1, 1")
+        self.out.append("  store i64 %n1, i64* %i")
+        self.out.append("  br label %loop1")
+        self.out.append("done1:")
+        self.out.append("  %tot = load i64, i64* %len")
+        self.out.append("  %tot1 = add i64 %tot, 1")
+        self.out.append("  %buf = call i8* @malloc(i64 %tot1)")
+        self.out.append("  %wi = alloca i64")
+        self.out.append("  store i64 0, i64* %wi")
+        self.out.append("  %pi = alloca i64")
+        self.out.append("  store i64 0, i64* %pi")
+        self.out.append("  br label %loop2")
+        self.out.append("loop2:")
+        self.out.append("  %c2 = load i64, i64* %pi")
+        self.out.append("  %cmp2 = icmp slt i64 %c2, %count")
+        self.out.append("  br i1 %cmp2, label %body2, label %done2")
+        self.out.append("body2:")
+        self.out.append("  %pe2 = getelementptr i8*, i8** %parts, i64 %c2")
+        self.out.append("  %s2 = load i8*, i8** %pe2")
+        self.out.append("  %sl2 = call i64 @strlen(i8* %s2)")
+        self.out.append("  %si = alloca i64")
+        self.out.append("  store i64 0, i64* %si")
+        self.out.append("  br label %loop3")
+        self.out.append("loop3:")
+        self.out.append("  %c3 = load i64, i64* %si")
+        self.out.append("  %cmp3 = icmp slt i64 %c3, %sl2")
+        self.out.append("  br i1 %cmp3, label %body3, label %done3")
+        self.out.append("body3:")
+        self.out.append("  %sp = getelementptr i8, i8* %s2, i64 %c3")
+        self.out.append("  %ch = load i8, i8* %sp")
+        self.out.append("  %w = load i64, i64* %wi")
+        self.out.append("  %bp = getelementptr i8, i8* %buf, i64 %w")
+        self.out.append("  store i8 %ch, i8* %bp")
+        self.out.append("  %nw = add i64 %w, 1")
+        self.out.append("  store i64 %nw, i64* %wi")
+        self.out.append("  %n3 = add i64 %c3, 1")
+        self.out.append("  store i64 %n3, i64* %si")
+        self.out.append("  br label %loop3")
+        self.out.append("done3:")
+        self.out.append("  %n4 = add i64 %c2, 1")
+        self.out.append("  store i64 %n4, i64* %pi")
+        self.out.append("  br label %loop2")
+        self.out.append("done2:")
+        self.out.append("  %fw = load i64, i64* %wi")
+        self.out.append("  %fb = getelementptr i8, i8* %buf, i64 %fw")
+        self.out.append("  store i8 0, i8* %fb")
+        self.out.append("  ret i8* %buf")
+        self.out.append("}")
+        self.out.append("")
+
+        self.out.append("define i8* @__threadon_tmpl_new(i8* %render, i8* %payload) {")
+        self.out.append("entry:")
+        self.out.append("  %obj = call i8* @malloc(i64 16)")
+        self.out.append("  store i8* %render, i8* %obj")
+        self.out.append("  %p = getelementptr i8, i8* %obj, i64 8")
+        self.out.append("  store i8* %payload, i8* %p")
+        self.out.append("  ret i8* %obj")
+        self.out.append("}")
+        self.out.append("")
+
+        self.out.append("define i8* @__threadon_tmpl_read(i8* %s) {")
+        self.out.append("entry:")
+        self.out.append("  %bi = ptrtoint i8* %s to i64")
+        self.out.append("  %tag = and i64 %bi, 1")
+        self.out.append("  %is0 = icmp eq i64 %tag, 0")
+        self.out.append("  br i1 %is0, label %plain, label %tagged")
+        self.out.append("plain:")
+        self.out.append("  ret i8* %s")
+        self.out.append("tagged:")
+        self.out.append("  %base = and i64 %bi, -2")
+        self.out.append("  %obj = inttoptr i64 %base to i8*")
+        self.out.append("  %render = load i8*, i8* %obj")
+        self.out.append("  %p = getelementptr i8, i8* %obj, i64 8")
+        self.out.append("  %payload = load i8*, i8* %p")
+        self.out.append("  %fn = bitcast i8* %render to i8* (i8*)*")
+        self.out.append("  %r = call i8* %fn(i8* %payload)")
+        self.out.append("  ret i8* %r")
+        self.out.append("}")
+        self.out.append("")
 
     def _split_llvm_fields(self, inner):
         fields = []
@@ -1967,7 +2165,7 @@ class LLVMIRCompiler:
         llvm_type = self.to_llvm_type(obj.type)
         gep = f"{res}_gep"
         lines.append(f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {idx64}")
-        lines.append(f"store {elem_llvm} {self.operand(val)}, {elem_llvm}* {gep}")
+        lines.append(f"store {elem_llvm} {self.operand(val, materialize=False)}, {elem_llvm}* {gep}")
         v0 = f"{res}_v0"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {lenv}, 0")
         lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {data}, 1")
@@ -1975,8 +2173,8 @@ class LLVMIRCompiler:
 
     def _emit_select(self, res, instr):
         cond = self.operand(instr.args[0])
-        tval = self.operand(instr.args[1])
-        fval = self.operand(instr.args[2])
+        tval = self.operand(instr.args[1], materialize=False)
+        fval = self.operand(instr.args[2], materialize=False)
         ttype = self.to_llvm_type(instr.args[1].type)
         return f"{res} = select i1 {cond}, {ttype} {tval}, {ttype} {fval}"
 
@@ -1997,8 +2195,20 @@ class LLVMIRCompiler:
         return f"; UNHANDLED TERMINATOR: {op}"
 
 
-    def operand(self, val):
+    def operand(self, val, materialize=True):
         if isinstance(val, SSAValue):
+            if (
+                materialize
+                and self.templates_enabled
+                and val.type == "String"
+            ):
+                tmp = f"%rt{self._tmp_seq}"
+                self._tmp_seq += 1
+                self.out.append(
+                    f"{tmp} = call i8* "
+                    f"@__threadon_tmpl_read(i8* {val.name})"
+                )
+                return tmp
             return val.name
         if isinstance(val, bool):
             return "true" if val else "false"

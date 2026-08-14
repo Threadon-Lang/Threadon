@@ -7,6 +7,8 @@ class TokenType(Enum):
     TYPE = auto()
     NUMBER = auto()
     STRING = auto()
+    FSTRING = auto()
+    TSTRING = auto()
     NEWLINE = auto()
     INDENT = auto()
     DEDENT = auto()
@@ -196,6 +198,75 @@ class Lexer:
         self.advance()
         return Token(TokenType.STRING, result, start_line, start_col)
 
+    def prefixed_string(self):
+        prefix = self.current_char
+        start_line, start_col = self.line, self.col
+        self.advance()
+        self.advance()
+        result = ""
+        depth = 0
+
+        while self.current_char is not None:
+            c = self.current_char
+
+            if c == "\\":
+                result += c
+                self.advance()
+                if self.current_char is not None:
+                    result += self.current_char
+                    self.advance()
+                continue
+
+            if c == '"':
+                if depth == 0:
+                    self.advance()
+                    tok_type = (
+                        TokenType.FSTRING
+                        if prefix == "f"
+                        else TokenType.TSTRING
+                    )
+                    return Token(tok_type, result, start_line, start_col)
+
+                result += c
+                self.advance()
+
+                while self.current_char is not None:
+                    if self.current_char == "\\":
+                        result += self.current_char
+                        self.advance()
+                        if self.current_char is not None:
+                            result += self.current_char
+                            self.advance()
+                        continue
+                    if self.current_char == '"':
+                        result += self.current_char
+                        self.advance()
+                        break
+                    result += self.current_char
+                    self.advance()
+                continue
+
+            if c == "{":
+                depth += 1
+                result += c
+                self.advance()
+                continue
+
+            if c == "}":
+                if depth > 0:
+                    depth -= 1
+                result += c
+                self.advance()
+                continue
+
+            result += c
+            self.advance()
+
+        raise SyntaxError(
+            f"Unterminated string literal at line {start_line}, col {start_col}"
+        )
+
+
     def number(self):
         start_line, start_col = self.line, self.col
         result = ""
@@ -307,6 +378,10 @@ class Lexer:
             if self.current_char.isspace() and self.col != 1:
                 self.skip_whitespace()
                 continue
+
+            if self.current_char in "ft" and self.peek() == '"':
+                self.previous_was_newline = False
+                return self.prefixed_string()
 
             if self.current_char == '"':
                 self.previous_was_newline = False
