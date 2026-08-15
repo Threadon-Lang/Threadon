@@ -17,15 +17,17 @@ CONVERTIBLE_TO_FLOAT = ALL_INT_TYPES + FLOAT_TYPES + ("String",)
 CONVERTIBLE_TO_BOOL = ALL_INT_TYPES + FLOAT_TYPES + ("String",)
 
 
-def _is_printable(t):
+def _is_printable(t, aggregate_types=None):
     if t in PRINTABLE_TYPES:
         return True
+    if aggregate_types and t in aggregate_types:
+        return True
     if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):
-        return _is_printable(t[5:-1])
+        return _is_printable(t[5:-1], aggregate_types)
     return False
 
 
-def builtin_return_type(func_name, arg_types):
+def builtin_return_type(func_name, arg_types, aggregate_types=None):
 
     params, ret = BUILTIN_SIGS[func_name]
 
@@ -49,7 +51,7 @@ def builtin_return_type(func_name, arg_types):
 
     if func_name == "print":
         for arg_type in arg_types:
-            if not _is_printable(arg_type):
+            if not _is_printable(arg_type, aggregate_types):
                 raise ValueError(
                     f"Function 'print' cannot print a value of type {arg_type}"
                 )

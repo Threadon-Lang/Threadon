@@ -40,6 +40,21 @@ LANGUAGES = {
         ["--crate-type", "staticlib"],
         object_ext="a",
     ),
+    "python":Toolchain(
+        "python",
+        "g++",
+        [
+            "-shared",
+            "-fPIC",
+            "`python3-config --includes`"
+        ],
+        [
+            "-c",
+            "`python3-config --includes`"
+        ],
+        object_ext="so",
+        cxx=True
+    )
 }
 
 
@@ -139,8 +154,12 @@ class Module:
         self.ast = ast
         self.func_sigs = {}
         self.struct_defs = {}
+        self.class_defs = {}
+        self.class_ast = {}
+        self.class_method_map = {}
         self.func_exports = set()
         self.struct_exports = set()
+        self.class_exports = set()
         self.var_exports = set()
         self.lang = "threadon"
         self.toolchain = None
@@ -273,8 +292,12 @@ class Importer:
         module = Module(name, source, ast)
         module.func_sigs = parser.func_sigs
         module.struct_defs = parser.struct_defs
+        module.class_defs = parser.class_defs
+        module.class_ast = parser.class_ast
+        module.class_method_map = parser.class_method_map
         module.func_exports = set(parser.qfunc.keys())
         module.struct_exports = set(parser.qstruct.keys())
+        module.class_exports = set(parser.qclass.keys())
         module.var_exports = {
             node.name for node in ast if type(node).__name__ == "VarDecl"
         }

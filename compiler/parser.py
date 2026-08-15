@@ -44,6 +44,14 @@ def print_expr(expr):
     if t == "FieldAccessExpr":
         return f"{print_expr(expr.obj)}.{expr.field}"
 
+    if t == "MethodCallExpr":
+        args = ", ".join(print_expr(a) for a in expr.args)
+        return f"{print_expr(expr.obj)}.{expr.method}({args})"
+
+    if t == "ClassInitExpr":
+        args = ", ".join(print_expr(a) for a in expr.args)
+        return f"{expr.class_name}({args})"
+
     if t == "BinaryExpr":
         left = print_expr(expr.left)
         right = print_expr(expr.right)
@@ -142,6 +150,15 @@ def print_ast(ast, indent=0):
             print(f"{pad}}}")
             continue
 
+        if t == "ClassDef":
+            base_str = f"({node.base})" if node.base else ""
+            print(f"{pad}Class {node.name}{base_str}")
+            print(f"{pad}{{")
+            print_ast(node.own_fields, indent + 1)
+            print_ast(node.methods, indent + 1)
+            print(f"{pad}}}")
+            continue
+
         print(f"{pad}<Unknown node {t}>")
 
 
@@ -164,10 +181,20 @@ class Parser:
         self.aliases = {}
         self.qfunc = {}
         self.qstruct = {}
+        self.qclass = {}
+        self.class_defs = {}
+        self.class_ast = {}
+        self.class_method_map = {}
         self.func_import_aliases = {}
         self.struct_import_aliases = {}
+        self.class_import_aliases = {}
         self.module_aliases = {}
         self.lazy_imports = {}
+        self.current_class = None
+        self._infer_return = False
+        self._inferred_ret = None
+        self._pending_inferred = {}
+        self._in_init = False
 
 
     def give_error(self, msg, line_num=None):
@@ -324,6 +351,8 @@ class Parser:
             return self.parse_while()
         if first == TokenType.STRUCT:
             return self.parse_struct()
+        if first == TokenType.CLASS:
+            return self.parse_class()
 
         if first == TokenType.ELSE:
             return self.parse_else_error()
@@ -338,6 +367,16 @@ class Parser:
                 TokenType.MOD_ASSIGN,
                 TokenType.FLOORDIV_ASSIGN):
                 return self.parse_augmented_assign()
+
+        if (
+            first == TokenType.IDENT
+            and self.current_line[0].value == "self"
+            and len(self.current_line) > 3
+            and self.current_line[1].type == TokenType.DOT
+            and self.current_line[2].type == TokenType.IDENT
+            and self.current_line[3].type == TokenType.COLON
+        ):
+            return self.parse_self_field_decl()
 
         if (
             first == TokenType.IDENT
@@ -393,6 +432,18 @@ class Parser:
         except ImporterError as e:
             self.give_error(str(e))
 
+    def _copy_class_recursive(self, qmember, mod):
+        if qmember in self.class_defs:
+            return
+        self.class_defs[qmember] = mod.class_defs[qmember]
+        self.class_ast[qmember] = mod.class_ast[qmember]
+        self.class_method_map[qmember] = mod.class_method_map[qmember]
+        for method_name, func_name in mod.class_method_map[qmember].items():
+            self.func_sigs[func_name] = mod.func_sigs[func_name]
+        base = mod.class_ast[qmember].base
+        if base is not None:
+            self._copy_class_recursive(base, mod)
+
     def bind_import(self, mod, module_path, name, bound):
         qmember = f"{module_path}.{name}" if module_path else name
 
@@ -402,6 +453,9 @@ class Parser:
         elif name in mod.struct_exports:
             self.struct_import_aliases[bound] = qmember
             self.struct_defs[qmember] = mod.struct_defs[qmember]
+        elif name in mod.class_exports:
+            self.class_import_aliases[bound] = qmember
+            self._copy_class_recursive(qmember, mod)
         elif name in mod.var_exports:
             self.give_error(
                 f"Cannot import variable '{name}' from module '{module_path}'"
@@ -554,6 +608,10 @@ class Parser:
         return name
 
     def resolve_type(self, name, strict=True):
+        if name in self.qclass:
+            return self.qclass[name]
+        if name in self.class_import_aliases:
+            return self.class_import_aliases[name]
         if name in self.qstruct:
             return self.qstruct[name]
         if name in self.struct_import_aliases:
@@ -568,6 +626,11 @@ class Parser:
                 self.struct_defs[qmember] = mod.struct_defs[qmember]
                 del self.lazy_imports[name]
                 return qmember
+            if member in mod.class_exports:
+                self.class_import_aliases[name] = qmember
+                self._copy_class_recursive(qmember, mod)
+                del self.lazy_imports[name]
+                return qmember
             if member in mod.func_exports:
                 if strict:
                     self.give_error(f"'{name}' is a function, not a type")
@@ -578,7 +641,7 @@ class Parser:
             segments = name.split(".")
             if segments[0] in self.module_aliases:
                 qname, kind = self.resolve_qualified(segments)
-                if kind == "struct":
+                if kind in ("struct", "class"):
                     return qname
                 if strict:
                     self.give_error(f"'{name}' is a function, not a type")
@@ -592,7 +655,7 @@ class Parser:
             return tok.value
         if tok.type == TokenType.IDENT:
             resolved = self.resolve_type(tok.value)
-            if resolved in self.struct_defs:
+            if resolved in self.struct_defs or resolved in self.class_defs:
                 return resolved
             self.give_error(f"Unknown type '{tok.value}' in {ctx}")
         self.give_error(f"Expected a type in {ctx}")
@@ -644,7 +707,7 @@ class Parser:
                 parts.append(tokens[i + 1].value)
                 i += 2
             resolved = self.resolve_type(".".join(parts))
-            if resolved in self.struct_defs:
+            if resolved in self.struct_defs or resolved in self.class_defs:
                 return resolved, i
             self.give_error(f"Unknown type '{'.'.join(parts)}' in {ctx}")
 
@@ -660,6 +723,9 @@ class Parser:
         if member in mod.struct_exports:
             self.struct_defs[qmember] = mod.struct_defs[qmember]
             return qmember, "struct"
+        if member in mod.class_exports:
+            self._copy_class_recursive(qmember, mod)
+            return qmember, "class"
         if member in mod.var_exports:
             self.give_error(
                 f"Module '{module_path}' has no function or type '{member}'"
@@ -698,10 +764,20 @@ class Parser:
         self.aliases = {}
         self.qfunc = {}
         self.qstruct = {}
+        self.qclass = {}
+        self.class_defs = {}
+        self.class_ast = {}
+        self.class_method_map = {}
         self.func_import_aliases = {}
         self.struct_import_aliases = {}
+        self.class_import_aliases = {}
         self.module_aliases = {}
         self.lazy_imports = {}
+        self.current_class = None
+        self._infer_return = False
+        self._inferred_ret = None
+        self._pending_inferred = {}
+        self._in_init = False
 
         self.scopes = []
         self.push_scope()
@@ -735,6 +811,9 @@ class Parser:
             qname = f"std.{name}"
             self.struct_import_aliases[name] = qname
             self.struct_defs[qname] = mod.struct_defs[qname]
+        for name in sorted(mod.class_exports):
+            qname = f"std.{name}"
+            self._copy_class_recursive(qname, mod)
     def parse_struct(self):
         if self.return_type is not None:
             self.give_error("Struct must be declared at the top level")
@@ -780,6 +859,434 @@ class Parser:
         self.struct_defs[qname] = fields
 
         return StructDef(qname, fields)
+
+    def parse_class(self):
+        if self.return_type is not None:
+            self.give_error("Class must be declared at the top level")
+
+        tokens = self.current_line
+
+        if len(tokens) < 2:
+            self.give_error("Class must have a name")
+
+        name = tokens[1].value
+        qname = self.qualify(name)
+        self.qclass[name] = qname
+
+        base = None
+        i = 2
+        if i < len(tokens) and tokens[i].type == TokenType.LPAREN:
+            if (
+                i + 2 >= len(tokens)
+                or tokens[i + 1].type != TokenType.IDENT
+                or tokens[i + 2].type != TokenType.RPAREN
+            ):
+                self.give_error("Expected a single base class name in parentheses")
+            base_q = self.resolve_type(tokens[i + 1].value)
+            if base_q not in self.class_defs:
+                self.give_error(f"Unknown base class '{tokens[i + 1].value}'")
+            base = base_q
+            i += 3
+
+        if i < len(tokens) and tokens[i].type == TokenType.COLON:
+            i += 1
+        if i < len(tokens):
+            self.give_error("Unexpected token in class declaration")
+
+        parent_indent = self.current_indent
+
+        own_fields = self._scan_class_fields(qname, base, parent_indent)
+
+        inherited = []
+        if base is not None:
+            inherited = self._fields_of(base)
+
+        for inherited_field in inherited:
+            if inherited_field.name in own_fields:
+                self.give_error(
+                    f"Class '{name}' redefines inherited field '{inherited_field.name}'"
+                )
+
+        flattened = inherited + list(own_fields.values())
+        self.class_defs[qname] = flattened
+        self.class_ast[qname] = ClassDef(
+            qname, base, flattened, [], list(own_fields.values())
+        )
+
+        methods = []
+        self.push_scope()
+        self.current_class = qname
+
+        while True:
+            peeked = self.peek_line()
+            if peeked is None:
+                break
+
+            indent, dedent, cleaned = peeked
+
+            if not cleaned:
+                level = self.next_nonempty_level()
+                if level is not None and level <= parent_indent:
+                    break
+                self.read_line()
+                continue
+
+            if not self.line_is_within_body(indent, dedent, parent_indent):
+                break
+
+            self.read_line()
+
+            if cleaned[0].type == TokenType.DEF:
+                methods.append(self.parse_method())
+            else:
+                self.parse_line()
+
+        self.pop_scope()
+        self.current_class = None
+
+        node = ClassDef(qname, base, flattened, methods, list(own_fields.values()))
+        self.class_ast[qname] = node
+
+        return node
+
+    def _scan_class_fields(self, qname, base, parent_indent):
+        own_fields = {}
+        i = self.line_number
+        level = parent_indent
+        while i <= len(self.lexed_lines):
+            raw = self.lexed_lines[i - 1]
+            if not raw:
+                i += 1
+                continue
+            indent, dedent, cleaned = strip_indent_tokens(raw)
+            level += indent - dedent
+            if not cleaned:
+                i += 1
+                continue
+            if level <= parent_indent:
+                break
+            if (
+                len(cleaned) >= 4
+                and cleaned[0].type == TokenType.IDENT
+                and cleaned[0].value == "self"
+                and cleaned[1].type == TokenType.DOT
+                and cleaned[2].type == TokenType.IDENT
+                and cleaned[3].type == TokenType.COLON
+            ):
+                fname = cleaned[2].value
+                ftype, _ = self.parse_type_from_tokens(
+                    cleaned, "class field declaration", 4
+                )
+                if (
+                    fname in own_fields
+                    and own_fields[fname].var_type != ftype
+                ):
+                    self.give_error(
+                        f"Field '{fname}' declared with conflicting types "
+                        f"in class '{qname}'"
+                    )
+                own_fields[fname] = VarDecl(fname, ftype, None)
+            elif (
+                level == parent_indent + 1
+                and cleaned[0].type == TokenType.IDENT
+                and len(cleaned) > 1
+                and cleaned[1].type == TokenType.COLON
+            ):
+                fname = cleaned[0].value
+                ftype, next_idx = self.parse_type_from_tokens(
+                    cleaned, "class field declaration", 2
+                )
+                if (
+                    next_idx < len(cleaned)
+                    and cleaned[next_idx].type == TokenType.ASSIGN
+                ):
+                    self.give_error(
+                        f"Class field '{fname}' cannot have an initializer "
+                        f"at class body level"
+                    )
+                if fname in own_fields:
+                    self.give_error(f"Duplicate field '{fname}' in class '{qname}'")
+                own_fields[fname] = VarDecl(fname, ftype, None)
+            i += 1
+        return own_fields
+
+    def parse_method(self):
+        tokens = self.current_line
+
+        if len(tokens) < 4:
+            self.give_error("Invalid method definition")
+
+        parent_indent = self.current_indent
+        method_name = tokens[1].value
+        func_name = f"{self.current_class}.{method_name}"
+        is_init = method_name == "__init__"
+
+        params = []
+        i = 3
+        seen_self = False
+
+        while i < len(tokens) and tokens[i].type != TokenType.RPAREN:
+            if tokens[i].type != TokenType.IDENT:
+                self.give_error("Expected parameter name")
+            param_name = tokens[i].value
+            i += 1
+
+            if not seen_self and param_name == "self":
+                seen_self = True
+                if i < len(tokens) and tokens[i].type == TokenType.COLON:
+                    i += 1
+                    param_type, i = self.parse_type_from_tokens(
+                        tokens, "method signature", i
+                    )
+                elif i < len(tokens) and tokens[i].type == TokenType.IDENT:
+                    param_type, i = self.parse_type_from_tokens(
+                        tokens, "method signature", i
+                    )
+                else:
+                    self.give_error("Expected ':' after 'self'")
+            else:
+                if i >= len(tokens) or tokens[i].type != TokenType.COLON:
+                    self.give_error("Expected ':' after parameter name")
+                i += 1
+                param_type, i = self.parse_type_from_tokens(
+                    tokens, "method signature", i
+                )
+
+            default = None
+            if i < len(tokens) and tokens[i].type == TokenType.ASSIGN:
+                i += 1
+                default_tokens = []
+                depth = 0
+                while i < len(tokens):
+                    tok = tokens[i]
+                    if depth == 0 and tok.type in (
+                        TokenType.COMMA,
+                        TokenType.RPAREN,
+                    ):
+                        break
+                    if tok.type in (TokenType.LBRACKET, TokenType.LPAREN):
+                        depth += 1
+                    elif tok.type in (TokenType.RBRACKET, TokenType.RPAREN):
+                        depth -= 1
+                    default_tokens.append(tok)
+                    i += 1
+                if not default_tokens:
+                    self.give_error("Expected default value after '='")
+                default = self.parse_expr(default_tokens)
+
+            params.append((param_name, param_type, default))
+
+            if i < len(tokens) and tokens[i].type == TokenType.COMMA:
+                i += 1
+                if i < len(tokens) and tokens[i].type == TokenType.RPAREN:
+                    self.give_error("Trailing comma in parameter list is not allowed")
+
+        if i >= len(tokens) or tokens[i].type != TokenType.RPAREN:
+            self.give_error("Expected ')' after parameters")
+        i += 1
+
+        if is_init and i < len(tokens) and tokens[i].type == TokenType.ARROW:
+            self.give_error("'__init__' cannot have a return type")
+
+        return_type = None
+        if i < len(tokens):
+            if tokens[i].type == TokenType.ARROW:
+                i += 1
+                return_type, _ = self.parse_type_from_tokens(
+                    tokens, "return type", i
+                )
+            elif tokens[i].type != TokenType.COLON:
+                self.give_error("Expected '->' after ')'")
+
+        params = [
+            (pname, self.resolve_type(ptype), pdefault)
+            for pname, ptype, pdefault in params
+        ]
+        if return_type is not None:
+            return_type = self.resolve_type(return_type)
+
+        if not seen_self:
+            self.give_error("Method must have a 'self' parameter")
+
+        self_type = params[0][1]
+        if self_type != self.current_class:
+            self.give_error(
+                f"'self' parameter of method '{method_name}' must be of type "
+                f"'{self.current_class}'"
+            )
+
+        self._validate_params_defaults(params, func_name)
+
+        if is_init:
+            return_type = self.current_class
+        elif return_type is None:
+            self._pending_inferred[func_name] = params
+
+        if return_type is not None:
+            self.func_sigs[func_name] = (params, return_type)
+
+        self.class_method_map.setdefault(self.current_class, {})[method_name] = func_name
+
+        self.push_scope()
+        for pname, ptype, _ in params:
+            self.declare_var(pname, ptype)
+
+        self._in_init = is_init
+        if is_init:
+            self.return_type = self.current_class
+            self._infer_return = False
+            self._inferred_ret = None
+        else:
+            self.return_type = return_type
+            self._infer_return = return_type is None
+            self._inferred_ret = None
+
+        func_body = self.parse_block(parent_indent)
+
+        self.pop_scope()
+        self.return_type = None
+        self._in_init = False
+
+        if is_init:
+            func_body.append(ReturnStmt(self.current_class, VarExpr("self")))
+            return_type = self.current_class
+        elif self._infer_return:
+            if self._inferred_ret is None:
+                ret = "NoneType"
+            else:
+                ret = self._inferred_ret
+            self._infer_return = False
+            self._inferred_ret = None
+            del self._pending_inferred[func_name]
+            self.func_sigs[func_name] = (params, ret)
+            return_type = ret
+        else:
+            if return_type != "NoneType" and not self.all_paths_return(func_body):
+                self.give_error("Function must return a value on all code paths")
+
+        if method_name == "__str__":
+            if len(params) != 1:
+                self.give_error("Method '__str__' must take only the 'self' parameter")
+            if return_type != "String":
+                self.give_error(
+                    f"Method '__str__' must return a String, got {return_type}"
+                )
+
+        return FunctionDef(func_name, params, return_type, func_body)
+
+    def _validate_params_defaults(self, params, func_name):
+        seen_default = False
+        for pname, _, pdefault in params:
+            if pdefault is not None:
+                seen_default = True
+            elif seen_default:
+                self.give_error(
+                    f"Parameter '{pname}' without a default value cannot "
+                    f"follow a parameter with a default value"
+                )
+
+        for pname, ptype, pdefault in params:
+            if pdefault is None:
+                continue
+            if not self._is_const_expr(pdefault):
+                self.give_error(
+                    f"Default value for parameter '{pname}' must be a "
+                    f"constant expression"
+                )
+            default_type = self.detect_expr_type(pdefault)
+            if default_type != ptype:
+                if (
+                    self._is_const_int_expr(pdefault) and ptype in self._INT_TYPES
+                ) or (
+                    self._is_const_float_expr(pdefault) and ptype in self._FLOAT_TYPES
+                ):
+                    self._set_expr_type(pdefault, ptype)
+                    self._check_literal_range(pdefault, ptype)
+                else:
+                    self.give_error(
+                        f"Default value for parameter '{pname}' must have "
+                        f"type {ptype}, got {default_type}"
+                    )
+
+    def parse_self_field_decl(self):
+        tokens = self.current_line
+
+        field = tokens[2].value
+        i = 4
+        ftype, i = self.parse_type_from_tokens(
+            tokens, "self field declaration", i
+        )
+
+        expr = None
+        if i < len(tokens):
+            if tokens[i].type != TokenType.ASSIGN:
+                self.give_error("Expected '=' in self field declaration")
+            expr = self.parse_expr(tokens[i + 1:])
+
+        if self.current_class is None:
+            self.give_error("'self' can only be used inside a class method")
+
+        declared = None
+        for decl in self.class_defs[self.current_class]:
+            if decl.name == field:
+                declared = decl
+                break
+        if declared is None:
+            self.give_error(f"Class '{self.current_class}' has no field '{field}'")
+
+        if expr is not None:
+            detected = self.detect_expr_type(expr)
+            if not self._is_valid_type(ftype):
+                self.give_error(f"Unknown type '{ftype}'")
+            if detected != ftype:
+                if not self._try_adapt_literal(expr, detected, ftype):
+                    self.give_error(
+                        f"Field '{field}' expects type {ftype}, got {detected}"
+                    )
+
+        return AttrDecl("self", field, ftype, expr)
+
+    def _fields_of(self, type_name):
+        if type_name in self.class_defs:
+            return self.class_defs[type_name]
+        if type_name in self.struct_defs:
+            return self.struct_defs[type_name]
+        return []
+
+    def _aggregate_types(self):
+        return set(self.struct_defs) | set(self.class_defs)
+
+    def _base_of(self, cls):
+        node = self.class_ast.get(cls)
+        if node is None:
+            return None
+        return node.base
+
+    def _resolve_method_owner(self, obj_type, method_name):
+        cls = obj_type
+        seen = set()
+        while cls is not None and cls not in seen:
+            seen.add(cls)
+            if method_name in self.class_method_map.get(cls, {}):
+                return cls
+            cls = self._base_of(cls)
+        return None
+
+    def _resolve_init(self, obj_type):
+        cls = obj_type
+        seen = set()
+        while cls is not None and cls not in seen:
+            seen.add(cls)
+            if "__init__" in self.class_method_map.get(cls, {}):
+                return cls
+            cls = self._base_of(cls)
+        return None
+
+    def parse_class_init(self, class_name, tokens):
+        args = []
+        if tokens:
+            args = self._split_call_args(tokens, 0)
+        return ClassInitExpr(class_name, args)
 
     def parse_if(self):
         tokens = self.current_line
@@ -1151,6 +1658,9 @@ class Parser:
             if len(ts) < 3:
                 return None
 
+            if ts[0].value in self.module_aliases:
+                return None
+
             for i in range(0, len(ts), 2):
                 if ts[i].type != TokenType.IDENT:
                     return None
@@ -1186,6 +1696,11 @@ class Parser:
             if kind == "struct":
                 return self.parse_struct_init(qname, ts[i + 1:-1])
 
+            if kind == "class":
+                if ts[-1].type != TokenType.RPAREN:
+                    self.give_error("Unmatched '(' in call")
+                return self.parse_class_init(qname, ts[i + 1:-1])
+
             if ts[-1].type != TokenType.RPAREN:
                 self.give_error("Unmatched '(' in call")
 
@@ -1204,10 +1719,13 @@ class Parser:
             if not ts:
                 self.give_error("Empty expression")
             if len(ts) >= 3 and ts[0].type == TokenType.IDENT and ts[1].type == TokenType.LPAREN:
-                struct_name = self.resolve_type(ts[0].value, strict=False)
+                type_name = self.resolve_type(ts[0].value, strict=False)
 
-                if struct_name in self.struct_defs:
-                    return self.parse_struct_init(struct_name, ts[2:-1])
+                if type_name in self.struct_defs:
+                    return self.parse_struct_init(type_name, ts[2:-1])
+
+                if type_name in self.class_defs:
+                    return self.parse_class_init(type_name, ts[2:-1])
             if len(ts) >= 3 and ts[0].type == TokenType.TYPE and ts[1].type == TokenType.LPAREN:
                 target_type = ts[0].value
                 if ts[-1].type != TokenType.RPAREN:
@@ -1305,7 +1823,11 @@ class Parser:
             if lit is not None:
                 return lit
 
-            lb = None
+            if ts and ts[0].type == TokenType.IDENT and ts[0].value in self.module_aliases:
+                return factor(ts)
+
+            split = None
+            split_is_index = False
             depth = 0
             for k, tok in enumerate(ts):
                 if tok.type == TokenType.LPAREN:
@@ -1313,17 +1835,48 @@ class Parser:
                 elif tok.type == TokenType.RPAREN:
                     depth -= 1
                 elif tok.type == TokenType.LBRACKET and depth == 0:
-                    lb = k
+                    split = k
+                    split_is_index = True
                     break
-            if lb is None:
+                elif tok.type == TokenType.DOT and depth == 0:
+                    if k > 0 and k + 1 < len(ts) and ts[k + 1].type == TokenType.IDENT:
+                        split = k
+                        split_is_index = False
+                        break
+
+            if split is None:
                 return factor(ts)
 
-            base = factor(ts[:lb])
-            rest = ts[lb:]
+            base = factor(ts[:split])
+            rest = ts[split:]
 
             while True:
                 if not rest:
                     break
+                if (
+                    rest[0].type == TokenType.DOT
+                    and len(rest) >= 3
+                    and rest[1].type == TokenType.IDENT
+                    and rest[2].type == TokenType.LPAREN
+                ):
+                    depth = 0
+                    end = None
+                    for k in range(2, len(rest)):
+                        tok = rest[k]
+                        if tok.type == TokenType.LPAREN:
+                            depth += 1
+                        elif tok.type == TokenType.RPAREN:
+                            depth -= 1
+                            if depth == 0:
+                                end = k
+                                break
+                    if end is None:
+                        self.give_error("Unmatched '(' in method call")
+                    args = self._split_call_args(rest[3:end], 0)
+                    base = MethodCallExpr(base, rest[1].value, args)
+                    rest = rest[end + 1:]
+                    continue
+
                 if (
                     rest[0].type == TokenType.DOT
                     and len(rest) >= 2
@@ -1467,16 +2020,19 @@ class Parser:
         if t == "FieldAccessExpr":
             obj_type = self.detect_expr_type(expr.obj)
 
-            if obj_type not in self.struct_defs:
-                self.give_error(f"'{obj_type}' is not a struct, cannot access field '{expr.field}'")
+            fields = self._fields_of(obj_type)
 
-            fields = self.struct_defs[obj_type]
+            if not fields and obj_type not in self.struct_defs and obj_type not in self.class_defs:
+                self.give_error(
+                    f"'{obj_type}' is not a struct or class, "
+                    f"cannot access field '{expr.field}'"
+                )
 
             for field_decl in fields:
                 if field_decl.name == expr.field:
                     return field_decl.var_type
 
-            self.give_error(f"Struct '{obj_type}' has no field '{expr.field}'")
+            self.give_error(f"'{obj_type}' has no field '{expr.field}'")
         if t == "StructInitExpr":
             struct_name = expr.struct_name
 
@@ -1517,6 +2073,9 @@ class Parser:
             if name in self.struct_defs:
                 return name
 
+            if name in self.class_defs:
+                return name
+
             if name in self.func_sigs:
                 self.give_error(f"Function '{name}' cannot be used as a value")
 
@@ -1547,7 +2106,11 @@ class Parser:
             if func_name in BUILTIN_SIGS:
                 arg_types = [self.detect_expr_type(a) for a in expr.args]
                 try:
-                    return builtin_return_type(func_name, arg_types)
+                    return builtin_return_type(
+                        func_name,
+                        arg_types,
+                        aggregate_types=self._aggregate_types(),
+                    )
                 except ValueError as e:
                     self.give_error(str(e))
 
@@ -1652,6 +2215,101 @@ class Parser:
                 self.give_error(f"Unknown cast target type '{expr.target_type}'")
             self._try_adapt_literal(expr.expr, inner_type, expr.target_type)
             return expr.target_type
+        if t == "MethodCallExpr":
+            obj_type = self.detect_expr_type(expr.obj)
+            expr.obj_type = obj_type
+
+            if obj_type not in self.class_defs:
+                self.give_error(
+                    f"'{obj_type}' is not a class, "
+                    f"cannot call method '{expr.method}'"
+                )
+
+            owner = self._resolve_method_owner(obj_type, expr.method)
+            if owner is None:
+                self.give_error(f"Class '{obj_type}' has no method '{expr.method}'")
+            expr.owner = owner
+
+            func_name = self.class_method_map[owner][expr.method]
+            expr.func_name = func_name
+
+            if func_name not in self.func_sigs:
+                if func_name in self._pending_inferred:
+                    self.give_error(
+                        f"Method '{expr.method}' must declare a return type "
+                        f"before it is called"
+                    )
+                self.give_error(f"Unknown method '{expr.method}'")
+
+            params, ret_type = self.func_sigs[func_name]
+
+            required = sum(1 for p in params[1:] if p[2] is None)
+            if len(expr.args) < required or len(expr.args) > len(params) - 1:
+                if required == len(params) - 1:
+                    self.give_error(
+                        f"Method '{expr.method}' expects {required} arguments, "
+                        f"got {len(expr.args)}"
+                    )
+                else:
+                    self.give_error(
+                        f"Method '{expr.method}' expects between {required} and "
+                        f"{len(params) - 1} arguments, got {len(expr.args)}"
+                    )
+
+            for (arg_expr, (param_name, param_type, _)) in zip(expr.args, params[1:]):
+                arg_type = self.detect_expr_type(arg_expr)
+                if not self._is_valid_type(param_type):
+                    self.give_error(f"Unknown type '{param_type}'")
+                if arg_type != param_type:
+                    if not self._try_adapt_literal(arg_expr, arg_type, param_type):
+                        self.give_error(
+                            f"Method '{expr.method}' argument '{param_name}' "
+                            f"expects type {param_type}, got {arg_type}"
+                        )
+
+            expr.ret_type = ret_type
+            return ret_type
+        if t == "ClassInitExpr":
+            class_name = expr.class_name
+
+            if class_name not in self.class_defs:
+                self.give_error(f"Unknown class '{class_name}'")
+
+            owner = self._resolve_init(class_name)
+            if owner is not None:
+                func_name = self.class_method_map[owner]["__init__"]
+                expr.init_name = func_name
+                params, _ = self.func_sigs[func_name]
+                required = sum(1 for p in params[1:] if p[2] is None)
+                if len(expr.args) < required or len(expr.args) > len(params) - 1:
+                    if required == len(params) - 1:
+                        self.give_error(
+                            f"Class '{class_name}' '__init__' expects "
+                            f"{required} arguments, got {len(expr.args)}"
+                        )
+                    else:
+                        self.give_error(
+                            f"Class '{class_name}' '__init__' expects between "
+                            f"{required} and {len(params) - 1} arguments, "
+                            f"got {len(expr.args)}"
+                        )
+                for (arg_expr, (param_name, param_type, _)) in zip(expr.args, params[1:]):
+                    arg_type = self.detect_expr_type(arg_expr)
+                    if not self._is_valid_type(param_type):
+                        self.give_error(f"Unknown type '{param_type}'")
+                    if arg_type != param_type:
+                        if not self._try_adapt_literal(arg_expr, arg_type, param_type):
+                            self.give_error(
+                                f"Class '{class_name}' '__init__' argument "
+                                f"'{param_name}' expects type {param_type}, "
+                                f"got {arg_type}"
+                            )
+            elif expr.args:
+                self.give_error(
+                    f"Class '{class_name}' has no '__init__' taking arguments"
+                )
+
+            return class_name
         self.give_error("Unknown expression type")
     def _const_eval(self, expr):
 
@@ -1714,7 +2372,36 @@ class Parser:
         
         return None
     def parse_return(self):
+        if self._in_init:
+            self.give_error("'__init__' cannot have explicit return statements")
+
         if self.return_type is None:
+            if self._infer_return:
+                tokens = self.current_line
+
+                if len(tokens) == 1:
+                    value = LiteralExpr(Token(TokenType.NONE, "None"), "NoneType")
+                    if (
+                        self._inferred_ret is not None
+                        and self._inferred_ret != "NoneType"
+                    ):
+                        self.give_error(
+                            f"Inconsistent return types in method: "
+                            f"expected {self._inferred_ret}, got NoneType"
+                        )
+                    self._inferred_ret = "NoneType"
+                    return ReturnStmt("NoneType", value)
+
+                expr = self.parse_expr(tokens[1:])
+                detected = self.detect_expr_type(expr)
+                if self._inferred_ret is None:
+                    self._inferred_ret = detected
+                elif self._inferred_ret != detected:
+                    self.give_error(
+                        f"Inconsistent return types in method: "
+                        f"expected {self._inferred_ret}, got {detected}"
+                    )
+                return ReturnStmt(detected, expr)
             self.give_error("Return outside function")
 
         tokens = self.current_line
@@ -1812,6 +2499,10 @@ class Parser:
         if t in self.struct_defs:
             return True
         if t in self.struct_import_aliases.values():
+            return True
+        if t in self.class_defs:
+            return True
+        if t in self.class_import_aliases.values():
             return True
         if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):
             return self._is_valid_type(t[5:-1])
@@ -1970,23 +2661,26 @@ class Parser:
 
         base_type = self.lookup_var(name)
 
-        if base_type not in self.struct_defs:
+        if base_type not in self.struct_defs and base_type not in self.class_defs:
             self.give_error(
-                f"'{name}' is not a struct, cannot assign to field '{field}'"
+                f"'{name}' is not a struct or class, "
+                f"cannot assign to field '{field}'"
             )
 
+        fields = self._fields_of(base_type)
+
         ftype = None
-        for decl in self.struct_defs[base_type]:
+        for decl in fields:
             if decl.name == field:
                 ftype = decl.var_type
                 break
         if ftype is None:
-            self.give_error(f"Struct '{base_type}' has no field '{field}'")
+            self.give_error(f"'{base_type}' has no field '{field}'")
 
         rhs = self.parse_expr(tokens[4:])
         rhs_type = self.detect_expr_type(rhs)
         if not self._is_valid_type(rhs_type):
-            self.give_error(f"Unknown type '{var_type}'")
+            self.give_error(f"Unknown type '{rhs_type}'")
         if ftype != rhs_type:
             self.give_error(
                 f"Field '{name}.{field}' expects type {ftype}, got {rhs_type}"

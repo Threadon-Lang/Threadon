@@ -1,6 +1,16 @@
 from .nodes import RefExpr
 
 
+def iter_functions(ast):
+    for node in ast:
+        t = type(node).__name__
+        if t == "FunctionDef":
+            yield node
+        elif t == "ClassDef":
+            for method in node.methods:
+                yield method
+
+
 class UnreachableChecker:
 
 
@@ -12,9 +22,8 @@ class UnreachableChecker:
         raise SystemExit(1)
 
     def check(self, ast):
-        for node in ast:
-            if type(node).__name__ == "FunctionDef":
-                self.check_function(node)
+        for func in iter_functions(ast):
+            self.check_function(func)
 
     def check_function(self, func):
         blocks = self.build_cfg(func)
@@ -203,6 +212,11 @@ class ShadowChecker:
                 func_scope = {pname: True for pname, _, _ in stmt.params}
                 self.visit_block(stmt.body, func_scope)
 
+            elif t == "ClassDef":
+                for method in stmt.methods:
+                    method_scope = {pname: True for pname, _, _ in method.params}
+                    self.visit_block(method.body, method_scope)
+
 class DuplicateChecker:
     def __init__(self):
         self.global_functions = {}
@@ -221,6 +235,11 @@ class DuplicateChecker:
 
         if t == "FunctionDef":
             return self.visit_function(node)
+
+        if t == "ClassDef":
+            for method in node.methods:
+                self.visit_function(method)
+            return None
 
         if t == "VarDecl":
             return self.visit_vardecl(node, scope)
@@ -317,6 +336,9 @@ class UnusedVariableChecker:
 
             if t == "FunctionDef":
                 self.check_function(node)
+            elif t == "ClassDef":
+                for method in node.methods:
+                    self.check_function(method)
             elif t == "VarDecl":
                 global_decl.add(node.name)
                 if node.expr:
@@ -364,6 +386,10 @@ class UnusedVariableChecker:
             used.add(stmt.name)
             self.visit_expr(stmt.expr, used)
 
+        elif t == "AttrDecl":
+            if stmt.expr:
+                self.visit_expr(stmt.expr, used)
+
         elif t == "IndexAssign":
             self.visit_expr(stmt.target, used)
             self.visit_expr(stmt.value, used)
@@ -410,6 +436,13 @@ class UnusedVariableChecker:
                 self.visit_expr(e, used)
         elif t == "FieldAccessExpr":
             self.visit_expr(expr.obj, used)
+        elif t == "MethodCallExpr":
+            self.visit_expr(expr.obj, used)
+            for a in expr.args:
+                self.visit_expr(a, used)
+        elif t == "ClassInitExpr":
+            for a in expr.args:
+                self.visit_expr(a, used)
         elif t == "IndexExpr":
             self.visit_expr(expr.obj, used)
             self.visit_expr(expr.index, used)
@@ -418,6 +451,10 @@ class UnusedVariableChecker:
                 self.visit_expr(e, used)
         elif t == "RefExpr":
             self.visit_expr(expr.inner, used)
+        elif t == "InterpolatedStringExpr":
+            for kind, part in expr.parts:
+                if kind == "expr":
+                    self.visit_expr(part, used)
 
 class DeadStoreChecker:
     def __init__(self):
@@ -427,9 +464,8 @@ class DeadStoreChecker:
         print("AST Warning:", msg)
 
     def check(self, ast):
-        for node in ast:
-            if type(node).__name__ == "FunctionDef":
-                self.check_function(node)
+        for func in iter_functions(ast):
+            self.check_function(func)
 
     def check_function(self, func):
         writes = {}
@@ -461,9 +497,16 @@ class DeadStoreChecker:
                 self.walk_expr(stmt.expr, reads)
                 reads.add(stmt.name)
 
+            elif t == "AttrDecl":
+                if stmt.expr:
+                    self.walk_expr(stmt.expr, reads)
+
             elif t == "IndexAssign":
                 self.walk_expr(stmt.target, reads)
                 self.walk_expr(stmt.value, reads)
+
+            elif t == "ExprStmt":
+                self.walk_expr(stmt.expr, reads)
 
             elif t == "ReturnStmt":
                 if stmt.value:
@@ -506,6 +549,15 @@ class DeadStoreChecker:
         elif t == "FieldAccessExpr":
             self.walk_expr(expr.obj, reads)
 
+        elif t == "MethodCallExpr":
+            self.walk_expr(expr.obj, reads)
+            for a in expr.args:
+                self.walk_expr(a, reads)
+
+        elif t == "ClassInitExpr":
+            for a in expr.args:
+                self.walk_expr(a, reads)
+
         elif t == "IndexExpr":
             self.walk_expr(expr.obj, reads)
             self.walk_expr(expr.index, reads)
@@ -516,6 +568,10 @@ class DeadStoreChecker:
 
         elif t == "RefExpr":
             self.walk_expr(expr.inner, reads)
+        elif t == "InterpolatedStringExpr":
+            for kind, part in expr.parts:
+                if kind == "expr":
+                    self.walk_expr(part, reads)
 
 class MissingReturnChecker:
     def __init__(self):
@@ -526,9 +582,8 @@ class MissingReturnChecker:
         raise SystemExit(1)
 
     def check(self, ast):
-        for node in ast:
-            if type(node).__name__ == "FunctionDef":
-                self.check_function(node)
+        for func in iter_functions(ast):
+            self.check_function(func)
 
     def check_function(self, func):
         if not self.block_returns(func.body):
@@ -568,9 +623,8 @@ class AliasChecker:
         raise SystemExit(1)
 
     def check(self, ast):
-        for node in ast:
-            if type(node).__name__ == "FunctionDef":
-                self.check_function(node)
+        for func in iter_functions(ast):
+            self.check_function(func)
 
     def check_function(self, func):
         self.aliases = {}

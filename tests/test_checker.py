@@ -282,6 +282,36 @@ def f(a: Int32) -> Int32
     assert out == ""
 
 
+def test_no_dead_store_warning_when_used_in_expr_stmt(capsys):
+    source = build(
+        """
+def f(a: Int32) -> Int32
+    b: Int32 = a + 1
+    print(b)
+    return a
+"""
+    )
+    DeadStoreChecker().check(source)
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_no_dead_store_warning_when_used_in_class_init(capsys):
+    source = build(
+        """
+class A:
+    def __init__(self: A, n: Int32):
+        self.x: Int32 = n
+def f(n: Int32) -> Int32
+    a: A = A(n)
+    return 0
+"""
+    )
+    UnusedVariableChecker().check(source)
+    out = capsys.readouterr().out
+    assert "Parameter 'n' in function 'f' is never used" not in out
+
+
 def test_alias_chain_accepted():
     check_ok(
         AliasChecker,

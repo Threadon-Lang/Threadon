@@ -107,6 +107,37 @@ class StructInitExpr:
     fields: any
 
 @dataclass
+class ClassDef(Node):
+    name: str
+    base: str | None
+    fields: list
+    methods: list
+    own_fields: list
+
+@dataclass
+class MethodCallExpr(Expr):
+    obj: Expr
+    method: str
+    args: list
+    owner: str | None = None
+    func_name: str | None = None
+    ret_type: str | None = None
+    obj_type: str | None = None
+
+@dataclass
+class ClassInitExpr(Expr):
+    class_name: str
+    args: list
+    init_name: str | None = None
+
+@dataclass
+class AttrDecl(Node):
+    name: str
+    field: str
+    var_type: str
+    expr: Expr | None
+
+@dataclass
 class RefExpr(Expr):
     inner: Expr
 

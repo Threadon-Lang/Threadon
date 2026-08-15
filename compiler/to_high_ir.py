@@ -3,9 +3,11 @@ from collections import defaultdict
 from .builtins import BUILTIN_SIGS
 from .nodes import (
     Assign,
+    AttrDecl,
     BinaryExpr,
     CallExpr,
     CastExpr,
+    ClassInitExpr,
     Expr,
     ExprStmt,
     FieldAccessExpr,
@@ -17,6 +19,7 @@ from .nodes import (
     InterpolatedStringExpr,
     ListLiteralExpr,
     LiteralExpr,
+    MethodCallExpr,
     RefExpr,
     ReturnStmt,
     StructInitExpr,
@@ -387,6 +390,7 @@ class IRModule:
     def __init__(self):
         self.types = {}
         self.funcs = []
+        self.class_bases = {}
 
     def add_type(self, name, fields):
         self.types[name] = {
@@ -543,15 +547,25 @@ class SSABuilder:
                     fields,
                 )
 
+            elif type(node).__name__ == "ClassDef":
+                fields = [
+                    (f.name, f.var_type)
+                    for f in node.fields
+                ]
+
+                self.module.add_type(
+                    node.name,
+                    fields,
+                )
+                self.module.class_bases[node.name] = node.base
+
         for node in ast:
             if isinstance(node, FunctionDef):
-                self.func_returns[node.name] = (
-                    node.return_type
-                )
+                self._register_func(node)
 
-                self.func_params[node.name] = (
-                    node.params
-                )
+            elif type(node).__name__ == "ClassDef":
+                for method in node.methods:
+                    self._register_func(method)
 
         for qname, (params, return_type) in (native_sigs or {}).items():
             self.func_returns[qname] = return_type
@@ -561,7 +575,15 @@ class SSABuilder:
             if isinstance(node, FunctionDef):
                 self.emit_function(node)
 
+            elif type(node).__name__ == "ClassDef":
+                for method in node.methods:
+                    self.emit_function(method)
+
         return self.module
+
+    def _register_func(self, func_ast):
+        self.func_returns[func_ast.name] = func_ast.return_type
+        self.func_params[func_ast.name] = func_ast.params
 
 
     def collect_ref_vars(self, func_ast: FunctionDef):
@@ -595,6 +617,15 @@ class SSABuilder:
             elif t == "FieldAccessExpr":
                 walk_expr(expr.obj)
 
+            elif t == "MethodCallExpr":
+                walk_expr(expr.obj)
+                for a in expr.args:
+                    walk_expr(a)
+
+            elif t == "ClassInitExpr":
+                for a in expr.args:
+                    walk_expr(a)
+
             elif t == "StructInitExpr":
                 for v in expr.fields.values():
                     walk_expr(v)
@@ -614,6 +645,7 @@ class SSABuilder:
                 t == "VarDecl"
                 or t == "Assign"
                 or t == "FieldAssign"
+                or t == "AttrDecl"
             ):
                 walk_expr(stmt.expr)
 
@@ -767,6 +799,9 @@ class SSABuilder:
 
         elif isinstance(node, FieldAssign):
             self.emit_field_assign(node)
+
+        elif isinstance(node, AttrDecl):
+            self.emit_attr_decl(node)
 
         elif isinstance(node, ReturnStmt):
             self.emit_return(node)
@@ -952,6 +987,39 @@ class SSABuilder:
         return value
 
     def emit_field_assign(self, node):
+        rhs = self.emit_expr(
+            node.expr
+        )
+
+        base = self.get_var(
+            node.name
+        )
+
+        res = self.new_temp(
+            base.type
+        )
+
+        self.current_block.add_instr(
+            IRInstr(
+                "store_field",
+                [
+                    base,
+                    node.field,
+                    rhs,
+                ],
+                result=res,
+            )
+        )
+
+        self.set_var(
+            node.name,
+            res,
+        )
+
+    def emit_attr_decl(self, node):
+        if node.expr is None:
+            return
+
         rhs = self.emit_expr(
             node.expr
         )
@@ -1468,6 +1536,9 @@ class SSABuilder:
         elif t == "FieldAssign":
             out.add(stmt.name)
 
+        elif t == "AttrDecl":
+            out.add(stmt.name)
+
         elif t == "IndexAssign":
             self._collect_target_names(
                 stmt.target,
@@ -1789,6 +1860,140 @@ class SSABuilder:
         self.temp_counter = saved_tc
         self._if_seq = saved_seq
 
+    def _fill_default_args(self, func_name, args, self_slots):
+        params = self.func_params.get(func_name)
+
+        if params is not None:
+            if self_slots:
+                params = params[1:]
+
+            for _, _, default in params[len(args):]:
+                if default is None:
+                    raise Exception(
+                        f"Missing argument for call to '{func_name}'"
+                    )
+
+                args.append(self.emit_expr(default))
+
+        return args
+
+    def _emit_method_call(self, expr):
+        obj_val = self.emit_expr(expr.obj)
+        owner = expr.owner or expr.obj_type
+        obj_type = expr.obj_type
+
+        if owner != obj_type:
+            owner_fields = self.module.types.get(owner, {})
+
+            parts = [owner]
+
+            for fname in owner_fields:
+                fv = self.new_temp(owner_fields[fname])
+
+                self.current_block.add_instr(
+                    IRInstr(
+                        "field",
+                        [obj_val, fname],
+                        result=fv,
+                    )
+                )
+
+                parts.append(fname)
+                parts.append(fv)
+
+            self_val = self.new_temp(owner)
+
+            self.current_block.add_instr(
+                IRInstr(
+                    "struct_init",
+                    parts,
+                    result=self_val,
+                )
+            )
+        else:
+            self_val = obj_val
+
+        args = [
+            self.emit_expr(a)
+            for a in expr.args
+        ]
+
+        args = self._fill_default_args(
+            expr.func_name,
+            args,
+            self_slots=True,
+        )
+
+        ret_type = self.func_returns.get(
+            expr.func_name,
+            expr.ret_type or "Unknown",
+        )
+
+        v = self.new_temp(ret_type)
+
+        self.current_block.add_instr(
+            IRInstr(
+                "call",
+                [expr.func_name] + [self_val] + args,
+                result=v,
+            )
+        )
+
+        return v
+
+    def _emit_class_init(self, expr):
+        init_name = expr.init_name
+
+        args = [
+            self.emit_expr(a)
+            for a in expr.args
+        ]
+
+        if init_name is None:
+            v = self.new_temp(expr.class_name)
+
+            self.current_block.add_instr(
+                IRInstr(
+                    "undef",
+                    [],
+                    result=v,
+                )
+            )
+
+            return v
+
+        self_val = self.new_temp(expr.class_name)
+
+        self.current_block.add_instr(
+            IRInstr(
+                "undef",
+                [],
+                result=self_val,
+            )
+        )
+
+        args = self._fill_default_args(
+            init_name,
+            args,
+            self_slots=True,
+        )
+
+        ret_type = self.func_returns.get(
+            init_name,
+            expr.class_name,
+        )
+
+        v = self.new_temp(ret_type)
+
+        self.current_block.add_instr(
+            IRInstr(
+                "call",
+                [init_name] + [self_val] + args,
+                result=v,
+            )
+        )
+
+        return v
 
     def emit_expr(self, expr):
         if isinstance(expr, LiteralExpr):
@@ -2007,6 +2212,12 @@ class SSABuilder:
             )
 
             return v
+
+        if isinstance(expr, MethodCallExpr):
+            return self._emit_method_call(expr)
+
+        if isinstance(expr, ClassInitExpr):
+            return self._emit_class_init(expr)
 
         if isinstance(expr, ListLiteralExpr):
             elems = [

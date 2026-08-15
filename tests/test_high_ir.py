@@ -821,3 +821,51 @@ def run() -> Int32
     args = call.args[1:]
     assert len(args) == 3
     assert [a.def_instr.args[0] for a in args] == ["1", "2", "3"]
+
+
+def test_class_type_fields_flattened():
+    module = build_module(
+        """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+class DMW(Car):
+    def __init__(self DMW):
+        self.brand = "DMW"
+def main() -> Int32
+    return 0
+"""
+    )
+    assert module.types["Car"] == {"brand": "String"}
+    assert module.types["DMW"] == {"brand": "String"}
+    names = [f.name for f in module.funcs]
+    assert "Car.__init__" in names
+    assert "DMW.__init__" in names
+
+
+def test_class_method_call_dispatch():
+    module = build_module(
+        """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+    def get_brand(self: Car):
+        return self.brand
+class DMW(Car):
+    def __init__(self DMW):
+        self.brand = "DMW"
+def main() -> Int32
+    c: Car = Car("BMW")
+    d: DMW = DMW()
+    b: String = d.get_brand()
+    return 0
+"""
+    )
+    main = get_func(module, "main")
+    calls = entry_instrs(main, "call")
+    assert [c.args[0] for c in calls] == ["Car.__init__", "DMW.__init__", "Car.get_brand"]
+    fields = entry_instrs(main, "field")
+    assert fields[0].args[1] == "brand"
+    struct_inits = entry_instrs(main, "struct_init")
+    assert len(struct_inits) == 1
+    assert struct_inits[0].args[0] == "Car"

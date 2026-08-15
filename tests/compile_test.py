@@ -728,3 +728,385 @@ if __name__ == "__main__":
     test_deeply_nested_list_print()
     test_nested_list_struct_field()
     print("compile_test OK")
+
+
+CLASS_INHERITANCE_SOURCE = """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+    def get_brand(self: Car):
+        return self.brand
+    def mileage(self: Car) -> Int32:
+        return 0
+
+class DMW(Car):
+    def __init__(self DMW):
+        self.brand = "DMW"
+    def mileage(self: DMW) -> Int32:
+        return 100
+
+def main() -> Int32
+    c: Car = Car("BMW")
+    d: DMW = DMW()
+    print(c.get_brand())
+    print(d.get_brand())
+    print(c.mileage() + d.mileage())
+    return 0
+"""
+
+
+def test_class_inheritance_and_override():
+    result = compile_stdlib_run(CLASS_INHERITANCE_SOURCE)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "BMW\nDMW\n100\n"
+
+
+def test_class_inheritance_inlined():
+    result = compile_stdlib_run(CLASS_INHERITANCE_SOURCE, inline_threshold=10000)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "BMW\nDMW\n100\n"
+
+
+CLASS_COUNTER_SOURCE = """
+class Counter:
+    def __init__(self: Counter, start: Int32 = 5):
+        self.count: Int32 = start
+    def bump(self: Counter, amount: Int32 = 1) -> Int32:
+        self.count = self.count + amount
+        return self.count
+    def get(self: Counter) -> Int32:
+        return self.count
+
+def main() -> Int32
+    c: Counter = Counter()
+    c.bump()
+    n: Int32 = c.bump(2)
+    print(n)
+    print(c.get())
+    return 0
+"""
+
+
+def test_class_methods_default_args_and_value_semantics():
+    result = compile_stdlib_run(CLASS_COUNTER_SOURCE)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "7\n5\n"
+
+
+CLASS_STRUCT_FIELD_SOURCE = """
+class Vec2:
+    def __init__(self: Vec2, x: Int32, y: Int32):
+        self.x: Int32 = x
+        self.y: Int32 = y
+    def sum(self: Vec2) -> Int32:
+        return self.x + self.y
+
+struct Pair:
+    a: Vec2
+    b: Vec2
+
+def main() -> Int32
+    p: Pair = Pair(a=Vec2(1, 2), b=Vec2(3, 4))
+    print(p.a.sum() + p.b.sum())
+    return 0
+"""
+
+
+def test_class_inside_struct_multiple_field_decls():
+    result = compile_stdlib_run(CLASS_STRUCT_FIELD_SOURCE)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "10\n"
+
+
+def test_class_field_assign():
+    result = compile_stdlib_run(
+        """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+    def get_brand(self: Car):
+        return self.brand
+def main() -> Int32
+    c: Car = Car("BMW")
+    c.brand = "Audi"
+    print(c.get_brand())
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Audi\n"
+
+
+def test_class_without_constructor():
+    result = compile_stdlib_run(
+        """
+class Tag:
+    def label(self: Tag):
+        return "tag"
+def main() -> Int32
+    t: Tag = Tag()
+    print(t.label())
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "tag\n"
+
+
+def test_class_method_returns_class():
+    result = compile_stdlib_run(
+        """
+class Vec2:
+    def __init__(self: Vec2, x: Int32):
+        self.x: Int32 = x
+    def scaled(self: Vec2, k: Int32) -> Vec2:
+        r: Vec2 = Vec2(self.x * k)
+        return r
+    def get(self: Vec2) -> Int32:
+        return self.x
+def main() -> Int32
+    v: Vec2 = Vec2(3)
+    w: Vec2 = v.scaled(4)
+    print(w.get())
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "12\n"
+
+
+def test_class_chained_method_call():
+    result = compile_stdlib_run(
+        """
+class Vec2:
+    def __init__(self: Vec2, x: Int32):
+        self.x: Int32 = x
+    def get(self: Vec2) -> Int32:
+        return self.x
+class Holder:
+    def __init__(self: Holder, v: Vec2):
+        self.v: Vec2 = v
+    def inner(self: Holder) -> Vec2:
+        return self.v
+def main() -> Int32
+    h: Holder = Holder(Vec2(9))
+    print(h.inner().get())
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "9\n"
+
+
+def test_print_struct():
+    result = compile_stdlib_run(
+        """
+struct Point:
+    x: Int32
+    y: Int32
+
+struct Line:
+    a: Point
+    b: Point
+
+def main() -> Int32
+    p: Point = Point(x=3, y=4)
+    l: Line = Line(a=Point(x=1, y=2), b=Point(x=3, y=4))
+    print(p)
+    print(l)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "{x: 3, y: 4}\n{a: {x: 1, y: 2}, b: {x: 3, y: 4}}\n"
+
+
+def test_print_struct_field_types():
+    result = compile_stdlib_run(
+        """
+struct Empty:
+
+struct Mix:
+    s: String
+    n: NoneType
+    f: Float64
+    big: Int256
+    flag: Bool
+
+def main() -> Int32
+    e: Empty = Empty()
+    m: Mix = Mix(s="hi", n=None, f=2.25, big=123456789012345678901234567890, flag=True)
+    print(e)
+    print(m)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        result.stdout
+        == "{}\n{s: hi, n: None, f: 2.250000, big: 123456789012345678901234567890, flag: true}\n"
+    )
+
+
+def test_print_list_of_structs():
+    result = compile_stdlib_run(
+        """
+struct Vec:
+    x: Float32
+    y: Bool
+
+def main() -> Int32
+    v: Vec = Vec(x=1.5, y=True)
+    l: List[Vec] = [Vec(x=0.0, y=False), v]
+    print(l)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[{x: 0.000000, y: false}, {x: 1.500000, y: true}]\n"
+
+
+def test_print_class_without_str():
+    result = compile_stdlib_run(
+        """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+
+def main() -> Int32
+    c: Car = Car("BMW")
+    print(c)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "{brand: BMW}\n"
+
+
+def test_print_class_with_str():
+    result = compile_stdlib_run(
+        """
+class Bike:
+    def __init__(self: Bike, brand: String):
+        self.brand: String = brand
+    def __str__(self: Bike) -> String:
+        return f"Bike({self.brand})"
+
+def main() -> Int32
+    b: Bike = Bike("Gazelle")
+    print(b)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Bike(Gazelle)\n"
+
+
+def test_print_class_with_str_no_field_use():
+    result = compile_stdlib_run(
+        """
+class Thing:
+    def __init__(self: Thing, n: Int32):
+        self.n: Int32 = n
+    def __str__(self: Thing) -> String:
+        return f"Thing({self.n})"
+
+def main() -> Int32
+    t: Thing = Thing(7)
+    print(t)
+    print(t.__str__())
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Thing(7)\nThing(7)\n"
+
+
+def test_string_alignment_tagged_pointers():
+    result = compile_stdlib_run(
+        """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+    def get_brand(self: Car):
+        return self.brand
+class DMW(Car):
+    def __init__(self: DMW):
+        self.brand = "DMW"
+def main() -> Int32
+    du: DMW = DMW()
+    b: String = du.get_brand()
+    print(b)
+    s: String = f"brand={b}"
+    print(s)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "DMW\nbrand=DMW\n"
+
+
+def test_print_inherited_str():
+    result = compile_stdlib_run(
+        """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+    def __str__(self: Car) -> String:
+        return f"Car(brand={self.brand})"
+class DMW(Car):
+    def __init__(self: DMW):
+        self.brand = "DMW"
+def main() -> Int32
+    du: DMW = DMW()
+    print(du)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Car(brand=DMW)\n"
+
+
+def test_print_inherited_str_extra_fields():
+    result = compile_stdlib_run(
+        """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+    def __str__(self: Car) -> String:
+        return f"Car(brand={self.brand})"
+class Truck(Car):
+    def __init__(self: Truck, brand: String, capacity: Int32):
+        self.brand = brand
+        self.capacity: Int32 = capacity
+def main() -> Int32
+    t: Truck = Truck("Volvo", 5000)
+    print(t)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Car(brand=Volvo)\n"
+
+
+def test_print_overridden_str():
+    result = compile_stdlib_run(
+        """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+    def __str__(self: Car) -> String:
+        return f"Car(brand={self.brand})"
+class Boat(Car):
+    def __init__(self: Boat, brand: String):
+        self.brand = brand
+    def __str__(self: Boat) -> String:
+        return f"Boat(brand={self.brand})"
+def main() -> Int32
+    b: Boat = Boat("Sunseeker")
+    print(b)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Boat(brand=Sunseeker)\n"

@@ -1,4 +1,5 @@
 import io
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -40,6 +41,10 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
             IROptimizer(inline_threshold=inline_threshold, debug_mode=debug_mode).optimize(module)
     except BaseException as e:
         raise RuntimeError(f"compiler error:\n{buf.getvalue()}") from e
+
+    warnings = buf.getvalue()
+    if warnings:
+        sys.stderr.write(warnings)
 
     return LLVMIRCompiler(debug_mode=debug_mode, flag_inf=flag_inf).compile(
         module, native_exports=native_exports

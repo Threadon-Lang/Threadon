@@ -1176,3 +1176,221 @@ def run() -> Int32
     return f("hi")
 """
     )
+
+
+CLASS_OK_SNIPPETS = [
+    """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+    def get_brand(self: Car):
+        return self.brand
+""",
+    """
+class Car:
+    def __init__(self: Car, brand: String):
+        self.brand: String = brand
+class DMW(Car):
+    def __init__(self DMW):
+        self.brand = "DMW"
+""",
+    """
+class Counter:
+    count: Int32
+    def __init__(self: Counter, start: Int32 = 0):
+        self.count = start
+    def bump(self: Counter, amount: Int32 = 1) -> Int32:
+        self.count = self.count + amount
+        return self.count
+""",
+    """
+class Empty:
+    def __init__(self: Empty):
+        self.x: Int32 = 0
+""",
+    """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+class B(A):
+    def __init__(self: B):
+        self.x = 0
+""",
+    """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+    def __str__(self: A) -> String:
+        return "a"
+""",
+    """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+    def __str__(self: A):
+        return "a"
+""",
+]
+
+
+@pytest.mark.parametrize("code", CLASS_OK_SNIPPETS)
+def test_class_snippets_ok(code):
+    parse_ok(code)
+
+
+CLASS_BREAK_SNIPPETS = [
+    # unknown base class
+    """
+class A(B):
+    def __init__(self: A):
+        self.x: Int32 = 0
+""",
+    # self type must match declaring class
+    """
+class A:
+    def __init__(self: B):
+        self.x: Int32 = 0
+""",
+    # method must have self
+    """
+class A:
+    def __init__():
+        self.x: Int32 = 0
+""",
+    # __init__ cannot declare a return type
+    """
+class A:
+    def __init__(self: A) -> A:
+        self.x: Int32 = 0
+""",
+    # __init__ cannot have explicit returns
+    """
+class A:
+    def __init__(self: A):
+        return self
+""",
+    # call method that does not exist
+    """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+def run() -> Int32
+    a: A = A()
+    return a.nope()
+""",
+    # call method on a non-class
+    """
+def run() -> Int32
+    x: Int32 = 5
+    return x.nope()
+""",
+    # wrong argument count to method
+    """
+class A:
+    def __init__(self: A, n: Int32):
+        self.x: Int32 = n
+    def get(self: A) -> Int32:
+        return 1
+def run() -> Int32
+    a: A = A(1)
+    return a.get(2)
+""",
+    # wrong argument type to constructor
+    """
+class A:
+    def __init__(self: A, n: Int32):
+        self.x: Int32 = n
+def run() -> Int32
+    a: A = A("hi")
+    return 0
+""",
+    # unknown field access on class
+    """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+def run() -> Int32
+    a: A = A()
+    return a.brand
+""",
+    # inherited field cannot be redefined
+    """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+class B(A):
+    def __init__(self: B):
+        self.x: Int32 = 1
+""",
+    # duplicate class field
+    """
+class A:
+    x: Int32
+    y: Int32
+    x: Bool
+""",
+    # call a method with inferred return before it is parsed
+    """
+class A:
+    def a(self: A) -> Int32:
+        return self.b()
+    def b(self: A):
+        return 1
+def run() -> Int32
+    a: A = A()
+    return a.a()
+""",
+    # __str__ must return String
+    """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+    def __str__(self: A) -> Int32:
+        return 1
+""",
+    # __str__ must not have extra params
+    """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+    def __str__(self: A, n: Int32) -> String:
+        return ""
+""",
+]
+
+
+@pytest.mark.parametrize("code", CLASS_BREAK_SNIPPETS)
+def test_class_snippets_break(code):
+    parse_fail(code)
+
+
+def test_class_method_return_type_inferred():
+    ast = parse_ok(
+        """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+    def get(self: A):
+        return self.x
+def run() -> Int32
+    a: A = A()
+    return a.get()
+"""
+    )
+    methods = ast[0].methods
+    assert methods[1].return_type == "Int32"
+
+
+def test_class_constructor_no_init_gives_zeroed_value():
+    ast = parse_ok(
+        """
+class A:
+    def __init__(self: A):
+        self.x: Int32 = 0
+    def get(self: A) -> Int32:
+        return 0
+def run() -> Int32
+    a: A = A()
+    return a.get()
+"""
+    )
