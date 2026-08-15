@@ -61,7 +61,6 @@ class UnreachableChecker:
 
     def new_block(self, name):
         return {"name": name, "stmts": [], "succ": []}
-
     def process_stmt(self, stmt, current_block, blocks):
         t = type(stmt).__name__
 
@@ -105,7 +104,9 @@ class UnreachableChecker:
                 if cb is not None:
                     prev_blocks.append(cb)
 
-            if stmt.else_body:
+            has_else = bool(stmt.else_body)
+
+            if has_else:
                 else_block = self.new_block(f"else_{len(blocks)}")
                 blocks.append(else_block)
                 current_block["succ"].append(else_block["name"])
@@ -122,14 +123,24 @@ class UnreachableChecker:
                 if cb is not None:
                     prev_blocks.append(cb)
 
+            # If there's no else, falling through the if is always a live path,
+            # even when the taken branches all return.
+            if not has_else:
+                prev_blocks.append(current_block)
+
+            # Nothing reaches "after the if" -> every path terminated (returned).
+            # Don't fabricate a merge block that would be unreachable.
+            if not prev_blocks:
+                return None
+
             merge_block = self.new_block(f"merge_{len(blocks)}")
             blocks.append(merge_block)
 
             for b in prev_blocks:
-                b["succ"].append(merge_block["name"])
-
-            if not stmt.else_body:
-                current_block["succ"].append(merge_block["name"])
+                if b is current_block:
+                    current_block["succ"].append(merge_block["name"])
+                else:
+                    b["succ"].append(merge_block["name"])
 
             return merge_block
 
@@ -160,7 +171,6 @@ class UnreachableChecker:
 
         current_block["stmts"].append((stmt, True))
         return current_block
-
     def compute_reachable(self, blocks):
         block_map = {b["name"]: b for b in blocks}
         reachable = set()

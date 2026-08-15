@@ -1,4 +1,8 @@
 from pathlib import Path
+import subprocess
+import shlex
+import sysconfig
+import os
 
 MODULE_EXTENSION = ".th"
 MANIFEST_FILENAME = "manifest"
@@ -10,13 +14,7 @@ class ImporterError(Exception):
 
 
 class Toolchain:
-    """How to build a native module written in a given language.
 
-    A toolchain knows the compiler to invoke, the extra arguments needed to
-    build a shared library (``--run``/``lli -load``) and an object/archive
-    file (``--exe``), and the object file extension.  ``cxx`` marks languages
-    whose objects must be linked with ``g++``.
-    """
 
     def __init__(self, name, compiler, shared_args, object_args,
                  object_ext="o", cxx=False):
@@ -40,21 +38,22 @@ LANGUAGES = {
         ["--crate-type", "staticlib"],
         object_ext="a",
     ),
-    "python":Toolchain(
+    "python": Toolchain(
         "python",
         "g++",
         [
             "-shared",
-            "-fPIC",
-            "`python3-config --includes`"
+            "-fPIC"
         ],
         [
             "-c",
-            "`python3-config --includes`"
+            "-fPIC"
         ],
         object_ext="so",
         cxx=True
     )
+
+
 }
 
 
@@ -65,28 +64,7 @@ def toolchain_for(lang):
 
 
 class Manifest:
-    """Parsed contents of a module's ``manifest`` file.
 
-    A manifest describes a module without (or alongside) its source::
-
-        module math
-        lang cpp
-        source math.cpp
-        flag -std=c++17 -O2
-        link m
-
-        export sin Float64 Float64
-        export cos Float64 Float64
-
-    ``lang`` names the language of ``source``.  It defaults to ``threadon``
-    and can be any language with a registered toolchain (``c``, ``cpp``,
-    ``c++``, ``rust``, ...).  For a threadon module the ``source`` field
-    points at the ``.th`` file.  For any other language the ``export`` lines
-    declare the C symbols the module makes available, ``flag`` lists the
-    compile flags and ``link`` lists the libraries to link against.  Adding a
-    new language only requires registering a :class:`Toolchain` in
-    ``LANGUAGES``.
-    """
 
     def __init__(self, module=None, lang="threadon", source=None, flags=None,
                  links=None, exports=None):
@@ -169,11 +147,60 @@ class Module:
         self.exports = []
         self.native_source = None
         self.is_native = False
+        self.extra_sources = []
 
     def __repr__(self):
         return f"Module({self.name!r})"
 
+def _python_include_dirs():
+    try:
+        out = subprocess.check_output(
+            ["python3-config", "--includes"], text=True
+        ).strip()
+        return shlex.split(out)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
 
+    include_dir = sysconfig.get_paths().get("include")
+    if include_dir and (Path(include_dir) / "Python.h").exists():
+        return [f"-I{include_dir}"]
+
+    return []
+def _python_link_flags():
+    try:
+        out = subprocess.check_output(
+            ["python3-config", "--embed", "--ldflags"], text=True
+        ).strip()
+        return shlex.split(out)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    try:
+        out = subprocess.check_output(
+            ["python3-config", "--ldflags"], text=True
+        ).strip()
+        return shlex.split(out)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+
+def build_native(module):
+    tc = module.toolchain
+    includes = _python_include_dirs() if tc.name == "python" else []
+    link_extra = _python_link_flags() if tc.name == "python" else []
+    libs = ["-ldl", "-lm"] + link_extra
+
+    env = os.environ.copy()
+    objects = []
+    for src in [module.native_source] + module.extra_sources:
+        src = str(src)
+        obj = str(Path(src).with_suffix(".o"))
+        cmd = [tc.compiler, "-c", "-fPIC"] + includes + [src, "-o", obj]
+        subprocess.check_call(cmd, env=env)
+        objects.append(obj)
+
+    out = Path(module.manifest_dir) / f"{module.name}.{tc.object_ext}"
+    cmd = [tc.compiler, "-shared", "-fPIC"] + objects + libs + ["-o", str(out)]
+    subprocess.check_call(cmd, env=env)
+    return out
 class Importer:
 
     def __init__(self, search_paths=None):
@@ -237,6 +264,85 @@ class Importer:
                     return path.read_text()
 
         return None
+    def _generate_python_wrapper(self, name, man, manifest_path):
+        pyfile = manifest_path.parent / man.source
+        wrapper = manifest_path.parent / f"{man.module}_pywrap.cpp"
+
+        exports = []
+        for export_name, ret, args in man.exports:
+            exports.append((export_name, ret, args))
+
+        code = self._emit_python_wrapper(name, pyfile, exports)
+        wrapper.write_text(code)
+        return wrapper
+    def _emit_python_wrapper(self, module_name, pyfile, exports):
+        lines = []
+        lines.append('#include <Python.h>')
+        lines.append('extern "C" {')
+        lines.append('static bool _py_init = false;')
+
+        pydir = str(pyfile.parent.resolve()).replace('\\', '\\\\').replace('"', '\\"')
+
+        lines.append('static void ensure_init() {')
+        lines.append('    if (!_py_init) {')
+        lines.append('        Py_Initialize();')
+        lines.append(f'        PyRun_SimpleString("import sys; sys.path.insert(0, \\"{pydir}\\")");')
+        lines.append('        _py_init = true;')
+        lines.append('    }')
+        lines.append('}')
+
+        for func, ret, args in exports:
+            nargs = len(args)
+
+            if ret == "Float64":
+                cret = "double"
+            else:
+                cret = "void"
+
+            c_args = ", ".join(f"double a{i}" for i in range(nargs))
+            lines.append(f"{cret} {func}({c_args}) {{")
+            lines.append("    ensure_init();")
+
+            if nargs == 0:
+                lines.append("    PyObject* args = nullptr;")
+            else:
+                lines.append(f"    PyObject* args = PyTuple_New({nargs});")
+                for i in range(nargs):
+                    lines.append(f"    PyTuple_SetItem(args, {i}, PyFloat_FromDouble(a{i}));")
+
+            modname = pyfile.stem
+            lines.append(f'    PyObject* mod = PyImport_ImportModule("{modname}");')
+
+            if ret == "Float64":
+                lines.append("    if (!mod) return 0.0;")
+            else:
+                lines.append("    if (!mod) return;")
+
+            lines.append(f'    PyObject* f = PyObject_GetAttrString(mod, "{func}");')
+            lines.append("    Py_DECREF(mod);")
+
+            if ret == "Float64":
+                lines.append("    if (!f || !PyCallable_Check(f)) return 0.0;")
+            else:
+                lines.append("    if (!f || !PyCallable_Check(f)) return;")
+
+            lines.append("    PyObject* r = PyObject_CallObject(f, args);")
+            lines.append("    Py_DECREF(f);")
+            if nargs > 0:
+                lines.append("    Py_DECREF(args);")
+
+            if ret == "Float64":
+                lines.append("    double out = PyFloat_AsDouble(r);")
+                lines.append("    Py_DECREF(r);")
+                lines.append("    return out;")
+            else:
+                lines.append("    Py_DECREF(r);")
+                lines.append("    return;")
+
+            lines.append("}")
+
+        lines.append("} // extern C")
+        return '\n'.join(lines)
 
     def _build_native_module(self, name, man, manifest_path):
         module = Module(name, None, None)
@@ -249,11 +355,41 @@ class Importer:
         module.exports = [(n, r, list(a)) for n, r, a in man.exports]
         if man.source:
             module.native_source = manifest_path.parent / man.source
+        if man.lang == "python":
+            if man.source.endswith(".py"):
+                wrapper_cpp = self._generate_python_wrapper(name, man, manifest_path)
+                module.native_source = wrapper_cpp
+            else:
+                module.native_source = manifest_path.parent / man.source
+
+        importer_dir = Path(__file__).resolve().parent
+
+        candidates = [
+            manifest_path.parent / "python_bridge.cpp",
+            importer_dir / "python_bridge.cpp",
+        ]
+
+        bridge_cpp = None
+        for c in candidates:
+            if c.exists():
+                bridge_cpp = c
+                break
+
+        if bridge_cpp is None:
+            raise ImporterError(
+                f"Python module '{name}' requires python_bridge.cpp "
+                f"but it was not found in {manifest_path.parent} or {importer_dir}"
+            )
+
+        module.extra_sources = [bridge_cpp]
+
         for export_name, ret, args in man.exports:
             module.func_exports.add(export_name)
             qname = f"{name}.{export_name}"
             params = [(f"a{i}", t, None) for i, t in enumerate(args)]
             module.func_sigs[qname] = (params, ret)
+        out = build_native(module)
+        module.native_binary = out
         return module
 
     def load(self, name):

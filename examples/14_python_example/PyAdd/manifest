@@ -1,0 +1,9 @@
+module PyAdd
+lang python
+source padd.py
+
+export mean List Float64 Float64
+export scale Float64 Float64 Float64
+export normalize List Float64 List Float64
+export describe Dict String Float64 Dict String Float64
+export add Float64 Float64 Float64

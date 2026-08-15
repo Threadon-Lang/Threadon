@@ -19,11 +19,36 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+import sysconfig
+import shlex 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from compiler.compiler import compile_file
 from compiler.importer import Importer
+
+def _python_includes():
+    """Include flags needed when compiling a Python-bridge module."""
+    include_dir = sysconfig.get_paths().get("include")
+    if include_dir:
+        return [f"-I{include_dir}"]
+    return []
+def _python_link_flags():
+    """Link flags needed to embed the Python interpreter (Py_Initialize etc.)."""
+    try:
+        out = subprocess.check_output(
+            ["python3-config", "--embed", "--ldflags"], text=True
+        ).strip()
+        return shlex.split(out)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    try:
+        out = subprocess.check_output(
+            ["python3-config", "--ldflags"], text=True
+        ).strip()
+        return shlex.split(out)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
 
 POW_I32_IMPL = """
 define i32 @llvm.pow.i32(i32 %base, i32 %exp) {
@@ -144,9 +169,7 @@ def run_llvm(llvm, capture=False, loads=None):
 def native_modules(importer):
     return [m for m in importer.modules() if m.is_native]
 
-
 def build_native_shared_libs(modules, output_dir):
-    """Compile each native module's source into a shared library."""
     output_dir = Path(output_dir)
     libs = []
     for mod in modules:
@@ -157,8 +180,13 @@ def build_native_shared_libs(modules, output_dir):
         tc = mod.toolchain
         so = output_dir / f"lib{mod.name}.so"
         flags = mod.flags or []
+        is_python = tc.name == "python"
+        includes = _python_includes() if is_python else []
+        link_extra = _python_link_flags() if is_python else []
+        sources = [str(mod.native_source)] + [str(s) for s in (mod.extra_sources or [])]
         result = subprocess.run(
-            [tc.compiler, *tc.shared_args, *flags, "-o", str(so), str(mod.native_source)],
+            [tc.compiler, *tc.shared_args, *includes, *flags,
+             "-o", str(so), *sources, *link_extra],
             capture_output=True,
             text=True,
         )
@@ -168,8 +196,6 @@ def build_native_shared_libs(modules, output_dir):
             )
         libs.append(so)
     return libs
-
-
 def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
     """Compile the (patched, harnessed) LLVM IR to a native executable."""
     out_path = Path(out_path)
@@ -190,27 +216,28 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
         link_flags = []
         linker = cc
         for mod in native:
-            if mod.toolchain is None:
-                raise SystemExit(f"error: module '{mod.name}' has no registered toolchain")
-            for lib in mod.links:
-                link_flags.append(f"-l{lib}")
-            if mod.native_source is None or not mod.native_source.is_file():
-                raise SystemExit(f"error: native module '{mod.name}' has no source file")
-            tc = mod.toolchain
-            if tc.cxx:
-                linker = "g++"
-            mod_obj = td / f"{mod.name}.{tc.object_ext}"
-            flags = mod.flags or []
-            result = subprocess.run(
-                [tc.compiler, *tc.object_args, *flags, "-o", str(mod_obj), str(mod.native_source)],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                raise SystemExit(
-                    f"error: {tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
-                )
-            objs.append(str(mod_obj))
+                    if mod.toolchain is None:
+                        raise SystemExit(f"error: module '{mod.name}' has no registered toolchain")
+                    for lib in mod.links:
+                        link_flags.append(f"-l{lib}")
+                    if mod.native_source is None or not mod.native_source.is_file():
+                        raise SystemExit(f"error: native module '{mod.name}' has no source file")
+                    tc = mod.toolchain
+                    if tc.cxx:
+                        linker = "g++"
+                    mod_obj = td / f"{mod.name}.{tc.object_ext}"
+                    flags = mod.flags or []
+                    includes = _python_includes() if tc.name == "python" else []
+                    result = subprocess.run(
+                        [tc.compiler, *tc.object_args, *includes, *flags, "-o", str(mod_obj), str(mod.native_source)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0:
+                        raise SystemExit(
+                            f"error: {tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
+                        )
+                    objs.append(str(mod_obj))
         result = subprocess.run(
             [linker, *objs, "-o", str(out_path), "-no-pie", "-lm", *link_flags],
             capture_output=True,

@@ -1,0 +1,9 @@
+import PyAdd
+
+def main() -> Int32:
+    print(PyAdd.add(2.0,23.0))
+    print("lol")
+    if PyAdd.add(1.0,1.0) == 2.0:
+        return 0
+    else:
+        return 1
