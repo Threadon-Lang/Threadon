@@ -5,6 +5,8 @@ __pycache__/
 docs/
 # C extensions
 *.so
+*.o
+*pywrap*
 test.th
 # Distribution / packaging
 .Python
