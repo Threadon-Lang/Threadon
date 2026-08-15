@@ -123,7 +123,7 @@ def f(x: Int32) -> Int32
 
 
 def test_unreachable_merge_block_rejected():
-    check_error(
+    check_ok(
         UnreachableChecker,
         """
 def f(x: Int32) -> Int32

@@ -858,12 +858,13 @@ def main() -> Int32
     c: Car = Car("BMW")
     d: DMW = DMW()
     b: String = d.get_brand()
+    print(c,d,b)
     return 0
 """
     )
     main = get_func(module, "main")
     calls = entry_instrs(main, "call")
-    assert [c.args[0] for c in calls] == ["Car.__init__", "DMW.__init__", "Car.get_brand"]
+    assert [c.args[0] for c in calls] == ["Car.__init__", "DMW.__init__", "Car.get_brand","print"]
     fields = entry_instrs(main, "field")
     assert fields[0].args[1] == "brand"
     struct_inits = entry_instrs(main, "struct_init")

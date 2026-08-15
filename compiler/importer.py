@@ -25,12 +25,11 @@ class Toolchain:
         self.object_ext = object_ext
         self.cxx = cxx
 
-
 LANGUAGES = {
     "threadon": None,
-    "c": Toolchain("c", "gcc", ["-shared", "-fPIC"], ["-c"]),
-    "cpp": Toolchain("cpp", "g++", ["-shared", "-fPIC"], ["-c"], cxx=True),
-    "c++": Toolchain("c++", "g++", ["-shared", "-fPIC"], ["-c"], cxx=True),
+    "c": Toolchain("c", "gcc", ["-shared", "-fPIC"], ["-c"], object_ext="o"),
+    "cpp": Toolchain("cpp", "g++", ["-shared", "-fPIC"], ["-c"], object_ext="o", cxx=True),
+    "c++": Toolchain("c++", "g++", ["-shared", "-fPIC"], ["-c"], object_ext="o", cxx=True),
     "rust": Toolchain(
         "rust",
         "rustc",
@@ -41,20 +40,13 @@ LANGUAGES = {
     "python": Toolchain(
         "python",
         "g++",
-        [
-            "-shared",
-            "-fPIC"
-        ],
-        [
-            "-c",
-            "-fPIC"
-        ],
+        ["-shared", "-fPIC"],
+        ["-c", "-fPIC"],
         object_ext="so",
-        cxx=True
-    )
-
-
+        cxx=True,
+    ),
 }
+
 
 
 def toolchain_for(lang):
@@ -151,21 +143,39 @@ class Module:
 
     def __repr__(self):
         return f"Module({self.name!r})"
-
 def _python_include_dirs():
     try:
         out = subprocess.check_output(
             ["python3-config", "--includes"], text=True
         ).strip()
-        return shlex.split(out)
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        flags = shlex.split(out)
+        if flags:
+            return flags
+    except Exception:
         pass
 
     include_dir = sysconfig.get_paths().get("include")
     if include_dir and (Path(include_dir) / "Python.h").exists():
-        return [f"-I{include_dir}"]
+        return [
+            f"-I{include_dir}",
+            f"-I{include_dir}/cpython",
+            f"-I{include_dir}/internal",
+        ]
 
-    return []
+    for cand in [
+        "/usr/include/python3.13",
+        "/usr/include/python3.13/cpython",
+        "/usr/include/python3.13/internal",
+    ]:
+        if Path(cand).exists():
+            return [
+                "-I/usr/include/python3.13",
+                "-I/usr/include/python3.13/cpython",
+                "-I/usr/include/python3.13/internal",
+            ]
+
+    raise ImporterError("Cannot locate Python.h for python native module")
+
 def _python_link_flags():
     try:
         out = subprocess.check_output(
@@ -181,26 +191,43 @@ def _python_link_flags():
         return shlex.split(out)
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
-
 def build_native(module):
     tc = module.toolchain
+    env = os.environ.copy()
+
     includes = _python_include_dirs() if tc.name == "python" else []
     link_extra = _python_link_flags() if tc.name == "python" else []
-    libs = ["-ldl", "-lm"] + link_extra
+    libs = ["-ldl", "-lm"] + shlex.split(" ".join(link_extra))
 
-    env = os.environ.copy()
+
+    if tc.name == "rust":
+        src = str(module.native_source)
+        out = Path(module.manifest_dir) / f"{module.name}.so"
+        cmd = ["rustc", "--crate-type=cdylib", src, "-o", str(out)]
+        subprocess.check_call(cmd, env=env)
+        return out
+
     objects = []
     for src in [module.native_source] + module.extra_sources:
-        src = str(src)
-        obj = str(Path(src).with_suffix(".o"))
-        cmd = [tc.compiler, "-c", "-fPIC"] + includes + [src, "-o", obj]
+        src = Path(src)
+        obj = src.with_suffix(".o")
+        cmd = [tc.compiler] + tc.object_args + includes + module.flags + [str(src), "-o", str(obj)]
         subprocess.check_call(cmd, env=env)
-        objects.append(obj)
+        objects.append(str(obj))
+    link_flags = []
+    for lib in module.links:
+        if lib.startswith("-l"):
+            link_flags.append(lib)
+        else:
+            link_flags.append(f"-l{lib}")
 
-    out = Path(module.manifest_dir) / f"{module.name}.{tc.object_ext}"
-    cmd = [tc.compiler, "-shared", "-fPIC"] + objects + libs + ["-o", str(out)]
+    out = Path(module.manifest_dir) / f"{module.name}.so"
+    cmd = [tc.compiler] + tc.shared_args + objects + libs + link_flags + ["-o", str(out)]
+
     subprocess.check_call(cmd, env=env)
+
     return out
+
 class Importer:
 
     def __init__(self, search_paths=None):
@@ -353,44 +380,46 @@ class Importer:
         module.flags = list(man.flags)
         module.links = list(man.links)
         module.exports = [(n, r, list(a)) for n, r, a in man.exports]
+
         if man.source:
             module.native_source = manifest_path.parent / man.source
+
+        importer_dir = Path(__file__).resolve().parent
+
         if man.lang == "python":
             if man.source.endswith(".py"):
                 wrapper_cpp = self._generate_python_wrapper(name, man, manifest_path)
                 module.native_source = wrapper_cpp
-            else:
-                module.native_source = manifest_path.parent / man.source
 
-        importer_dir = Path(__file__).resolve().parent
+            candidates = [
+                manifest_path.parent / "python_bridge.cpp",
+                importer_dir / "python_bridge.cpp",
+            ]
 
-        candidates = [
-            manifest_path.parent / "python_bridge.cpp",
-            importer_dir / "python_bridge.cpp",
-        ]
+            bridge_cpp = None
+            for c in candidates:
+                if c.exists():
+                    bridge_cpp = c
+                    break
 
-        bridge_cpp = None
-        for c in candidates:
-            if c.exists():
-                bridge_cpp = c
-                break
+            if bridge_cpp is None:
+                raise ImporterError("python_bridge.cpp missing")
 
-        if bridge_cpp is None:
-            raise ImporterError(
-                f"Python module '{name}' requires python_bridge.cpp "
-                f"but it was not found in {manifest_path.parent} or {importer_dir}"
-            )
+            module.extra_sources = [bridge_cpp]
 
-        module.extra_sources = [bridge_cpp]
+        else:
+            module.extra_sources = []
 
         for export_name, ret, args in man.exports:
             module.func_exports.add(export_name)
             qname = f"{name}.{export_name}"
             params = [(f"a{i}", t, None) for i, t in enumerate(args)]
             module.func_sigs[qname] = (params, ret)
+
         out = build_native(module)
         module.native_binary = out
         return module
+
 
     def load(self, name):
         if name in self.cache:
