@@ -3,6 +3,7 @@ import subprocess
 import shlex
 import sysconfig
 import os
+import re
 
 MODULE_EXTENSION = ".th"
 MANIFEST_FILENAME = "manifest"
@@ -14,7 +15,6 @@ class ImporterError(Exception):
 
 
 class Toolchain:
-
 
     def __init__(self, name, compiler, shared_args, object_args,
                  object_ext="o", cxx=False):
@@ -48,15 +48,153 @@ LANGUAGES = {
 }
 
 
-
 def toolchain_for(lang):
     if lang in LANGUAGES:
         return LANGUAGES[lang]
     raise ImporterError(f"unknown language '{lang}'")
 
 
-class Manifest:
+# --- compound type parsing -------------------------------------------------
+#
+# Manifest 'export' lines are whitespace-split. A bracketed compound type
+# like `List[Float64]` contains no internal whitespace, so it already
+# arrives as a single token. This gives that token structure so codegen
+# (both here and in the LLVM backend) knows how to lay it out and marshal
+# it across the native ABI: List[T] compiles to the LLVM struct
+# `{ i64, T* }` (see LLVMIRCompiler.to_llvm_type), i.e. a length field
+# followed by a pointer to a contiguous buffer of T. This is a plain
+# by-value struct passed/returned at the native call boundary -- there is
+# no separate "ThValue" or argc/argv convention for it.
 
+SCALAR_TYPES = {"Float64", "Int64", "Bool", "String"}
+
+# Map from Threadon scalar type name to the corresponding C type used
+# when generating native wrapper code.
+C_SCALAR_TYPES = {
+    "Float64": "double",
+    "Int64": "long long",
+    "Bool": "bool",
+    "String": "char*",
+}
+
+
+class ThType:
+    """Parsed representation of a manifest type token, e.g. 'List[Float64]'
+    or 'Dict[String,Float64]'."""
+
+    def __init__(self, kind, params=None):
+        self.kind = kind          # 'Float64' | 'Int64' | 'Bool' | 'String' | 'List' | 'Dict'
+        self.params = params or []  # nested ThType list
+
+    def __repr__(self):
+        if not self.params:
+            return self.kind
+        return f"{self.kind}[{', '.join(repr(p) for p in self.params)}]"
+
+    @property
+    def is_list(self):
+        return self.kind == "List"
+
+    @property
+    def is_dict(self):
+        return self.kind == "Dict"
+
+    @property
+    def is_scalar(self):
+        return self.kind in SCALAR_TYPES
+
+    def manifest_token(self):
+        """Reconstruct the manifest-style type token, e.g. 'List[Float64]'."""
+        if not self.params:
+            return self.kind
+        return f"{self.kind}[{','.join(p.manifest_token() for p in self.params)}]"
+
+    def elem(self):
+        """For List[T], returns the ThType of T."""
+        if self.kind != "List":
+            raise ImporterError(f"'{self!r}' is not a List type")
+        return self.params[0]
+
+    def key_type(self):
+        if self.kind != "Dict":
+            raise ImporterError(f"'{self!r}' is not a Dict type")
+        return self.params[0]
+
+    def value_type(self):
+        if self.kind != "Dict":
+            raise ImporterError(f"'{self!r}' is not a Dict type")
+        return self.params[1]
+
+
+_COMPOUND_RE = re.compile(r"^(List|Dict)\[(.+)\]$")
+
+
+def _split_top_level_commas(s, path):
+    """Split on commas that aren't nested inside another [...] group."""
+    parts, depth, cur = [], 0, []
+    for ch in s:
+        if ch == "[":
+            depth += 1
+            cur.append(ch)
+        elif ch == "]":
+            depth -= 1
+            if depth < 0:
+                raise ImporterError(f"Manifest '{path}': unbalanced brackets in type")
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if depth != 0:
+        raise ImporterError(f"Manifest '{path}': unbalanced brackets in type")
+    parts.append("".join(cur))
+    return [p.strip() for p in parts]
+
+
+def parse_type(token, path="<manifest>"):
+    """Parse a single manifest type token into a ThType.
+
+    Supports plain scalars (Float64, Int64, Bool, String) as well as the
+    bracketed compound types List[T] and Dict[K,V]. Nesting is allowed,
+    e.g. List[List[Float64]] or Dict[String,List[Float64]].
+    """
+    token = token.strip()
+    m = _COMPOUND_RE.match(token)
+    if not m:
+        if token not in SCALAR_TYPES:
+            raise ImporterError(
+                f"Manifest '{path}': unknown type '{token}' "
+                f"(known scalars: {', '.join(sorted(SCALAR_TYPES))}, "
+                "or List[T] / Dict[K,V])"
+            )
+        return ThType(token)
+
+    kind, inner = m.group(1), m.group(2)
+    inner = inner.strip()
+    if not inner:
+        raise ImporterError(f"Manifest '{path}': '{kind}[...]' needs type parameter(s)")
+
+    if kind == "List":
+        return ThType("List", [parse_type(inner, path)])
+
+    # Dict[K,V]
+    parts = _split_top_level_commas(inner, path)
+    if len(parts) != 2:
+        raise ImporterError(
+            f"Manifest '{path}': 'Dict[...]' takes exactly two type parameters "
+            "(key,value), e.g. Dict[String,Float64]"
+        )
+    key_t = parse_type(parts[0], path)
+    val_t = parse_type(parts[1], path)
+    if not key_t.is_scalar:
+        raise ImporterError(
+            f"Manifest '{path}': Dict key type must be a scalar, got '{key_t!r}'"
+        )
+    return ThType("Dict", [key_t, val_t])
+
+
+class Manifest:
 
     def __init__(self, module=None, lang="threadon", source=None, flags=None,
                  links=None, exports=None):
@@ -108,6 +246,11 @@ def parse_manifest(text, path):
                     f"Manifest '{path}': 'export' needs a name and return type"
                 )
             name, ret = parts[1], parts[2]
+            # Validate eagerly so bad manifests fail at parse time, not
+            # deep inside codegen.
+            parse_type(ret, path)
+            for arg in parts[3:]:
+                parse_type(arg, path)
             man.exports.append((name, ret, parts[3:]))
         else:
             raise ImporterError(
@@ -143,6 +286,8 @@ class Module:
 
     def __repr__(self):
         return f"Module({self.name!r})"
+
+
 def _python_include_dirs():
     try:
         out = subprocess.check_output(
@@ -176,6 +321,7 @@ def _python_include_dirs():
 
     raise ImporterError("Cannot locate Python.h for python native module")
 
+
 def _python_link_flags():
     try:
         out = subprocess.check_output(
@@ -191,6 +337,8 @@ def _python_link_flags():
         return shlex.split(out)
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
+
+
 def build_native(module):
     tc = module.toolchain
     env = os.environ.copy()
@@ -198,7 +346,6 @@ def build_native(module):
     includes = _python_include_dirs() if tc.name == "python" else []
     link_extra = _python_link_flags() if tc.name == "python" else []
     libs = ["-ldl", "-lm"] + shlex.split(" ".join(link_extra))
-
 
     if tc.name == "rust":
         src = str(module.native_source)
@@ -227,6 +374,7 @@ def build_native(module):
     subprocess.check_call(cmd, env=env)
 
     return out
+
 
 class Importer:
 
@@ -291,6 +439,7 @@ class Importer:
                     return path.read_text()
 
         return None
+
     def _generate_python_wrapper(self, name, man, manifest_path):
         pyfile = manifest_path.parent / man.source
         wrapper = manifest_path.parent / f"{man.module}_pywrap.cpp"
@@ -302,9 +451,234 @@ class Importer:
         code = self._emit_python_wrapper(name, pyfile, exports)
         wrapper.write_text(code)
         return wrapper
+
+    # -- native <-> Python marshalling for the generated C++ wrapper --------
+    #
+    # Every non-list scalar crosses as a plain C type (double / long long /
+    # bool / char*). Every List[T] crosses as the struct that
+    # LLVMIRCompiler.to_llvm_type emits for `List[T]`:
+    #
+    #     struct { int64_t len; T* data; }
+    #
+    # passed/returned BY VALUE. We declare that struct explicitly in the
+    # generated C++ (field order and layout matching `{ i64, T* }`) so the
+    # LLVM-side `declare` and the C++-side function signature agree
+    # byte-for-byte.
+
+    def _c_type_for(self, t: ThType):
+        if t.is_scalar:
+            return C_SCALAR_TYPES[t.kind]
+        if t.is_list:
+            return self._list_struct_name(t)
+        if t.is_dict:
+            return self._dict_struct_name(t)
+        raise ImporterError(f"no native C type for '{t!r}'")
+
+    def _list_struct_name(self, t: ThType):
+        # Stable, collision-resistant name derived from the element type,
+        # e.g. List[Float64] -> ThList_Float64 ; List[List[Float64]] ->
+        # ThList_ThList_Float64
+        elem = t.elem()
+        return f"ThList_{self._type_name_part(elem)}"
+
+    def _dict_struct_name(self, t: ThType):
+        # e.g. Dict[String,Float64] -> ThDict_String_Float64
+        k = self._type_name_part(t.key_type())
+        v = self._type_name_part(t.value_type())
+        return f"ThDict_{k}_{v}"
+
+    def _type_name_part(self, t: ThType):
+        if t.is_list:
+            return self._list_struct_name(t)
+        if t.is_dict:
+            return self._dict_struct_name(t)
+        return t.kind
+
+    def _collect_compound_types(self, types, out):
+        """Recursively collect every List[...]/Dict[...] ThType appearing in
+        `types`, innermost first, so struct/helper definitions can be
+        emitted in dependency order."""
+        for t in types:
+            if t.is_list:
+                self._collect_compound_types([t.elem()], out)
+                key = t.manifest_token()
+                if key not in out:
+                    out[key] = t
+            elif t.is_dict:
+                self._collect_compound_types([t.key_type(), t.value_type()], out)
+                key = t.manifest_token()
+                if key not in out:
+                    out[key] = t
+
+    def _emit_list_struct_defs(self, all_types):
+        compound_types = {}
+        self._collect_compound_types(all_types, compound_types)
+
+        lines = []
+        for t in compound_types.values():
+            if t.is_list:
+                sname = self._list_struct_name(t)
+                elem_c = self._c_type_for(t.elem())
+                lines.append(f"struct {sname} {{ long long len; {elem_c}* data; }};")
+            elif t.is_dict:
+                sname = self._dict_struct_name(t)
+                key_c = self._c_type_for(t.key_type())
+                val_c = self._c_type_for(t.value_type())
+                lines.append(
+                    f"struct {sname} {{ long long len; {key_c}* keys; {val_c}* values; }};"
+                )
+        return lines, compound_types
+
+    def _emit_py_to_native_scalar(self, out, dst, src_pyobj, t: ThType, fresh):
+        if t.kind == "Float64":
+            out.append(f"    {dst} = PyFloat_AsDouble({src_pyobj});")
+        elif t.kind == "Int64":
+            out.append(f"    {dst} = PyLong_AsLongLong({src_pyobj});")
+        elif t.kind == "Bool":
+            out.append(f"    {dst} = PyObject_IsTrue({src_pyobj}) ? true : false;")
+        elif t.kind == "String":
+            v = fresh("s")
+            out.append(f"    const char* {v} = PyUnicode_AsUTF8({src_pyobj});")
+            out.append(f"    {dst} = {v} ? strdup({v}) : nullptr;")
+        else:
+            raise ImporterError(f"cannot marshal scalar type '{t!r}' from Python")
+
+    def _emit_py_to_native_list(self, out, dst_var, src_pyobj, t: ThType, fresh):
+        """Fill a pre-declared `{sname} {dst_var}` from a Python sequence."""
+        elem_t = t.elem()
+        elem_c = self._c_type_for(elem_t)
+        n = fresh("n")
+        i = fresh("i")
+        item = fresh("item")
+
+        out.append(f"    Py_ssize_t {n} = PySequence_Size({src_pyobj});")
+        out.append(f"    {dst_var}.len = (long long){n};")
+        out.append(f"    {dst_var}.data = ({elem_c}*)malloc(sizeof({elem_c}) * (size_t){n});")
+        out.append(f"    for (Py_ssize_t {i} = 0; {i} < {n}; {i}++) {{")
+        out.append(f"        PyObject* {item} = PySequence_GetItem({src_pyobj}, {i});")
+        if elem_t.is_list:
+            self._emit_py_to_native_list(
+                out, f"{dst_var}.data[{i}]", item, elem_t, fresh
+            )
+        elif elem_t.is_dict:
+            self._emit_py_to_native_dict(
+                out, f"{dst_var}.data[{i}]", item, elem_t, fresh
+            )
+        else:
+            self._emit_py_to_native_scalar(
+                out, f"{dst_var}.data[{i}]", item, elem_t, fresh
+            )
+        out.append(f"        Py_DECREF({item});")
+        out.append("    }")
+
+    def _emit_py_to_native_dict(self, out, dst_var, src_pyobj, t: ThType, fresh):
+        """Fill a pre-declared `{sname} {dst_var}` from a Python dict.
+
+        Keys/values land in parallel arrays: dst_var.keys[i] / .values[i].
+        """
+        key_t = t.key_type()
+        val_t = t.value_type()
+        key_c = self._c_type_for(key_t)
+        val_c = self._c_type_for(val_t)
+
+        n = fresh("n")
+        items = fresh("items")
+        i = fresh("i")
+        pair = fresh("pair")
+        k = fresh("k")
+        v = fresh("v")
+
+        out.append(f"    Py_ssize_t {n} = PyDict_Size({src_pyobj});")
+        out.append(f"    {dst_var}.len = (long long){n};")
+        out.append(f"    {dst_var}.keys = ({key_c}*)malloc(sizeof({key_c}) * (size_t){n});")
+        out.append(f"    {dst_var}.values = ({val_c}*)malloc(sizeof({val_c}) * (size_t){n});")
+        out.append(f"    PyObject* {items} = PyDict_Items({src_pyobj});")
+        out.append(f"    for (Py_ssize_t {i} = 0; {i} < {n}; {i}++) {{")
+        out.append(f"        PyObject* {pair} = PyList_GetItem({items}, {i});")
+        out.append(f"        PyObject* {k} = PyTuple_GetItem({pair}, 0);")
+        out.append(f"        PyObject* {v} = PyTuple_GetItem({pair}, 1);")
+        self._emit_py_to_native_scalar(out, f"{dst_var}.keys[{i}]", k, key_t, fresh)
+        if val_t.is_list:
+            self._emit_py_to_native_list(out, f"{dst_var}.values[{i}]", v, val_t, fresh)
+        elif val_t.is_dict:
+            self._emit_py_to_native_dict(out, f"{dst_var}.values[{i}]", v, val_t, fresh)
+        else:
+            self._emit_py_to_native_scalar(out, f"{dst_var}.values[{i}]", v, val_t, fresh)
+        out.append("    }")
+        out.append(f"    Py_DECREF({items});")
+
+    def _emit_native_to_py_scalar(self, out, dst_pyobj, src, t: ThType):
+        if t.kind == "Float64":
+            out.append(f"    PyObject* {dst_pyobj} = PyFloat_FromDouble({src});")
+        elif t.kind == "Int64":
+            out.append(f"    PyObject* {dst_pyobj} = PyLong_FromLongLong({src});")
+        elif t.kind == "Bool":
+            out.append(f"    PyObject* {dst_pyobj} = PyBool_FromLong({src} ? 1 : 0);")
+        elif t.kind == "String":
+            out.append(f"    PyObject* {dst_pyobj} = PyUnicode_FromString({src} ? {src} : \"\");")
+        else:
+            raise ImporterError(f"cannot marshal scalar type '{t!r}' to Python")
+
+    def _emit_native_to_py_list(self, out, dst_pyobj, src_var, t: ThType, fresh):
+        elem_t = t.elem()
+        lst = fresh("lst")
+        i = fresh("i")
+        out.append(f"    PyObject* {lst} = PyList_New({src_var}.len);")
+        out.append(f"    for (long long {i} = 0; {i} < {src_var}.len; {i}++) {{")
+        if elem_t.is_list:
+            sub = fresh("sub")
+            self._emit_native_to_py_list(out, sub, f"{src_var}.data[{i}]", elem_t, fresh)
+            out.append(f"        PyList_SetItem({lst}, {i}, {sub});")
+        elif elem_t.is_dict:
+            sub = fresh("sub")
+            self._emit_native_to_py_dict(out, sub, f"{src_var}.data[{i}]", elem_t, fresh)
+            out.append(f"        PyList_SetItem({lst}, {i}, {sub});")
+        else:
+            item = fresh("it")
+            self._emit_native_to_py_scalar(out, item, f"{src_var}.data[{i}]", elem_t)
+            out.append(f"        PyList_SetItem({lst}, {i}, {item});")
+        out.append("    }")
+        out.append(f"    PyObject* {dst_pyobj} = {lst};")
+
+    def _emit_native_to_py_dict(self, out, dst_pyobj, src_var, t: ThType, fresh):
+        """Build a Python dict from parallel keys[]/values[] arrays."""
+        key_t = t.key_type()
+        val_t = t.value_type()
+        d = fresh("d")
+        i = fresh("i")
+        out.append(f"    PyObject* {d} = PyDict_New();")
+        out.append(f"    for (long long {i} = 0; {i} < {src_var}.len; {i}++) {{")
+        kobj = fresh("kobj")
+        self._emit_native_to_py_scalar(out, kobj, f"{src_var}.keys[{i}]", key_t)
+        if val_t.is_list:
+            vobj = fresh("vobj")
+            self._emit_native_to_py_list(out, vobj, f"{src_var}.values[{i}]", val_t, fresh)
+        elif val_t.is_dict:
+            vobj = fresh("vobj")
+            self._emit_native_to_py_dict(out, vobj, f"{src_var}.values[{i}]", val_t, fresh)
+        else:
+            vobj = fresh("vobj")
+            self._emit_native_to_py_scalar(out, vobj, f"{src_var}.values[{i}]", val_t)
+        out.append(f"        PyDict_SetItem({d}, {kobj}, {vobj});")
+        out.append(f"        Py_DECREF({kobj});")
+        out.append(f"        Py_DECREF({vobj});")
+        out.append("    }")
+        out.append(f"    PyObject* {dst_pyobj} = {d};")
+
     def _emit_python_wrapper(self, module_name, pyfile, exports):
+        parsed_exports = []
+        all_types = []
+        for func, ret_tok, arg_toks in exports:
+            ret_t = parse_type(ret_tok)
+            arg_ts = [parse_type(a) for a in arg_toks]
+            parsed_exports.append((func, ret_t, arg_ts))
+            all_types.append(ret_t)
+            all_types.extend(arg_ts)
+
         lines = []
         lines.append('#include <Python.h>')
+        lines.append('#include <cstdlib>')
+        lines.append('#include <cstring>')
         lines.append('extern "C" {')
         lines.append('static bool _py_init = false;')
 
@@ -317,59 +691,102 @@ class Importer:
         lines.append('        _py_init = true;')
         lines.append('    }')
         lines.append('}')
+        lines.append('} // extern C (init helpers stay C-linkage-free of struct ABI concerns)')
+        lines.append('')
 
-        for func, ret, args in exports:
-            nargs = len(args)
+        # Struct defs matching LLVMIRCompiler.to_llvm_type's `{ i64, T* }`
+        # layout for every List[...] type used by any export. These are
+        # declared outside extern "C" (C++ structs), but the exported
+        # functions using them are still `extern "C"` below so their
+        # *symbol names* aren't mangled -- struct-by-value parameters are
+        # fine across that boundary since the LLVM IR side declares the
+        # matching literal struct type, not a named C type.
+        struct_lines, _ = self._emit_list_struct_defs(all_types)
+        lines.extend(struct_lines)
+        lines.append('')
 
-            if ret == "Float64":
-                cret = "double"
-            else:
-                cret = "void"
+        lines.append('extern "C" {')
 
-            c_args = ", ".join(f"double a{i}" for i in range(nargs))
-            lines.append(f"{cret} {func}({c_args}) {{")
-            lines.append("    ensure_init();")
+        modname = pyfile.stem
+        seq = [0]
 
-            if nargs == 0:
-                lines.append("    PyObject* args = nullptr;")
-            else:
-                lines.append(f"    PyObject* args = PyTuple_New({nargs});")
-                for i in range(nargs):
-                    lines.append(f"    PyTuple_SetItem(args, {i}, PyFloat_FromDouble(a{i}));")
+        def fresh(base):
+            seq[0] += 1
+            return f"_{base}{seq[0]}"
 
-            modname = pyfile.stem
-            lines.append(f'    PyObject* mod = PyImport_ImportModule("{modname}");')
-
-            if ret == "Float64":
-                lines.append("    if (!mod) return 0.0;")
-            else:
-                lines.append("    if (!mod) return;")
-
-            lines.append(f'    PyObject* f = PyObject_GetAttrString(mod, "{func}");')
-            lines.append("    Py_DECREF(mod);")
-
-            if ret == "Float64":
-                lines.append("    if (!f || !PyCallable_Check(f)) return 0.0;")
-            else:
-                lines.append("    if (!f || !PyCallable_Check(f)) return;")
-
-            lines.append("    PyObject* r = PyObject_CallObject(f, args);")
-            lines.append("    Py_DECREF(f);")
-            if nargs > 0:
-                lines.append("    Py_DECREF(args);")
-
-            if ret == "Float64":
-                lines.append("    double out = PyFloat_AsDouble(r);")
-                lines.append("    Py_DECREF(r);")
-                lines.append("    return out;")
-            else:
-                lines.append("    Py_DECREF(r);")
-                lines.append("    return;")
-
-            lines.append("}")
+        for func, ret_t, arg_ts in parsed_exports:
+            lines.append(self._emit_export_thunk(func, ret_t, arg_ts, modname, fresh))
 
         lines.append("} // extern C")
         return '\n'.join(lines)
+
+    def _emit_export_thunk(self, func, ret_t: ThType, arg_ts, modname, fresh):
+        c_ret = self._c_type_for(ret_t)
+        params = ", ".join(f"{self._c_type_for(t)} a{i}" for i, t in enumerate(arg_ts))
+        nargs = len(arg_ts)
+
+        out = []
+        out.append(f"{c_ret} {func}({params}) {{")
+        out.append("    ensure_init();")
+
+        if nargs == 0:
+            out.append("    PyObject* args = nullptr;")
+        else:
+            out.append(f"    PyObject* args = PyTuple_New({nargs});")
+            for i, t in enumerate(arg_ts):
+                pyv = fresh("pyv")
+                if t.is_list:
+                    self._emit_native_to_py_list(out, pyv, f"a{i}", t, fresh)
+                elif t.is_dict:
+                    self._emit_native_to_py_dict(out, pyv, f"a{i}", t, fresh)
+                else:
+                    self._emit_native_to_py_scalar(out, pyv, f"a{i}", t)
+                out.append(f"    PyTuple_SetItem(args, {i}, {pyv});")
+
+        out.append(f'    PyObject* mod = PyImport_ImportModule("{modname}");')
+        out.append(f"    if (!mod) return {self._zero_c_value(ret_t)};")
+        out.append(f'    PyObject* f = PyObject_GetAttrString(mod, "{func}");')
+        out.append("    Py_DECREF(mod);")
+        out.append(f"    if (!f || !PyCallable_Check(f)) {{ Py_XDECREF(f); return {self._zero_c_value(ret_t)}; }}")
+
+        out.append("    PyObject* r = PyObject_CallObject(f, args);")
+        out.append("    Py_DECREF(f);")
+        if nargs > 0:
+            out.append("    Py_DECREF(args);")
+        out.append(f"    if (!r) {{ PyErr_Clear(); return {self._zero_c_value(ret_t)}; }}")
+
+        if ret_t.is_list:
+            out.append(f"    {self._c_type_for(ret_t)} out;")
+            self._emit_py_to_native_list(out, "out", "r", ret_t, fresh)
+            out.append("    Py_DECREF(r);")
+            out.append("    return out;")
+        elif ret_t.is_dict:
+            out.append(f"    {self._c_type_for(ret_t)} out;")
+            self._emit_py_to_native_dict(out, "out", "r", ret_t, fresh)
+            out.append("    Py_DECREF(r);")
+            out.append("    return out;")
+        else:
+            outv = fresh("out")
+            self._emit_py_to_native_scalar(out, f"{c_ret} {outv}", "r", ret_t, fresh)
+            out.append("    Py_DECREF(r);")
+            out.append(f"    return {outv};")
+
+        out.append("}")
+        return "\n".join(out)
+
+    def _zero_c_value(self, t: ThType):
+        if t.is_list:
+            sname = self._list_struct_name(t)
+            return f"{sname}{{0, nullptr}}"
+        if t.is_dict:
+            sname = self._dict_struct_name(t)
+            return f"{sname}{{0, nullptr, nullptr}}"
+        return {
+            "Float64": "0.0",
+            "Int64": "0",
+            "Bool": "false",
+            "String": "nullptr",
+        }[t.kind]
 
     def _build_native_module(self, name, man, manifest_path):
         module = Module(name, None, None)
@@ -419,7 +836,6 @@ class Importer:
         out = build_native(module)
         module.native_binary = out
         return module
-
 
     def load(self, name):
         if name in self.cache:
