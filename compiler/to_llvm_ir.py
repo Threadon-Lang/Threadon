@@ -1735,6 +1735,30 @@ class LLVMIRCompiler:
             lines.append(f"{ptr} = getelementptr inbounds [5 x i8], [5 x i8]* {none_global}, i64 0, i64 0")
             spec = "%s"
             return spec, f"i8* {ptr}"
+        if arg.type == "Bool":
+            print("hit")
+            true_global = self._string_global("True")
+            false_global = self._string_global("False")
+
+            true_ptr = f"{res}_true{i}"
+            false_ptr = f"{res}_false{i}"
+
+            lines.append(
+                f"{true_ptr} = getelementptr inbounds [5 x i8], [5 x i8]* {true_global}, i64 0, i64 0"
+            )
+            lines.append(
+                f"{false_ptr} = getelementptr inbounds [6 x i8], [6 x i8]* {false_global}, i64 0, i64 0"
+            )
+
+            cmp = f"{res}_bcmp{i}"
+            lines.append(f"{cmp} = icmp ne i1 {val}, 0")
+
+            sel = f"{res}_bsel{i}"
+            lines.append(
+                f"{sel} = select i1 {cmp}, i8* {true_ptr}, i8* {false_ptr}"
+            )
+
+            return "%s", f"i8* {sel}"
         if atype in ("i8", "i16", "i32", "i64"):
             if atype == "i64":
                 spec = "%llu" if unsigned else "%lld"
