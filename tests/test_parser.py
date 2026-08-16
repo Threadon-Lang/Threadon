@@ -1394,3 +1394,114 @@ def run() -> Int32
     return a.get()
 """
     )
+
+
+def test_union_var_narrows_to_concrete_type():
+    parse_ok(
+        """
+def run() -> Int32
+    a: Int | Float = 5
+    b: Int32 = a
+    return b
+"""
+    )
+
+
+def test_union_var_reassign_other_member_narrows():
+    parse_ok(
+        """
+def run() -> Int32
+    a: Int | Float = 5
+    a = 9.5
+    return 0
+"""
+    )
+
+
+def test_union_var_arithmetic_after_narrow_is_strict():
+    parse_ok(
+        """
+def run() -> Int32
+    a: Int | Float = 5
+    c: Int | Float = a * 2
+    return 0
+"""
+    )
+
+
+def test_union_mixed_arithmetic_rejected_after_narrow():
+    parse_fail(
+        """
+def run() -> Int32
+    a: Int | Float = 5
+    a = 3.5
+    c: Int | Float = a + 2
+    return 0
+"""
+    )
+
+
+def test_union_var_reverts_to_union_after_if_else_merge():
+    parse_fail(
+        """
+def run() -> Int32
+    x: Int | Float = 5
+    if x > 3:
+        x = 2.5
+    else:
+        x = 7
+    b: Int32 = x
+    return 0
+"""
+    )
+
+
+def test_union_var_merge_accepts_declared_union():
+    parse_ok(
+        """
+def run() -> Int32
+    x: Int | Float = 5
+    if x > 3:
+        x = 2.5
+    else:
+        x = 7
+    b: Int | Float = x
+    return 0
+"""
+    )
+
+
+def test_union_var_reverts_to_union_after_while():
+    parse_fail(
+        """
+def run() -> Int32
+    x: Int | Float = 5
+    while x > 3:
+        x = 2.5
+    b: Int32 = x
+    return 0
+"""
+    )
+
+
+def test_union_param_stays_union():
+    parse_ok(
+        """
+def f(x: Int | Float) -> Int | Float
+    return x + 1
+"""
+    )
+
+
+def test_union_var_narrowed_usable_in_calls():
+    parse_ok(
+        """
+def show(x: Int | Float) -> Int32
+    return 0
+
+def run() -> Int32
+    a: Int | Float = 5
+    show(a)
+    return 0
+"""
+    )

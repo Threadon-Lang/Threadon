@@ -1042,3 +1042,100 @@ def test_native_qualified_call_as_statement():
     )
     assert "call i64 @sleep_ms(" in llvm
     assert "declare i64 @sleep_ms(i64)" in llvm
+
+
+def test_union_narrowing_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    a: Int | Float = 5
+    print(a)
+    a = a * 2
+    print(a)
+    a = 9.5
+    print(a)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "5\n10\n9.500000\n"
+
+
+def test_union_reassign_narrow_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    a: Int | Float = 5
+    a = 3.5
+    b: Float32 = a
+    print(b)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3.500000\n"
+
+
+def test_union_merge_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Int | Float = 5
+    if x > 3:
+        x = 2.5
+    else:
+        x = 7
+    print(x)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2.500000\n"
+
+
+def test_union_loop_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    y: Int | Float = 1
+    while y < 3:
+        y = y + 1
+    print(y)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3\n"
+
+
+def test_union_function_dispatch_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def twice(x: Int | Float) -> Int | Float
+    return x * 2
+
+def main() -> Int32
+    print(twice(4.07))
+    print(twice(3))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "8.140000\n6\n"
+
+
+def test_union_ref_narrowed_var_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Int | Float = 3.2
+    print(x)
+    alias: Builtin = x^
+    print(alias)
+    x += 1.0
+    print(alias)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3.200000\n3.200000\n4.200000\n"

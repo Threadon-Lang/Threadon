@@ -69,6 +69,7 @@ class TokenType(Enum):
 
     DOT = auto()
     CARET = auto()
+    PIPE = auto()
 
 
 @dataclass
@@ -107,7 +108,8 @@ TYPES = {
     "UInt8", "UInt16", "UInt32", "UInt64", "UInt256",
     "Float16", "Float32", "Float64",
     "Boolean", "Bool", "String",
-    "NoneType"
+    "NoneType",
+    "Int", "Float", "Number", "Builtin",
 }
 
 
@@ -518,6 +520,10 @@ class Lexer:
             if self.current_char == "^":
                 self.advance()
                 return Token(TokenType.CARET, "^")
+
+            if self.current_char == "|":
+                self.advance()
+                return Token(TokenType.PIPE, "|")
 
             raise SyntaxError(f"Unrecognized token: {self.current_char}")
 

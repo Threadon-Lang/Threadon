@@ -16,10 +16,96 @@ CONVERTIBLE_TO_INT = FLOAT_TYPES + ALL_INT_TYPES + ("Bool", "String")
 CONVERTIBLE_TO_FLOAT = ALL_INT_TYPES + FLOAT_TYPES + ("String",)
 CONVERTIBLE_TO_BOOL = ALL_INT_TYPES + FLOAT_TYPES + ("String",)
 
+# A type group is a set of types that a variable may take on. The compiler
+# expands a group to its concrete members at parse time and stores a value as a
+# tagged union, so every error involving a group is caught at compile time.
+GROUP_DEFS = {
+    "Int": ALL_INT_TYPES,
+    "Float": FLOAT_TYPES,
+    "Number": NUMERIC_TYPES,
+    "Builtin": ALL_INT_TYPES + FLOAT_TYPES + ("Bool", "String", "NoneType"),
+}
+
+
+def is_group(name):
+    return name in GROUP_DEFS
+
+
+def group_members(name):
+    """Concrete member types of a group keyword (or None)."""
+    return GROUP_DEFS.get(name)
+
+
+def union_str(members):
+    """Canonical string for a union type, e.g. 'Union[Int32|Int64]'."""
+    return "Union[" + "|".join(sorted(members)) + "]"
+
+
+def union_members(t):
+    """Member types of a 'Union[...]' string, or None."""
+    if isinstance(t, str) and t.startswith("Union[") and t.endswith("]"):
+        inner = t[len("Union["):-1]
+        if not inner:
+            return ()
+        return tuple(sorted(inner.split("|")))
+    return None
+
+
+def is_union_type(t):
+    return union_members(t) is not None
+
+
+def expand_type(t):
+    """Concrete members a type annotation can hold.
+
+    Groups and unions expand to their members; any other type is its own
+    single member.
+    """
+    if is_group(t):
+        return tuple(group_members(t))
+    m = union_members(t)
+    if m is not None:
+        return m
+    return (t,)
+
+
+def _int_width(t):
+    return int(t[4:] if t.startswith("UInt") else t[3:])
+
+
+def common_numeric_type(a, b):
+    """Type used when two numeric types are combined in one operation.
+
+    Returns None when the two types cannot be combined.
+    """
+    if a in ALL_INT_TYPES and b in ALL_INT_TYPES:
+        if a == b:
+            return a
+        aw, bw = _int_width(a), _int_width(b)
+        if aw != bw:
+            return a if aw > bw else b
+        if a.startswith("UInt") or b.startswith("UInt"):
+            return "UInt" + str(aw)
+        return a
+    if a in FLOAT_TYPES and b in FLOAT_TYPES:
+        if a == b:
+            return a
+        order = {"Float16": 0, "Float32": 1, "Float64": 2}
+        return a if order[a] > order[b] else b
+    if a in ALL_INT_TYPES and b in FLOAT_TYPES:
+        return b
+    if a in FLOAT_TYPES and b in ALL_INT_TYPES:
+        return a
+    return None
+
 
 def _is_printable(t, aggregate_types=None):
     if t in PRINTABLE_TYPES:
         return True
+    if is_union_type(t):
+        return all(
+            _is_printable(m, aggregate_types) for m in union_members(t)
+        )
     if aggregate_types and t in aggregate_types:
         return True
     if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):

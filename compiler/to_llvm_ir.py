@@ -3,7 +3,12 @@ import re
 import math
 import sys
 
-from .builtins import BUILTIN_SIGS
+from .builtins import (
+    BUILTIN_SIGS,
+    common_numeric_type,
+    is_union_type,
+    union_members,
+)
 from .to_high_ir import SSAValue
 
 FLOAT_LLVM_TYPES = ("half", "float", "double")
@@ -45,6 +50,8 @@ class LLVMIRCompiler:
         self.templates_enabled = False
         self._tmp_seq = 0
         self.current_func = None
+        self.union_types = {}
+        self._union_seq = 0
 
     def compile(self, module, native_exports=None):
         self.module = module 
@@ -73,6 +80,16 @@ class LLVMIRCompiler:
             llvm_fields = ", ".join(self.to_llvm_type(ft) for ft in fields.values())
             self.out.append(f"%struct.{name} = type {{ {llvm_fields} }}")
         if module.types:
+            self.out.append("")
+
+        self._collect_union_types()
+
+        for ustr, uname in self.union_types.items():
+            member_types = ", ".join(
+                self.to_llvm_type(m) for m in union_members(ustr)
+            )
+            self.out.append(f"%{uname} = type {{ i8, {member_types} }}")
+        if self.union_types:
             self.out.append("")
 
         for func in module.funcs:
@@ -195,9 +212,29 @@ class LLVMIRCompiler:
 
         return "\n".join(self.out)
 
+    def _register_union(self, t):
+        if t not in self.union_types:
+            self.union_types[t] = f"union{self._union_seq}"
+            self._union_seq += 1
+        return f"%{self.union_types[t]}"
+
+    def _collect_union_types(self):
+        for func in self.module.funcs:
+            if is_union_type(func.return_type):
+                self._register_union(func.return_type)
+            for block in func.blocks:
+                for instr in block.instructions:
+                    if instr.result is not None and is_union_type(instr.result.type):
+                        self._register_union(instr.result.type)
+                    for a in instr.args:
+                        if isinstance(a, SSAValue) and is_union_type(a.type):
+                            self._register_union(a.type)
+
     def to_llvm_type(self, t):
         if t is None:
             return "void"
+        if is_union_type(t):
+            return self._register_union(t)
         if t == "TemplatePayload":
             return "i8**"
         if isinstance(t, str) and t.endswith("*"):
@@ -350,6 +387,263 @@ class LLVMIRCompiler:
         self.out.append("  store i32 %new, i32* @__threadon_call_depth")
         self.out.append("  ret void")
         self.out.append("}")
+    def _add_emit(self, lines, ret):
+        if ret is None:
+            return
+        if isinstance(ret, str):
+            lines.append(ret)
+        else:
+            lines.extend(ret)
+
+    def _fresh_base(self, base):
+        self._tmp_seq += 1
+        return f"{base}{self._tmp_seq}"
+
+    def _fresh_reg(self, base):
+        return f"%{self._fresh_base(base)}"
+
+    def _fresh_label(self, base):
+        return f"{self._fresh_base(base)}"
+
+    def _last_block_label(self, lines, start):
+        label = None
+        for ln in lines[start:]:
+            m = re.match(r"^(\S+):\s*$", ln)
+            if m:
+                label = f"%{m.group(1)}"
+        return label
+
+    def _emit_union_init(self, res, utype, member_type, value):
+        uty = self.to_llvm_type(utype)
+        members = union_members(utype)
+        tag = members.index(member_type)
+        val = self.operand(value)
+        mty = self.to_llvm_type(member_type)
+        tmp = f"{res}_u"
+        return [
+            f"{tmp} = insertvalue {uty} undef, i8 {tag}, 0",
+            f"{res} = insertvalue {uty} {tmp}, {mty} {val}, {tag + 1}",
+        ]
+
+    def _emit_union_retag(self, res, res_type, operand):
+        base = res.lstrip("%")
+        src = self.operand(operand)
+        src_type = operand.type
+        src_uty = self.to_llvm_type(src_type)
+        src_members = union_members(src_type)
+        dst_uty = self.to_llvm_type(res_type)
+        dst_members = union_members(res_type)
+        merge = f"%{base}_merge"
+
+        lines = [f"%{base}_tag = extractvalue {src_uty} {src}, 0"]
+        lines.append("")
+        lines.append(f"switch i8 %{base}_tag, label %{base}_default [")
+        labels = []
+        for _ in src_members:
+            lab = self._fresh_label("rt")
+            labels.append(lab)
+            lines.append(f"  i8 {len(labels) - 1}, label %{lab}")
+        lines.append("]")
+        lines.append("")
+        lines.append(f"{base}_default:")
+        lines.append(f"  unreachable")
+
+        incoming = []
+        for i, m in enumerate(src_members):
+            dst_idx = dst_members.index(m)
+            mty = self.to_llvm_type(m)
+            lines.append("")
+            lines.append(f"{labels[i]}:")
+            mv = self._fresh_reg("rtv")
+            lines.append(f"  {mv} = extractvalue {src_uty} {src}, {i + 1}")
+            tmp = self._fresh_reg("rtu")
+            lines.append(f"  {tmp} = insertvalue {dst_uty} undef, i8 {dst_idx}, 0")
+            resv = self._fresh_reg("rtr")
+            lines.append(f"  {resv} = insertvalue {dst_uty} {tmp}, {mty} {mv}, {dst_idx + 1}")
+            lines.append(f"  br label {merge}")
+            incoming.append((labels[i], resv))
+
+        lines.append("")
+        lines.append(f"{base}_merge:")
+        incoming_str = ", ".join(
+            f"[ {v}, %{label} ]" for label, v in incoming
+        )
+        lines.append(f"{res} = phi {dst_uty} {incoming_str}")
+        return lines
+
+    def _emit_union_binary(self, res, res_type, op, left, right):
+        base = res.lstrip("%")
+        l = self.operand(left)
+        r = self.operand(right)
+        ltype = left.type
+        rtype = right.type
+        lms = union_members(ltype) if is_union_type(ltype) else [ltype]
+        rms = union_members(rtype) if is_union_type(rtype) else [rtype]
+        luty = self.to_llvm_type(ltype) if is_union_type(ltype) else None
+        ruty = self.to_llvm_type(rtype) if is_union_type(rtype) else None
+        is_cmp = op.startswith("cmp_")
+        res_llvm = self.to_llvm_type(res_type)
+
+        lines = []
+        merge = f"%{base}_merge"
+
+        if luty:
+            lines.append(f"%{base}_ltag = extractvalue {luty} {l}, 0")
+        if ruty:
+            lines.append(f"%{base}_rtag = extractvalue {ruty} {r}, 0")
+
+        if luty:
+            lines.append("")
+            lines.append(f"switch i8 %{base}_ltag, label %{base}_ldefault [")
+            for i, _ in enumerate(lms):
+                lines.append(f"  i8 {i}, label %{base}_L{i}")
+            lines.append("]")
+            lines.append("")
+            lines.append(f"{base}_ldefault:")
+            lines.append(f"  unreachable")
+
+        incoming = []
+        for i, lm in enumerate(lms):
+            lv = l
+            if luty:
+                lv = f"%{base}_lv{i}"
+                lines.append("")
+                lines.append(f"{base}_L{i}:")
+                lines.append(f"  {lv} = extractvalue {luty} {l}, {i + 1}")
+
+            if ruty:
+                lines.append("")
+                lines.append(f"  switch i8 %{base}_rtag, label %{base}_R{i}_default [")
+                for j, _ in enumerate(rms):
+                    lines.append(f"    i8 {j}, label %{base}_R{i}_{j}")
+                lines.append("  ]")
+                lines.append("")
+                lines.append(f"{base}_R{i}_default:")
+                lines.append(f"  unreachable")
+
+            for j, rm in enumerate(rms):
+                c = common_numeric_type(lm, rm)
+                rv = r
+                leaf_label = None
+                if ruty:
+                    rv = f"%{base}_rv{i}_{j}"
+                    leaf_label = f"%{base}_R{i}_{j}"
+                    lines.append("")
+                    lines.append(f"{base}_R{i}_{j}:")
+                    lines.append(f"  {rv} = extractvalue {ruty} {r}, {j + 1}")
+                else:
+                    leaf_label = f"%{base}_L{i}"
+
+                pair_start = len(lines)
+                leaf_val = self._emit_union_pair(
+                    lines, f"%{base}_p{i}_{j}", op, lv, lm, rv, rm, c,
+                    res_type, is_cmp,
+                )
+                actual_label = (
+                    self._last_block_label(lines, pair_start) or leaf_label
+                )
+                lines.append(f"  br label {merge}")
+                incoming.append((actual_label, leaf_val))
+
+        lines.append("")
+        lines.append(f"{base}_merge:")
+        incoming_str = ", ".join(
+            f"[ {v}, {label} ]" for label, v in incoming
+        )
+        lines.append(f"{res} = phi {res_llvm} {incoming_str}")
+        return lines
+
+    def _emit_union_pair(self, lines, pair_res, op, lv, lm, rv, rm, c,
+                         res_type, is_cmp):
+        c_llvm = self.to_llvm_type(c)
+        lv_c = lv
+        if lm != c:
+            tmp = f"{pair_res}_lc"
+            self._add_emit(lines, self._emit_cast(tmp, c_llvm, SSAValue(lv, lm), c))
+            lv_c = tmp
+        rv_c = rv
+        if rm != c:
+            tmp = f"{pair_res}_rc"
+            self._add_emit(lines, self._emit_cast(tmp, c_llvm, SSAValue(rv, rm), c))
+            rv_c = tmp
+
+        if is_cmp:
+            self._add_emit(
+                lines,
+                self._emit_cmp(
+                    pair_res, op, SSAValue(lv_c, c), SSAValue(rv_c, c)
+                ),
+            )
+            return pair_res
+
+        v = f"{pair_res}_a"
+        self._add_emit(
+            lines,
+            self._emit_binary(v, op, SSAValue(lv_c, c), SSAValue(rv_c, c)),
+        )
+
+        if is_union_type(res_type):
+            tag = union_members(res_type).index(c)
+            uty = self.to_llvm_type(res_type)
+            tmp = f"{pair_res}_u"
+            lines.append(f"{tmp} = insertvalue {uty} undef, i8 {tag}, 0")
+            lines.append(f"{pair_res} = insertvalue {uty} {tmp}, {c_llvm} {v}, {tag + 1}")
+            return pair_res
+
+        if res_type != c:
+            conv = f"{pair_res}_c"
+            self._add_emit(
+                lines,
+                self._emit_cast(conv, self.to_llvm_type(res_type), SSAValue(v, c), res_type),
+            )
+            return conv
+        return v
+
+    def _emit_union_unary(self, res, op, operand):
+        base = res.lstrip("%")
+        src = self.operand(operand)
+        uty = self.to_llvm_type(operand.type)
+        members = union_members(operand.type)
+        merge = f"%{base}_merge"
+
+        lines = [f"%{base}_tag = extractvalue {uty} {src}, 0"]
+        lines.append("")
+        lines.append(f"switch i8 %{base}_tag, label %{base}_default [")
+        for i, _ in enumerate(members):
+            lines.append(f"  i8 {i}, label %{base}_m{i}")
+        lines.append("]")
+        lines.append("")
+        lines.append(f"{base}_default:")
+        lines.append(f"  unreachable")
+
+        incoming = []
+        for i, m in enumerate(members):
+            lines.append("")
+            lines.append(f"{base}_m{i}:")
+            mty = self.to_llvm_type(m)
+            mv = f"%{base}_mv{i}"
+            lines.append(f"  {mv} = extractvalue {uty} {src}, {i + 1}")
+            tmpv = f"%{base}_v{i}"
+            start = len(lines)
+            self._add_emit(lines, self._emit_unary(tmpv, op, SSAValue(mv, m)))
+            tmp = f"%{base}_u{i}"
+            lines.append(f"  {tmp} = insertvalue {uty} undef, i8 {i}, 0")
+            resv = f"%{base}_res{i}"
+            lines.append(f"  {resv} = insertvalue {uty} {tmp}, {mty} {tmpv}, {i + 1}")
+            actual_label = (
+                self._last_block_label(lines, start) or f"%{base}_m{i}"
+            )
+            lines.append(f"  br label {merge}")
+            incoming.append((actual_label, resv))
+
+        lines.append("")
+        lines.append(f"{base}_merge:")
+        incoming_str = ", ".join(
+            f"[ {v}, {label} ]" for label, v in incoming
+        )
+        lines.append(f"{res} = phi {uty} {incoming_str}")
+        return lines
+
     def _emit_binary(self, res, op, left, right):
         l = self.operand(left)
         r = self.operand(right)
@@ -1072,10 +1366,18 @@ class LLVMIRCompiler:
         if op == "undef":
             return self._emit_undef(res, rtype)
 
+        if op == "union_init":
+            return self._emit_union_init(res, instr.args[0], instr.args[1], instr.args[2])
+
+        if op == "union_retag":
+            return self._emit_union_retag(res, instr.args[0], instr.args[1])
+
         if op == "ref_copy":
             return self._emit_identity(res, instr.args[0])
 
         if op == "neg":
+            if is_union_type(instr.args[0].type):
+                return self._emit_union_unary(res, "neg", instr.args[0])
             return self._emit_unary(res, "neg", instr.args[0])
         if op == "pos":
             return self._emit_identity(res, instr.args[0])
@@ -1083,12 +1385,22 @@ class LLVMIRCompiler:
             return self._emit_unary(res, "not", instr.args[0])
 
         if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow", "and", "or"):
+            if (
+                is_union_type(instr.args[0].type)
+                or is_union_type(instr.args[1].type)
+            ):
+                return self._emit_union_binary(res, instr.result.type, op, instr.args[0], instr.args[1])
             return self._emit_binary(res, op, instr.args[0], instr.args[1])
 
         if op in ("shl", "shr", "bit_and", "bit_or", "bit_xor"):
             return self._emit_bitwise(res, op, instr.args[0], instr.args[1])
 
         if op in ("cmp_lt", "cmp_gt", "cmp_le", "cmp_ge", "cmp_eq", "cmp_ne"):
+            if (
+                is_union_type(instr.args[0].type)
+                or is_union_type(instr.args[1].type)
+            ):
+                return self._emit_union_binary(res, instr.result.type, op, instr.args[0], instr.args[1])
             return self._emit_cmp(res, op, instr.args[0], instr.args[1])
 
         if op == "call":
@@ -1213,6 +1525,8 @@ class LLVMIRCompiler:
     def _emit_undef(self, res, rtype):
         if rtype.startswith("%struct"):
             return f"{res} = select i1 false, {rtype} undef, {rtype} undef"
+        if rtype.startswith("%union"):
+            return f"{res} = select i1 false, {rtype} undef, {rtype} undef"
         if rtype.startswith("{"):
             return f"{res} = insertvalue {rtype} undef, i64 0, 0"
         if rtype in FLOAT_LLVM_TYPES:
@@ -1231,6 +1545,13 @@ class LLVMIRCompiler:
         if src_type == "i8*" or (src_type.startswith("%struct") and src_type.endswith("*")):
             return f"{res} = getelementptr {src_type[:-1]}, {src_type} {src_op}, i32 0"
         if src_type.startswith("%struct"):
+            ptr = f"{res}_ptr"
+            return [
+                f"{ptr} = alloca {src_type}",
+                f"store {src_type} {src_op}, {src_type}* {ptr}",
+                f"{res} = load {src_type}, {src_type}* {ptr}",
+            ]
+        if src_type.startswith("%union"):
             ptr = f"{res}_ptr"
             return [
                 f"{ptr} = alloca {src_type}",
@@ -1380,102 +1701,16 @@ class LLVMIRCompiler:
 
     def _emit_print(self, res, args):
         self.used_c_runtime.add("printf")
+        if any(is_union_type(a.type) for a in args):
+            return self._emit_union_print(res, args)
+
         specs = []
         call_args = []
         lines = []
         for i, arg in enumerate(args):
-            atype = self.to_llvm_type(arg.type)
-            val = self.operand(arg)
-            unsigned = self._is_unsigned(arg.type)
-
-            if arg.type == "NoneType":
-                none_global = self._string_global("None")
-                ptr = f"{res}_none{i}"
-                lines.append(f"{ptr} = getelementptr inbounds [5 x i8], [5 x i8]* {none_global}, i64 0, i64 0")
-                spec = "%s"
-                call_args.append(f"i8* {ptr}")
-            elif atype in ("i8", "i16", "i32", "i64"):
-                if atype == "i64":
-                    spec = "%llu" if unsigned else "%lld"
-                    call_args.append(f"i64 {val}")
-                else:
-                    spec = "%u" if unsigned else "%d"
-                    if atype != "i32":
-                        ext = f"{res}_ext{i}"
-                        lines.append(f"{ext} = {'zext' if unsigned else 'sext'} {atype} {val} to i32")
-                        val = ext
-                    call_args.append(f"i32 {val}")
-            elif atype == "i256":
-                self.used_bigint_helpers.add("u256" if unsigned else "i256")
-                helper = "__threadon_to_string_u256" if unsigned else "__threadon_to_string_i256"
-                buf = f"{res}_b{i}"
-                ptr = f"{res}_p{i}"
-                tmp = f"{res}_s{i}"
-                lines.append(f"{buf} = alloca [256 x i8], align 8")
-                lines.append(f"{ptr} = getelementptr [256 x i8], [256 x i8]* {buf}, i64 0, i64 0")
-                lines.append(f"{tmp} = call i8* @{helper}(i256 {val}, i8* {ptr})")
-                spec = "%s"
-                call_args.append(f"i8* {tmp}")
-            elif atype == "i1":
-                spec = "%d"
-                btmp = f"{res}_b{i}"
-                lines.append(f"{btmp} = zext i1 {val} to i32")
-                call_args.append(f"i32 {btmp}")
-            elif atype == "i8*":
-                spec = "%s"
-                call_args.append(f"i8* {val}")
-            elif atype in ("half", "float"):
-                spec = "%f"
-                ext = f"{res}_fext{i}"
-                lines.append(f"{ext} = fpext {atype} {val} to double")
-                call_args.append(f"double {ext}")
-            elif atype == "double":
-                spec = "%f"
-                call_args.append(f"double {val}")
-            elif isinstance(arg.type, str) and arg.type.startswith("List["):
-                elem_t = arg.type[5:-1]
-                tag = re.sub(r"[^A-Za-z0-9]", "_", elem_t)
-                self.used_list_print.add(elem_t)
-                spec = "%s"
-                tmp = f"{res}_list{i}"
-                lines.append(
-                    f"{tmp} = call i8* @__threadon_list_str_{tag}({atype} {val})"
-                )
-                call_args.append(f"i8* {tmp}")
-            elif atype.startswith("%struct."):
-                str_func = self._class_str_function(arg.type)
-                if str_func:
-                    stmp = f"{res}_str{i}"
-                    owner = str_func.rsplit(".", 1)[0]
-                    if owner != arg.type:
-                        owner_llvm = self.to_llvm_type(owner)
-                        sub_counter = [0]
-
-                        def mk_up(base):
-                            sub_counter[0] += 1
-                            return f"{res}_{base}{i}_{sub_counter[0]}"
-
-                        upv = self._upcast_struct(lines, val, arg.type, owner, mk_up)
-                        lines.append(
-                            f"{stmp} = call i8* @{str_func}({owner_llvm} {upv})"
-                        )
-                    else:
-                        lines.append(
-                            f"{stmp} = call i8* @{str_func}({atype} {val})"
-                        )
-                else:
-                    tag = re.sub(r"[^A-Za-z0-9]", "_", arg.type)
-                    self.used_struct_print.add(arg.type)
-                    stmp = f"{res}_st{i}"
-                    lines.append(
-                        f"{stmp} = call i8* @__threadon_struct_str_{tag}({atype} {val})"
-                    )
-                spec = "%s"
-                call_args.append(f"i8* {stmp}")
-            else:
-                raise Exception(f"print: unsupported type {atype}")
-
+            spec, call_arg = self._print_arg_lines(res, arg, i, lines)
             specs.append(spec)
+            call_args.append(call_arg)
 
         fmt = " ".join(specs) + "\n"
         fmt_global = self._string_global(fmt)
@@ -1488,6 +1723,160 @@ class LLVMIRCompiler:
         arg_str = ", " + ", ".join(call_args) if call_args else ""
         lines.append(f"call i32 (i8*, ...) @printf(i8* {ptr}{arg_str})")
         return lines
+
+    def _print_arg_lines(self, res, arg, i, lines):
+        atype = self.to_llvm_type(arg.type)
+        val = self.operand(arg)
+        unsigned = self._is_unsigned(arg.type)
+
+        if arg.type == "NoneType":
+            none_global = self._string_global("None")
+            ptr = f"{res}_none{i}"
+            lines.append(f"{ptr} = getelementptr inbounds [5 x i8], [5 x i8]* {none_global}, i64 0, i64 0")
+            spec = "%s"
+            return spec, f"i8* {ptr}"
+        if atype in ("i8", "i16", "i32", "i64"):
+            if atype == "i64":
+                spec = "%llu" if unsigned else "%lld"
+                return spec, f"i64 {val}"
+            spec = "%u" if unsigned else "%d"
+            if atype != "i32":
+                ext = f"{res}_ext{i}"
+                lines.append(f"{ext} = {'zext' if unsigned else 'sext'} {atype} {val} to i32")
+                val = ext
+            return spec, f"i32 {val}"
+        if atype == "i256":
+            self.used_bigint_helpers.add("u256" if unsigned else "i256")
+            helper = "__threadon_to_string_u256" if unsigned else "__threadon_to_string_i256"
+            buf = f"{res}_b{i}"
+            ptr = f"{res}_p{i}"
+            tmp = f"{res}_s{i}"
+            lines.append(f"{buf} = alloca [256 x i8], align 8")
+            lines.append(f"{ptr} = getelementptr [256 x i8], [256 x i8]* {buf}, i64 0, i64 0")
+            lines.append(f"{tmp} = call i8* @{helper}(i256 {val}, i8* {ptr})")
+            return "%s", f"i8* {tmp}"
+        if atype == "i1":
+            btmp = f"{res}_b{i}"
+            lines.append(f"{btmp} = zext i1 {val} to i32")
+            return "%d", f"i32 {btmp}"
+        if atype == "i8*":
+            return "%s", f"i8* {val}"
+        if atype in ("half", "float"):
+            ext = f"{res}_fext{i}"
+            lines.append(f"{ext} = fpext {atype} {val} to double")
+            return "%f", f"double {ext}"
+        if atype == "double":
+            return "%f", f"double {val}"
+        if isinstance(arg.type, str) and arg.type.startswith("List["):
+            elem_t = arg.type[5:-1]
+            tag = re.sub(r"[^A-Za-z0-9]", "_", elem_t)
+            self.used_list_print.add(elem_t)
+            tmp = f"{res}_list{i}"
+            lines.append(
+                f"{tmp} = call i8* @__threadon_list_str_{tag}({atype} {val})"
+            )
+            return "%s", f"i8* {tmp}"
+        if atype.startswith("%struct."):
+            str_func = self._class_str_function(arg.type)
+            if str_func:
+                stmp = f"{res}_str{i}"
+                owner = str_func.rsplit(".", 1)[0]
+                if owner != arg.type:
+                    owner_llvm = self.to_llvm_type(owner)
+                    sub_counter = [0]
+
+                    def mk_up(base):
+                        sub_counter[0] += 1
+                        return f"{res}_{base}{i}_{sub_counter[0]}"
+
+                    upv = self._upcast_struct(lines, val, arg.type, owner, mk_up)
+                    lines.append(
+                        f"{stmp} = call i8* @{str_func}({owner_llvm} {upv})"
+                    )
+                else:
+                    lines.append(
+                        f"{stmp} = call i8* @{str_func}({atype} {val})"
+                    )
+            else:
+                tag = re.sub(r"[^A-Za-z0-9]", "_", arg.type)
+                self.used_struct_print.add(arg.type)
+                stmp = f"{res}_st{i}"
+                lines.append(
+                    f"{stmp} = call i8* @__threadon_struct_str_{tag}({atype} {val})"
+                )
+            return "%s", f"i8* {stmp}"
+        raise Exception(f"print: unsupported type {atype}")
+
+    def _emit_union_print(self, res, args):
+        base = res.lstrip("%")
+        self.used_c_runtime.add("printf")
+        lines = []
+
+        merge = f"%{base}_merge"
+
+        union_args = []
+        for i, arg in enumerate(args):
+            if is_union_type(arg.type):
+                uty = self.to_llvm_type(arg.type)
+                val = self.operand(arg)
+                tag = f"%{base}_tag{i}"
+                lines.append(f"{tag} = extractvalue {uty} {val}, 0")
+                union_args.append((i, tag, uty, val, union_members(arg.type)))
+
+        def recurse(depth, selections, out):
+            if depth >= len(union_args):
+                sub_lines = []
+                sub_specs = []
+                sub_call = []
+                pr_base = self._fresh_reg("pr")
+                for k, (arg, mtype) in enumerate(selections):
+                    a = arg
+                    if mtype is not None:
+                        a = SSAValue(self._fresh_reg("pv"), mtype)
+                    spec, call_arg = self._print_arg_lines(pr_base, a, k, sub_lines)
+                    sub_specs.append(spec)
+                    sub_call.append(call_arg)
+                out.extend(sub_lines)
+                fmt = " ".join(sub_specs) + "\n"
+                fmt_global = self._string_global(fmt)
+                size = len(fmt.encode("utf-8")) + 1
+                ptr = self._fresh_reg("fmt")
+                out.append(f"{ptr} = getelementptr inbounds [{size} x i8], [{size} x i8]* {fmt_global}, i64 0, i64 0")
+                arg_str = ", " + ", ".join(sub_call) if sub_call else ""
+                out.append(f"call i32 (i8*, ...) @printf(i8* {ptr}{arg_str})")
+                out.append(f"br label {merge}")
+                return
+            arg_idx, tag, uty, val, members = union_args[depth]
+            defl = self._fresh_label("udef")
+            out.append("")
+            out.append(f"switch i8 {tag}, label %{defl} [")
+            labels = []
+            for j in range(len(members)):
+                lab = self._fresh_label("un")
+                labels.append(lab)
+                out.append(f"  i8 {j}, label %{lab}")
+            out.append("]")
+            out.append("")
+            out.append(f"{defl}:")
+            out.append(f"  unreachable")
+            for j, m in enumerate(members):
+                out.append("")
+                out.append(f"{labels[j]}:")
+                mty = self.to_llvm_type(m)
+                vr = self._fresh_reg("mv")
+                out.append(f"  {vr} = extractvalue {uty} {val}, {j + 1}")
+                next_selections = [
+                    (a, mtype) for a, mtype in selections
+                ]
+                next_selections[arg_idx] = (SSAValue(vr, m), None)
+                recurse(depth + 1, next_selections, out)
+
+        recurse(0, [(arg, None) for arg in args], lines)
+
+        lines.append("")
+        lines.append(f"{base}_merge:")
+        return lines
+
     def _class_str_function(self, tname):
         cls = tname
         seen = set()

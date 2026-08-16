@@ -1,6 +1,12 @@
 from collections import defaultdict
 
-from .builtins import BUILTIN_SIGS
+from .builtins import (
+    BUILTIN_SIGS,
+    common_numeric_type,
+    is_union_type,
+    union_members,
+    union_str,
+)
 from .nodes import (
     Assign,
     AttrDecl,
@@ -441,6 +447,8 @@ class SSABuilder:
         self.ptr_vars = {}
         self.ref_vars = set()
 
+        self.var_types = {}
+
         self._if_seq = 0
 
         self._render_funcs = {}
@@ -507,6 +515,12 @@ class SSABuilder:
         if name in self.ptr_vars:
             ptr = self.ptr_vars[name]
 
+            if (
+                is_union_type(ptr.type.rstrip("*"))
+                and not is_union_type(value.type)
+            ):
+                value = self._wrap_union(value, ptr.type.rstrip("*"))
+
             self.current_block.add_instr(
                 IRInstr(
                     "store",
@@ -523,6 +537,79 @@ class SSABuilder:
             )
 
         self.env_stack[-1][name] = value
+
+    def _wrap_union(self, value, target_type):
+        """Wrap a concrete value into a union-typed target when needed."""
+        if is_union_type(target_type):
+            if (
+                is_union_type(value.type)
+                and value.type != target_type
+                and set(union_members(value.type)).issubset(
+                    union_members(target_type)
+                )
+            ):
+                v = self.new_temp(target_type)
+
+                self.current_block.add_instr(
+                    IRInstr(
+                        "union_retag",
+                        [target_type, value],
+                        result=v,
+                    )
+                )
+
+                return v
+
+            members = union_members(target_type)
+            if value.type in members and value.type != target_type:
+                v = self.new_temp(target_type)
+
+                self.current_block.add_instr(
+                    IRInstr(
+                        "union_init",
+                        [target_type, value.type, value],
+                        result=v,
+                    )
+                )
+
+                return v
+        return value
+
+    def _wrap_union_in_block(self, block, value, target_type):
+        """Wrap ``value`` into ``target_type`` inside ``block`` (before its
+        terminator). Used at phi-merge points where a variable must regain its
+        declared union type."""
+        if not is_union_type(target_type):
+            return value
+        if value.type == target_type:
+            return value
+        if (
+            is_union_type(value.type)
+            and set(union_members(value.type)).issubset(
+                union_members(target_type)
+            )
+        ):
+            v = self.new_temp(target_type)
+            block.add_instr(
+                IRInstr(
+                    "union_retag",
+                    [target_type, value],
+                    result=v,
+                )
+            )
+            return v
+        members = union_members(target_type)
+        if value.type in members:
+            v = self.new_temp(target_type)
+            block.add_instr(
+                IRInstr(
+                    "union_init",
+                    [target_type, value.type, value],
+                    result=v,
+                )
+            )
+            return v
+        return value
 
 
     def _emit_stmt_list(self, stmts):
@@ -710,6 +797,8 @@ class SSABuilder:
             )
         )
 
+        init_val = self._wrap_union(init_val, var_type)
+
         self.current_block.add_instr(
             IRInstr(
                 "store",
@@ -753,6 +842,8 @@ class SSABuilder:
 
         for pname, ptype, _ in func_ast.params:
             val = self.new_temp(ptype)
+
+            self.var_types[pname] = ptype
 
             self.set_var(
                 pname,
@@ -816,6 +907,8 @@ class SSABuilder:
             self.emit_expr(node.expr)
 
     def emit_var_decl(self, node):
+        self.var_types[node.name] = node.var_type
+
         if node.expr is None:
             val = self.new_temp(
                 node.var_type
@@ -892,6 +985,13 @@ class SSABuilder:
 
         rhs = self.emit_expr(node.expr)
 
+        if (
+            is_union_type(rhs.type)
+            and is_union_type(node.var_type)
+            and rhs.type != node.var_type
+        ):
+            rhs = self._wrap_union(rhs, node.var_type)
+
         if node.name in self.ref_vars:
             self._promote_to_alloca(
                 node.name,
@@ -906,6 +1006,15 @@ class SSABuilder:
 
     def emit_assign(self, node):
         rhs = self.emit_expr(node.expr)
+
+        var_type = self.var_types.get(node.name)
+        if (
+            is_union_type(rhs.type)
+            and is_union_type(var_type)
+            and rhs.type != var_type
+        ):
+            rhs = self._wrap_union(rhs, var_type)
+
         self.set_var(
             node.name,
             rhs,
@@ -1064,6 +1173,14 @@ class SSABuilder:
             node.value
         )
 
+        ret_type = getattr(
+            self.current_func,
+            "return_type",
+            None,
+        )
+        if ret_type is not None:
+            val = self._wrap_union(val, ret_type)
+
         if val.type == "NoneType":
             self.current_block.set_terminator(
                 IRInstr(
@@ -1203,7 +1320,7 @@ class SSABuilder:
                 )
 
                 merge_preds.append(
-                    (bb.label, env)
+                    (bb, env)
                 )
 
         if has_else:
@@ -1228,7 +1345,7 @@ class SSABuilder:
                 )
 
                 merge_preds.append(
-                    (else_block.label, env)
+                    (else_block, env)
                 )
 
         else:
@@ -1241,7 +1358,7 @@ class SSABuilder:
 
             merge_preds.append(
                 (
-                    fallthrough.label,
+                    fallthrough,
                     parent_env,
                 )
             )
@@ -1295,13 +1412,61 @@ class SSABuilder:
                 merge_env[var] = vals[0]
 
             else:
+                declared = self.var_types.get(var)
+
+                if (
+                    is_union_type(declared)
+                    and all(
+                        v.type == declared
+                        or (
+                            is_union_type(v.type)
+                            and set(union_members(v.type)).issubset(
+                                union_members(declared)
+                            )
+                        )
+                        or (
+                            not is_union_type(v.type)
+                            and v.type in union_members(declared)
+                        )
+                        for v in vals
+                    )
+                ):
+                    wrap_vals = []
+                    for k, v in enumerate(vals):
+                        wrap_vals.append(
+                            self._wrap_union_in_block(
+                                merge_preds[k][0], v, declared
+                            )
+                        )
+
+                    res = self.new_temp(declared)
+
+                    incoming = [
+                        (
+                            merge_preds[k][0].label,
+                            wrap_vals[k],
+                        )
+                        for k in range(len(wrap_vals))
+                    ]
+
+                    phi = IRPhi(
+                        res,
+                        incoming,
+                    )
+
+                    merge.add_instr(phi)
+
+                    merge_env[var] = res
+
+                    continue
+
                 res = self.new_temp(
                     vals[0].type
                 )
 
                 incoming = [
                     (
-                        merge_preds[k][0],
+                        merge_preds[k][0].label,
                         vals[k],
                     )
                     for k in range(len(vals))
@@ -1388,8 +1553,22 @@ class SSABuilder:
         for var in sorted(loop_vars):
             initial = parent_env[var]
 
+            declared = self.var_types.get(var)
+
+            if (
+                is_union_type(declared)
+                and initial.type in union_members(declared)
+            ):
+                phi_type = declared
+                entry_val = self._wrap_union_in_block(
+                    entry_block, initial, declared
+                )
+            else:
+                phi_type = initial.type
+                entry_val = initial
+
             result = self.new_temp(
-                initial.type
+                phi_type
             )
 
             phi = IRPhi(
@@ -1397,7 +1576,7 @@ class SSABuilder:
                 [
                     (
                         entry_block.label,
-                        initial,
+                        entry_val,
                     )
                 ],
             )
@@ -1484,6 +1663,48 @@ class SSABuilder:
                     var,
                     body_end,
                 )
+
+                declared = self.var_types.get(var)
+
+                if (
+                    is_union_type(declared)
+                    and is_union_type(phi.result.type)
+                ):
+                    latch_val = self._wrap_union_in_block(
+                        latch_block, back_val, declared
+                    )
+
+                    phi.incoming.append(
+                        (
+                            back_label,
+                            latch_val,
+                        )
+                    )
+
+                    phi.args = [
+                        value
+                        for _, value in phi.incoming
+                    ]
+
+                    if isinstance(
+                        latch_val,
+                        SSAValue,
+                    ):
+                        if phi not in latch_val.users:
+                            latch_val.users.append(
+                                phi
+                            )
+
+                    if isinstance(
+                        back_val,
+                        SSAValue,
+                    ):
+                        if phi not in back_val.users:
+                            back_val.users.append(
+                                phi
+                            )
+
+                    continue
 
                 phi.incoming.append(
                     (
@@ -1924,6 +2145,15 @@ class SSABuilder:
             self_slots=True,
         )
 
+        params = self.func_params.get(
+            expr.func_name
+        )
+        if params is not None:
+            args = [
+                self._wrap_union(a, params[i + 1][1])
+                for i, a in enumerate(args)
+            ]
+
         ret_type = self.func_returns.get(
             expr.func_name,
             expr.ret_type or "Unknown",
@@ -1977,6 +2207,15 @@ class SSABuilder:
             args,
             self_slots=True,
         )
+
+        params = self.func_params.get(
+            init_name
+        )
+        if params is not None:
+            args = [
+                self._wrap_union(a, params[i + 1][1])
+                for i, a in enumerate(args)
+            ]
 
         ret_type = self.func_returns.get(
             init_name,
@@ -2121,11 +2360,21 @@ class SSABuilder:
                 expr.op,
             )
 
-            vtype = (
-                "Bool"
-                if op.startswith("cmp_")
-                else left.type
-            )
+            if op.startswith("cmp_"):
+                vtype = "Bool"
+            elif is_union_type(left.type) or is_union_type(right.type):
+                lms = union_members(left.type) if is_union_type(left.type) else [left.type]
+                rms = union_members(right.type) if is_union_type(right.type) else [right.type]
+                result_members = set()
+                for lm in lms:
+                    for rm in rms:
+                        result_members.add(common_numeric_type(lm, rm))
+                if len(result_members) == 1:
+                    vtype = result_members.pop()
+                else:
+                    vtype = union_str(result_members)
+            else:
+                vtype = left.type
 
             v = self.new_temp(vtype)
 
@@ -2163,6 +2412,11 @@ class SSABuilder:
                     args.append(
                         self.emit_expr(default)
                     )
+
+                args = [
+                    self._wrap_union(a, params[i][1])
+                    for i, a in enumerate(args)
+                ]
 
             ret_type = self.func_returns.get(
                 expr.func_name

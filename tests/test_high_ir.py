@@ -1,6 +1,7 @@
 import pytest
 
 from compiler.checker import CombinedChecker
+from compiler.builtins import is_union_type
 from compiler.parser import Parser
 from compiler.to_high_ir import IRPhi, SSABuilder
 
@@ -870,3 +871,89 @@ def main() -> Int32
     struct_inits = entry_instrs(main, "struct_init")
     assert len(struct_inits) == 1
     assert struct_inits[0].args[0] == "Car"
+
+
+def test_union_narrowing_stores_concrete_value():
+    module = build_module(
+        """
+def f() -> Int32
+    a: Int | Float = 5
+    return 0
+"""
+    )
+    f = get_func(module, "f")
+    entry = f.block_map["entry"]
+    ops = [i.op for i in entry.instructions]
+    assert "union_init" not in ops
+    assert any(i.op == "const" and i.result.type == "Int32" for i in entry.instructions)
+
+
+def test_union_merge_phi_is_union_typed():
+    module = build_module(
+        """
+def f(c: Bool) -> Int32
+    x: Int | Float = 5
+    if c:
+        x = 2.5
+    else:
+        x = 7
+    return 0
+"""
+    )
+    f = get_func(module, "f")
+    merge = f.block_map["merge"]
+    phis = [i for i in merge.instructions if isinstance(i, IRPhi)]
+    union_phis = [i for i in phis if is_union_type(i.result.type)]
+    assert len(union_phis) == 1
+    assert union_phis[0].result.type == "Union[Float16|Float32|Float64|Int16|Int256|Int32|Int64|Int8|UInt16|UInt256|UInt32|UInt64|UInt8]"
+
+
+def test_union_merge_wraps_member_values_in_predecessors():
+    module = build_module(
+        """
+def f(c: Bool) -> Int32
+    x: Int | Float = 5
+    if c:
+        x = 2.5
+    else:
+        x = 7
+    return 0
+"""
+    )
+    f = get_func(module, "f")
+    ifbody = f.block_map["ifbody0"]
+    elsebody = f.block_map["elsebody"]
+    assert any(i.op == "union_init" for i in ifbody.instructions)
+    assert any(i.op == "union_init" for i in elsebody.instructions)
+
+
+def test_union_loop_phi_is_union_typed():
+    module = build_module(
+        """
+def f(n: Int32) -> Int32
+    x: Int | Float = 1
+    while n > 0:
+        x = x + 1
+        n = n - 1
+    return 0
+"""
+    )
+    f = get_func(module, "f")
+    cond = f.block_map["whilecond"]
+    phis = [i for i in cond.instructions if isinstance(i, IRPhi)]
+    union_phis = [i for i in phis if is_union_type(i.result.type)]
+    assert len(union_phis) == 1
+
+
+def test_union_return_of_subset_union_retagged():
+    module = build_module(
+        """
+def f(x: Int | Float) -> Int | Float
+    return x + 1
+"""
+    )
+    f = get_func(module, "f")
+    entry = f.block_map["entry"]
+    ops = [i.op for i in entry.instructions]
+    assert "union_retag" in ops
+    assert entry.terminator.op == "ret"

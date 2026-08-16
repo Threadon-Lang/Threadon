@@ -4,6 +4,13 @@ from .builtins import (
     FLOAT_TYPES,
     NUMERIC_TYPES,
     builtin_return_type,
+    common_numeric_type,
+    expand_type,
+    group_members,
+    is_group,
+    is_union_type,
+    union_members,
+    union_str,
 )
 from .importer import Importer, ImporterError
 from .lexer import Token, TokenType, lex_lines
@@ -304,25 +311,52 @@ class Parser:
 
     def pop_scope_merge(self):
         branch = self.scopes.pop()
+        declared = self.var_declared_stack.pop()
+        modified = self.modified_stack.pop()
         if self.scopes:
             self.scopes[-1].update(branch)
+            self.var_declared_stack[-1].update(declared)
+            self.modified_stack[-1].update(modified)
 
     def push_scope(self):
         self.scopes.append({})
+        self.var_declared_stack.append({})
+        self.modified_stack.append(set())
 
     def pop_scope(self):
         self.scopes.pop()
+        self.var_declared_stack.pop()
+        self.modified_stack.pop()
 
     def declare_var(self, name, type_):
         if name in self.scopes[-1]:
             self.give_error(f"Variable '{name}' already declared in this scope")
         self.scopes[-1][name] = type_
+        self.var_declared_stack[-1][name] = type_
+
+    def _narrow_var(self, name, expr_type, declared=None):
+        if declared is None:
+            declared = self.var_declared_stack[-1].get(name, expr_type)
+        if (
+            is_union_type(declared)
+            and not is_union_type(expr_type)
+            and expr_type in union_members(declared)
+        ):
+            self.scopes[-1][name] = expr_type
+        else:
+            self.scopes[-1][name] = declared
 
     def lookup_var(self, name):
         for scope in reversed(self.scopes):
             if name in scope:
                 return scope[name]
         self.give_error(f"Unknown variable '{name}'")
+
+    def _lookup_declared(self, name):
+        for stack in reversed(self.var_declared_stack):
+            if name in stack:
+                return stack[name]
+        return None
 
     def parse_line(self):
         if not self.current_line:
@@ -660,8 +694,8 @@ class Parser:
             self.give_error(f"Unknown type '{tok.value}' in {ctx}")
         self.give_error(f"Expected a type in {ctx}")
 
-    def parse_type_from_tokens(self, tokens, ctx, start=0):
-        """Parse a type starting at ``tokens[start]``.
+    def _parse_type_atom(self, tokens, ctx, start=0):
+        """Parse a single (non-union) type starting at ``tokens[start]``.
 
         Returns ``(type_str, next_index)``. Supports primitives, dotted
         struct names and ``List[T]``.
@@ -689,8 +723,14 @@ class Parser:
                 self.give_error("Unmatched '[' in type")
 
             elem_type, _ = self.parse_type_from_tokens(
-                tokens[start + 2:end], ctx, 0
+                tokens[start + 2:end], ctx, 0, allow_union=False
             )
+            if elem_type is not None and (
+                is_group(elem_type) or is_union_type(elem_type)
+            ):
+                self.give_error(
+                    f"List element type cannot be a type group or union in {ctx}"
+                )
             return f"List[{elem_type}]", end + 1
 
         if tok.type == TokenType.TYPE:
@@ -712,6 +752,62 @@ class Parser:
             self.give_error(f"Unknown type '{'.'.join(parts)}' in {ctx}")
 
         self.give_error(f"Expected a type in {ctx}")
+
+    def _normalize_union(self, members, ctx):
+        if not members:
+            self.give_error(f"Expected a type in {ctx}")
+        seen = set()
+        result = []
+        for m in members:
+            if m in seen:
+                continue
+            if not self._is_valid_type(m):
+                self.give_error(f"Unknown type '{m}' in {ctx}")
+            seen.add(m)
+            result.append(m)
+        result.sort()
+        return result
+
+    def parse_type_from_tokens(self, tokens, ctx, start=0, allow_union=True):
+        """Parse a type starting at ``tokens[start]``.
+
+        Returns ``(type_str, next_index)``. Supports primitives, dotted
+        struct names, ``List[T]`` and type groups/unions like ``Int | Float``.
+        """
+        if start >= len(tokens):
+            self.give_error(f"Expected a type in {ctx}")
+
+        members = []
+
+        while True:
+            atom, next_idx = self._parse_type_atom(tokens, ctx, start)
+
+            if is_group(atom):
+                members.extend(group_members(atom))
+            elif is_union_type(atom):
+                members.extend(union_members(atom))
+            else:
+                members.append(atom)
+
+            if (
+                next_idx < len(tokens)
+                and tokens[next_idx].type == TokenType.PIPE
+            ):
+                if not allow_union:
+                    self.give_error("Union types are not allowed here")
+                start = next_idx + 1
+                if start >= len(tokens):
+                    self.give_error(f"Expected a type after '|' in {ctx}")
+                continue
+
+            break
+
+        members = self._normalize_union(members, ctx)
+
+        if len(members) == 1:
+            return members[0], next_idx
+
+        return union_str(members), next_idx
 
     def import_member(self, module_path, member):
         mod = self._load_module(module_path)
@@ -780,6 +876,8 @@ class Parser:
         self._in_init = False
 
         self.scopes = []
+        self.var_declared_stack = []
+        self.modified_stack = []
         self.push_scope()
 
         try:
@@ -851,7 +949,7 @@ class Parser:
             self.read_line()
 
             if cleaned[0].type == TokenType.IDENT and len(cleaned) > 1 and cleaned[1].type == TokenType.COLON:
-                fields.append(self.parse_variable_decl())
+                fields.append(self.parse_variable_decl(allow_union=False))
             else:
                 self.give_error("Struct body may only contain variable declarations")
 
@@ -975,7 +1073,7 @@ class Parser:
             ):
                 fname = cleaned[2].value
                 ftype, _ = self.parse_type_from_tokens(
-                    cleaned, "class field declaration", 4
+                    cleaned, "class field declaration", 4, allow_union=False
                 )
                 if (
                     fname in own_fields
@@ -994,7 +1092,7 @@ class Parser:
             ):
                 fname = cleaned[0].value
                 ftype, next_idx = self.parse_type_from_tokens(
-                    cleaned, "class field declaration", 2
+                    cleaned, "class field declaration", 2, allow_union=False
                 )
                 if (
                     next_idx < len(cleaned)
@@ -1214,7 +1312,7 @@ class Parser:
         field = tokens[2].value
         i = 4
         ftype, i = self.parse_type_from_tokens(
-            tokens, "self field declaration", i
+            tokens, "self field declaration", i, allow_union=False
         )
 
         expr = None
@@ -1311,6 +1409,7 @@ class Parser:
 
         body = self.parse_block(parent_indent)
         branch_scopes = [self.scopes.pop()]
+        branch_modified = [self.modified_stack.pop()]
 
         elif_blocks = []
 
@@ -1350,6 +1449,7 @@ class Parser:
 
             elif_body = self.parse_block(parent_indent)
             branch_scopes.append(self.scopes.pop())
+            branch_modified.append(self.modified_stack.pop())
             elif_blocks.append((cond, elif_body))
 
         else_body = None
@@ -1373,6 +1473,7 @@ class Parser:
 
                 else_body = self.parse_block(parent_indent)
                 branch_scopes.append(self.scopes.pop())
+                branch_modified.append(self.modified_stack.pop())
                 has_else = True
 
         if has_else:
@@ -1381,6 +1482,13 @@ class Parser:
                 common &= set(s)
             for name in common:
                 self.scopes[-1][name] = branch_scopes[0][name]
+
+        for bm in branch_modified:
+            for name in bm:
+                if name in self.scopes[-1]:
+                    self.scopes[-1][name] = self.var_declared_stack[-1].get(
+                        name, self.scopes[-1][name]
+                    )
 
         return IfStmt(condition, body, elif_blocks, else_body)
 
@@ -1410,7 +1518,14 @@ class Parser:
             self.give_error(f"While condition must be Bool, got {cond_type}")
 
         body = self.parse_block(parent_indent)
+        body_modified = self.modified_stack[-1]
         self.pop_scope()
+
+        for name in body_modified:
+            if name in self.scopes[-1]:
+                self.scopes[-1][name] = self.var_declared_stack[-1].get(
+                    name, self.scopes[-1][name]
+                )
 
         return WhileStmt(condition, body)
 
@@ -2088,16 +2203,18 @@ class Parser:
                     self.give_error("Operator 'not' requires Bool")
                 return "Bool"
 
-            if expr.op == "-":
+            if expr.op in ("-", "+"):
                 inner = self.detect_expr_type(expr.expr)
+                if is_union_type(inner):
+                    for m in union_members(inner):
+                        if m not in NUMERIC_TYPES:
+                            self.give_error(
+                                f"Unary '{expr.op}' requires numeric type, "
+                                f"got {inner}"
+                            )
+                    return inner
                 if inner not in NUMERIC_TYPES:
                     self.give_error("Unary '-' requires numeric type")
-                return inner
-
-            if expr.op == "+":
-                inner = self.detect_expr_type(expr.expr)
-                if inner not in NUMERIC_TYPES:
-                    self.give_error("Unary '+' requires numeric type")
                 return inner
 
         if t == "CallExpr":
@@ -2137,11 +2254,13 @@ class Parser:
                 if not self._is_valid_type(param_type):
                     self.give_error(f"Unknown type '{var_type}'")
                 if arg_type != param_type:
-                    if not self._try_adapt_literal(arg_expr, arg_type, param_type):
-                        self.give_error(
-                            f"Function '{func_name}' argument '{param_name}' "
-                            f"expects type {param_type}, got {arg_type}"
-                        )
+                    if not self._check_assign(arg_expr, arg_type, param_type,
+                                              f"Argument '{param_name}'"):
+                        if not self._try_adapt_literal(arg_expr, arg_type, param_type):
+                            self.give_error(
+                                f"Function '{func_name}' argument '{param_name}' "
+                                f"expects type {param_type}, got {arg_type}"
+                            )
 
             return return_type
 
@@ -2149,28 +2268,42 @@ class Parser:
             left = self.detect_expr_type(expr.left)
             right = self.detect_expr_type(expr.right)
 
-            if left != right:
-                if self._try_adapt_literal(expr.left, left, right):
-                    left = right
-                elif self._try_adapt_literal(expr.right, right, left):
-                    right = left
+            if is_union_type(left) or is_union_type(right):
+                lms = union_members(left) if is_union_type(left) else [left]
+                rms = union_members(right) if is_union_type(right) else [right]
 
-            if expr.op in ("<", ">", "<=", ">=", "==", "!="):
-                if left != right:
-                    self.give_error(f"Type mismatch in comparison: {left} vs {right}")
-                return "Bool"
+                if expr.op in ("and", "or"):
+                    self.give_error(
+                        "Boolean operators require Bool operands, "
+                        f"not {left} vs {right}"
+                    )
 
-            if expr.op in ("and", "or"):
-                if left != "Bool" or right != "Bool":
-                    self.give_error("Boolean operators require Bool operands")
-                return "Bool"
+                if expr.op in ("<", ">", "<=", ">=", "==", "!="):
+                    for lm in lms:
+                        for rm in rms:
+                            if common_numeric_type(lm, rm) is None:
+                                self.give_error(
+                                    f"Type mismatch in comparison: "
+                                    f"{left} vs {right}"
+                                )
+                    return "Bool"
 
-            if expr.op in ("+", "-", "*", "/", "**", "%", "//"):
-                if left != right:
-                    self.give_error(f"Type mismatch in arithmetic: {left} vs {right}")
-        if t == "BinaryExpr":
-            left = self.detect_expr_type(expr.left)
-            right = self.detect_expr_type(expr.right)
+                if expr.op in ("+", "-", "*", "/", "**", "%", "//"):
+                    result_members = set()
+                    for lm in lms:
+                        for rm in rms:
+                            common = common_numeric_type(lm, rm)
+                            if common is None:
+                                self.give_error(
+                                    f"Type mismatch in arithmetic: "
+                                    f"{left} vs {right}"
+                                )
+                            result_members.add(common)
+                    if len(result_members) == 1:
+                        return result_members.pop()
+                    return union_str(result_members)
+
+                self.give_error(f"Unknown operator '{expr.op}'")
 
             if left != right:
                 if self._try_adapt_literal(expr.left, left, right):
@@ -2199,16 +2332,17 @@ class Parser:
                         is_zero = (val == 0)
                     elif type(expr.right).__name__ == "LiteralExpr" and expr.right.value.value == "0":
                         is_zero = True
-                    
+
                     if is_zero:
                         self.give_error("Division by zero is not allowed")
                 return left
 
             self.give_error(f"Unknown operator '{expr.op}'")
-            self.give_error(f"Unknown operator '{expr.op}'")
         if t == "CastExpr":
             inner_type = self.detect_expr_type(expr.expr)
             numeric_or_str = NUMERIC_TYPES + ("String", "Bool")
+            if is_union_type(inner_type):
+                self.give_error(f"Cannot cast type '{inner_type}' to '{expr.target_type}'")
             if inner_type not in numeric_or_str:
                 self.give_error(f"Cannot cast type '{inner_type}' to '{expr.target_type}'")
             if expr.target_type not in NUMERIC_TYPES + ("Bool", "String"):
@@ -2261,11 +2395,13 @@ class Parser:
                 if not self._is_valid_type(param_type):
                     self.give_error(f"Unknown type '{param_type}'")
                 if arg_type != param_type:
-                    if not self._try_adapt_literal(arg_expr, arg_type, param_type):
-                        self.give_error(
-                            f"Method '{expr.method}' argument '{param_name}' "
-                            f"expects type {param_type}, got {arg_type}"
-                        )
+                    if not self._check_assign(arg_expr, arg_type, param_type,
+                                              f"Argument '{param_name}'"):
+                        if not self._try_adapt_literal(arg_expr, arg_type, param_type):
+                            self.give_error(
+                                f"Method '{expr.method}' argument '{param_name}' "
+                                f"expects type {param_type}, got {arg_type}"
+                            )
 
             expr.ret_type = ret_type
             return ret_type
@@ -2298,12 +2434,14 @@ class Parser:
                     if not self._is_valid_type(param_type):
                         self.give_error(f"Unknown type '{param_type}'")
                     if arg_type != param_type:
-                        if not self._try_adapt_literal(arg_expr, arg_type, param_type):
-                            self.give_error(
-                                f"Class '{class_name}' '__init__' argument "
-                                f"'{param_name}' expects type {param_type}, "
-                                f"got {arg_type}"
-                            )
+                        if not self._check_assign(arg_expr, arg_type, param_type,
+                                                  f"Argument '{param_name}'"):
+                            if not self._try_adapt_literal(arg_expr, arg_type, param_type):
+                                self.give_error(
+                                    f"Class '{class_name}' '__init__' argument "
+                                    f"'{param_name}' expects type {param_type}, "
+                                    f"got {arg_type}"
+                                )
             elif expr.args:
                 self.give_error(
                     f"Class '{class_name}' has no '__init__' taking arguments"
@@ -2417,24 +2555,25 @@ class Parser:
         detected = self.detect_expr_type(expr)
 
         if detected != self.return_type:
-            if not self._try_adapt_literal(expr, detected, self.return_type):
-                self.give_error(f"Expected {self.return_type}, got {detected}")
+            if not self._check_assign(expr, detected, self.return_type,
+                                      "Return statement"):
+                if not self._try_adapt_literal(expr, detected, self.return_type):
+                    self.give_error(f"Expected {self.return_type}, got {detected}")
 
         return ReturnStmt(self.return_type, expr)
-    def parse_variable_decl(self):
+    def parse_variable_decl(self, allow_union=True):
         tokens = self.current_line
 
         name = tokens[0].value
 
         i = 2
         var_type, i = self.parse_type_from_tokens(
-            tokens, "variable declaration", i
+            tokens, "variable declaration", i, allow_union=allow_union
         )
 
         if i >= len(tokens):
             self.declare_var(name, var_type)
             return VarDecl(name, var_type, None)
-
         expr_tokens = tokens[i + 1:]
 
         if (
@@ -2461,28 +2600,60 @@ class Parser:
         if not self._is_valid_type(var_type):
             self.give_error(f"Unknown type '{var_type}'")
         if detected != var_type:
-            is_literal = (
-                self._is_const_int_expr(expr) and var_type in self._INT_TYPES
-            ) or (
-                self._is_const_float_expr(expr) and var_type in self._FLOAT_TYPES
-            )
-
-            if is_literal:
-                self._set_expr_type(expr, var_type)
-                self._check_literal_range(expr,var_type)
-            elif self._try_adapt_literal(expr, detected, var_type):
+            if self._check_assign(expr, detected, var_type,
+                                  f"Variable '{name}'"):
                 pass
             else:
-                self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
+                is_literal = (
+                    self._is_const_int_expr(expr) and var_type in self._INT_TYPES
+                ) or (
+                    self._is_const_float_expr(expr) and var_type in self._FLOAT_TYPES
+                )
+
+                if is_literal:
+                    self._set_expr_type(expr, var_type)
+                    self._check_literal_range(expr,var_type)
+                elif self._try_adapt_literal(expr, detected, var_type):
+                    pass
+                else:
+                    self.give_error(f"Variable '{name}' expects type {var_type}, got {detected}")
         if isinstance(expr, RefExpr) and isinstance(expr.inner, VarExpr):
             self.aliases[name] = expr.inner.name
 
         self.declare_var(name, var_type)
+        self._narrow_var(name, detected, var_type)
+        self.modified_stack[-1].add(name)
 
         return VarDecl(name, var_type, expr)
 
     _INT_TYPES = ALL_INT_TYPES
     _FLOAT_TYPES = FLOAT_TYPES
+
+    def _check_assign(self, expr, value_type, target_type, what):
+        """Strict compile-time check when assigning ``value_type`` to a
+        ``target_type``. Returns True when the value is accepted; raises a
+        compile error otherwise. Only union-typed targets are handled here;
+        concrete targets fall through to the literal-adaptation logic."""
+        if is_union_type(target_type):
+            members = union_members(target_type)
+            if is_union_type(value_type):
+                if value_type == target_type:
+                    return True
+                if set(union_members(value_type)).issubset(members):
+                    return True
+                self.give_error(
+                    f"{what} expects type {target_type}, got {value_type}"
+                )
+            if value_type in members:
+                return True
+            self.give_error(
+                f"{what} expects type {target_type}, got {value_type}"
+            )
+        if is_union_type(value_type):
+            self.give_error(
+                f"{what} expects type {target_type}, got {value_type}"
+            )
+        return False
 
     def _is_const_expr(self, e):
         t = type(e).__name__
@@ -2494,6 +2665,10 @@ class Parser:
             return self._is_const_expr(e.expr)
         return False
     def _is_valid_type(self, t):
+        if is_group(t):
+            return True
+        if is_union_type(t):
+            return all(self._is_valid_type(m) for m in union_members(t))
         if t in VALID_PRIMITIVE_TYPES:
             return True
         if t in self.struct_defs:
@@ -2639,17 +2814,25 @@ class Parser:
         expr_tokens = tokens[2:]
         rhs = self.parse_expr(expr_tokens)
 
-        var_type = self.lookup_var(name)
+        current_type = self.lookup_var(name)
+        var_type = self._lookup_declared(name) or current_type
         rhs_type = self.detect_expr_type(rhs)
 
         if not self._is_valid_type(var_type):
             self.give_error(f"Unknown type '{var_type}'")
         if var_type != rhs_type:
-            self.give_error(
-                f"Variable '{name}' expects type {var_type}, got {rhs_type}"
-            )
+            if not self._check_assign(rhs, rhs_type, var_type,
+                                      f"Variable '{name}'"):
+                self.give_error(
+                    f"Variable '{name}' expects type {var_type}, got {rhs_type}"
+                )
 
         full_expr = BinaryExpr(VarExpr(name), op, rhs)
+
+        result_type = self.detect_expr_type(full_expr)
+
+        self._narrow_var(name, result_type, var_type)
+        self.modified_stack[-1].add(name)
 
         return Assign(name, full_expr)
 
@@ -2692,26 +2875,32 @@ class Parser:
         tokens = self.current_line
 
         name = tokens[0].value
-        var_type = self.lookup_var(name)
+        current_type = self.lookup_var(name)
+        var_type = self._lookup_declared(name) or current_type
 
         rhs = self.parse_expr(tokens[2:])
         rhs_type = self.detect_expr_type(rhs)
         if not self._is_valid_type(var_type):
             self.give_error(f"Unknown type '{var_type}'")
         if var_type != rhs_type:
-            if (
-                self._is_const_int_expr(rhs) and var_type in self._INT_TYPES
-            ) or (
-                self._is_const_float_expr(rhs) and var_type in self._FLOAT_TYPES
-            ):
-                self._set_expr_type(rhs, var_type)
-                self._check_literal_range(rhs,var_type)
-            elif self._try_adapt_literal(rhs, rhs_type, var_type):
-                pass
-            else:
-                self.give_error(
-                    f"Variable '{name}' expects type {var_type}, got {rhs_type}"
-                )
+            if not self._check_assign(rhs, rhs_type, var_type,
+                                      f"Variable '{name}'"):
+                if (
+                    self._is_const_int_expr(rhs) and var_type in self._INT_TYPES
+                ) or (
+                    self._is_const_float_expr(rhs) and var_type in self._FLOAT_TYPES
+                ):
+                    self._set_expr_type(rhs, var_type)
+                    self._check_literal_range(rhs,var_type)
+                elif self._try_adapt_literal(rhs, rhs_type, var_type):
+                    pass
+                else:
+                    self.give_error(
+                        f"Variable '{name}' expects type {var_type}, got {rhs_type}"
+                    )
+
+        self._narrow_var(name, rhs_type, var_type)
+        self.modified_stack[-1].add(name)
 
         return Assign(name, rhs)
 
