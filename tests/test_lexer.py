@@ -56,7 +56,7 @@ def test_keywords(kw, token):
 @pytest.mark.parametrize("typ", [
     "Int8", "Int16", "Int32",
     "Float16", "Float32",
-    "Boolean", "String"
+    "Bool", "String"
 ])
 def test_types(typ):
     tokens = lex(typ)
@@ -106,7 +106,7 @@ def test_indent_dedent():
 
 
 def test_function_signature():
-    code = "def func(x: Int8, y: Int32) -> Boolean\n    return True"
+    code = "def func(x: Int8, y: Int32) -> Bool\n    return True"
     tokens = lex(code)
 
     types = [t.type for t in tokens]
@@ -243,7 +243,7 @@ def test_mixed_operators_and_values():
 
 
 def test_function_no_params():
-    tokens = lex("def test() -> Boolean\n    return True")
+    tokens = lex("def test() -> Bool\n    return True")
     types = [t.type for t in tokens]
 
     assert TokenType.DEF in types
@@ -253,7 +253,7 @@ def test_function_no_params():
 
 
 def test_function_single_param():
-    tokens = lex("def test(x: Int32) -> Boolean\n    return False")
+    tokens = lex("def test(x: Int32) -> Bool\n    return False")
     types = [t.type for t in tokens]
 
     assert TokenType.TYPE in types
@@ -261,7 +261,7 @@ def test_function_single_param():
 
 
 def test_function_many_params():
-    tokens = lex("def test(a: Int8, b: Int16, c: Int32) -> Boolean\n    return True")
+    tokens = lex("def test(a: Int8, b: Int16, c: Int32) -> Bool\n    return True")
     types = [t.type for t in tokens]
 
     assert types.count(TokenType.TYPE) == 4
@@ -324,7 +324,7 @@ def test_power_token():
     assert tokens[1].value == "**"
 
 
-def test_boolean_literals():
+def test_Bool_literals():
     tokens = lex("True False")
     assert tokens[0].type == TokenType.TRUE
     assert tokens[0].value == "True"

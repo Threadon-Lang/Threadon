@@ -54,37 +54,37 @@ def toolchain_for(lang):
     raise ImporterError(f"unknown language '{lang}'")
 
 
-# --- compound type parsing -------------------------------------------------
-#
-# Manifest 'export' lines are whitespace-split. A bracketed compound type
-# like `List[Float64]` contains no internal whitespace, so it already
-# arrives as a single token. This gives that token structure so codegen
-# (both here and in the LLVM backend) knows how to lay it out and marshal
-# it across the native ABI: List[T] compiles to the LLVM struct
-# `{ i64, T* }` (see LLVMIRCompiler.to_llvm_type), i.e. a length field
-# followed by a pointer to a contiguous buffer of T. This is a plain
-# by-value struct passed/returned at the native call boundary -- there is
-# no separate "ThValue" or argc/argv convention for it.
+SCALAR_TYPES = {
+    "Int8", "Int16", "Int32", "Int64", 
+    "UInt8", "UInt16", "UInt32", "UInt64", 
+    "Float16", "Float32", "Float64", 
+    "Bool", "String", "NoneType"
+}
 
-SCALAR_TYPES = {"Float64", "Int64", "Bool", "String"}
-
-# Map from Threadon scalar type name to the corresponding C type used
-# when generating native wrapper code.
 C_SCALAR_TYPES = {
+    "Int8": "int8_t",
+    "Int16": "int16_t",
+    "Int32": "int32_t",
+    "Int64": "int64_t",
+    "UInt8": "uint8_t",
+    "UInt16": "uint16_t",
+    "UInt32": "uint32_t",
+    "UInt64": "uint64_t",
+    "Float16": "_Float16",
+    "Float32": "float",
     "Float64": "double",
-    "Int64": "long long",
     "Bool": "bool",
     "String": "char*",
+    "NoneType": "void",
 }
 
 
 class ThType:
-    """Parsed representation of a manifest type token, e.g. 'List[Float64]'
-    or 'Dict[String,Float64]'."""
+
 
     def __init__(self, kind, params=None):
-        self.kind = kind          # 'Float64' | 'Int64' | 'Bool' | 'String' | 'List' | 'Dict'
-        self.params = params or []  # nested ThType list
+        self.kind = kind
+        self.params = params or []
 
     def __repr__(self):
         if not self.params:
@@ -104,13 +104,13 @@ class ThType:
         return self.kind in SCALAR_TYPES
 
     def manifest_token(self):
-        """Reconstruct the manifest-style type token, e.g. 'List[Float64]'."""
+
         if not self.params:
             return self.kind
         return f"{self.kind}[{','.join(p.manifest_token() for p in self.params)}]"
 
     def elem(self):
-        """For List[T], returns the ThType of T."""
+
         if self.kind != "List":
             raise ImporterError(f"'{self!r}' is not a List type")
         return self.params[0]
@@ -130,7 +130,7 @@ _COMPOUND_RE = re.compile(r"^(List|Dict)\[(.+)\]$")
 
 
 def _split_top_level_commas(s, path):
-    """Split on commas that aren't nested inside another [...] group."""
+
     parts, depth, cur = [], 0, []
     for ch in s:
         if ch == "[":
@@ -153,12 +153,7 @@ def _split_top_level_commas(s, path):
 
 
 def parse_type(token, path="<manifest>"):
-    """Parse a single manifest type token into a ThType.
 
-    Supports plain scalars (Float64, Int64, Bool, String) as well as the
-    bracketed compound types List[T] and Dict[K,V]. Nesting is allowed,
-    e.g. List[List[Float64]] or Dict[String,List[Float64]].
-    """
     token = token.strip()
     m = _COMPOUND_RE.match(token)
     if not m:
@@ -178,7 +173,6 @@ def parse_type(token, path="<manifest>"):
     if kind == "List":
         return ThType("List", [parse_type(inner, path)])
 
-    # Dict[K,V]
     parts = _split_top_level_commas(inner, path)
     if len(parts) != 2:
         raise ImporterError(
@@ -246,8 +240,6 @@ def parse_manifest(text, path):
                     f"Manifest '{path}': 'export' needs a name and return type"
                 )
             name, ret = parts[1], parts[2]
-            # Validate eagerly so bad manifests fail at parse time, not
-            # deep inside codegen.
             parse_type(ret, path)
             for arg in parts[3:]:
                 parse_type(arg, path)
@@ -452,18 +444,6 @@ class Importer:
         wrapper.write_text(code)
         return wrapper
 
-    # -- native <-> Python marshalling for the generated C++ wrapper --------
-    #
-    # Every non-list scalar crosses as a plain C type (double / long long /
-    # bool / char*). Every List[T] crosses as the struct that
-    # LLVMIRCompiler.to_llvm_type emits for `List[T]`:
-    #
-    #     struct { int64_t len; T* data; }
-    #
-    # passed/returned BY VALUE. We declare that struct explicitly in the
-    # generated C++ (field order and layout matching `{ i64, T* }`) so the
-    # LLVM-side `declare` and the C++-side function signature agree
-    # byte-for-byte.
 
     def _c_type_for(self, t: ThType):
         if t.is_scalar:
@@ -475,14 +455,10 @@ class Importer:
         raise ImporterError(f"no native C type for '{t!r}'")
 
     def _list_struct_name(self, t: ThType):
-        # Stable, collision-resistant name derived from the element type,
-        # e.g. List[Float64] -> ThList_Float64 ; List[List[Float64]] ->
-        # ThList_ThList_Float64
         elem = t.elem()
         return f"ThList_{self._type_name_part(elem)}"
 
     def _dict_struct_name(self, t: ThType):
-        # e.g. Dict[String,Float64] -> ThDict_String_Float64
         k = self._type_name_part(t.key_type())
         v = self._type_name_part(t.value_type())
         return f"ThDict_{k}_{v}"
@@ -495,9 +471,7 @@ class Importer:
         return t.kind
 
     def _collect_compound_types(self, types, out):
-        """Recursively collect every List[...]/Dict[...] ThType appearing in
-        `types`, innermost first, so struct/helper definitions can be
-        emitted in dependency order."""
+
         for t in types:
             if t.is_list:
                 self._collect_compound_types([t.elem()], out)
@@ -544,7 +518,7 @@ class Importer:
             raise ImporterError(f"cannot marshal scalar type '{t!r}' from Python")
 
     def _emit_py_to_native_list(self, out, dst_var, src_pyobj, t: ThType, fresh):
-        """Fill a pre-declared `{sname} {dst_var}` from a Python sequence."""
+
         elem_t = t.elem()
         elem_c = self._c_type_for(elem_t)
         n = fresh("n")
@@ -572,10 +546,7 @@ class Importer:
         out.append("    }")
 
     def _emit_py_to_native_dict(self, out, dst_var, src_pyobj, t: ThType, fresh):
-        """Fill a pre-declared `{sname} {dst_var}` from a Python dict.
 
-        Keys/values land in parallel arrays: dst_var.keys[i] / .values[i].
-        """
         key_t = t.key_type()
         val_t = t.value_type()
         key_c = self._c_type_for(key_t)
@@ -641,7 +612,7 @@ class Importer:
         out.append(f"    PyObject* {dst_pyobj} = {lst};")
 
     def _emit_native_to_py_dict(self, out, dst_pyobj, src_var, t: ThType, fresh):
-        """Build a Python dict from parallel keys[]/values[] arrays."""
+
         key_t = t.key_type()
         val_t = t.value_type()
         d = fresh("d")
@@ -694,13 +665,6 @@ class Importer:
         lines.append('} // extern C (init helpers stay C-linkage-free of struct ABI concerns)')
         lines.append('')
 
-        # Struct defs matching LLVMIRCompiler.to_llvm_type's `{ i64, T* }`
-        # layout for every List[...] type used by any export. These are
-        # declared outside extern "C" (C++ structs), but the exported
-        # functions using them are still `extern "C"` below so their
-        # *symbol names* aren't mangled -- struct-by-value parameters are
-        # fine across that boundary since the LLVM IR side declares the
-        # matching literal struct type, not a named C type.
         struct_lines, _ = self._emit_list_struct_defs(all_types)
         lines.extend(struct_lines)
         lines.append('')

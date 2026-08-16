@@ -191,7 +191,7 @@ def main() -> Int32
 """,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "x = 3\nsum = 7\nflag = 1\n\ntext 5 2.500000 1\n"
+    assert result.stdout == "x = 3\nsum = 7\nflag = True\n\ntext 5 2.500000 True\n"
 
 
 def test_builtin_print_and_conversions():
@@ -210,7 +210,7 @@ def main() -> Int32
 """
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "hello world\n42\n3.140000\n1\n3\n1\n5.000000\n1\n"
+    assert result.stdout == "hello world\n42\n3.140000\nTrue\n3\n1\n5.000000\nTrue\n"
 
 
 def test_string_conversions():
@@ -229,7 +229,7 @@ def main() -> Int32
         input="21\n",
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "123\n3.500000\n1\n0\n0\nEnter a number: 42\n"
+    assert result.stdout == "123\n3.500000\nTrue\nFalse\nFalse\nEnter a number: 42\n"
 
 
 def test_string_conversion_invalid_errors():
@@ -346,7 +346,7 @@ def main() -> Int32
     for threshold in (0, 10000):
         result = compile_stdlib_run(source, inline_threshold=threshold)
         assert result.returncode == 0, result.stderr
-        assert result.stdout == "7\n9\n2\n100\n0\n1\n0\n1\n6\n"
+        assert result.stdout == "7\n9\n2\n100\n0\nTrue\nFalse\nTrue\n6\n"
 
 
 def test_default_parameters_runtime():
