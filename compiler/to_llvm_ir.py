@@ -1736,7 +1736,6 @@ class LLVMIRCompiler:
             spec = "%s"
             return spec, f"i8* {ptr}"
         if arg.type == "Bool":
-            print("hit")
             true_global = self._string_global("True")
             false_global = self._string_global("False")
 
