@@ -11,11 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import compile_test as ct
 import pytest
 
-from compiler.checker import CombinedChecker
-from compiler.optimalise_ir import IROptimizer
-from compiler.parser import Parser
-from compiler.to_high_ir import SSABuilder
-from compiler.to_llvm_ir import LLVMIRCompiler
+from compiler.threadon.checker import CombinedChecker
+from compiler.threadon.optimalise_ir import IROptimizer
+from compiler.threadon.parser import Parser
+from compiler.threadon.to_high_ir import SSABuilder
+from compiler.threadon.to_llvm_ir import LLVMIRCompiler
 
 INT_HARNESS = """
 declare i32 @printf(i8*, ...)
@@ -498,8 +498,8 @@ def test_float_unary_plus_execution():
     )
 
 
-from compiler.compiler import compile_file, compile_source
-from compiler.importer import (
+from compiler.threadon.compiler import compile_file, compile_source
+from compiler.threadon.importer import (
     Importer,
     STDLIB_DIR,
     parse_manifest,
@@ -710,7 +710,7 @@ def test_build_executable(tmp_path):
     import shutil
     import subprocess
 
-    from compiler.main import build_executable, patch_llvm
+    from compiler.threadon.__main__ import build_executable, patch_llvm
 
     if not (shutil.which("llc") and shutil.which("gcc")):
         pytest.skip("llc/gcc not available")
@@ -919,7 +919,7 @@ def test_native_rust_module_runtime(tmp_path):
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not available")
 def test_native_c_module_exe(tmp_path):
-    from compiler.main import build_executable, patch_llvm
+    from compiler.threadon.__main__ import build_executable, patch_llvm
 
     mod_dir = make_native_module(tmp_path, "cadd", "c", C_ADD_SOURCE, export="add Int32 Int32 Int32")
     imp = Importer()
@@ -937,7 +937,7 @@ def test_native_c_module_exe(tmp_path):
 
 @pytest.mark.skipif(shutil.which("g++") is None, reason="g++ not available")
 def test_native_cpp_module_exe(tmp_path):
-    from compiler.main import build_executable, patch_llvm
+    from compiler.threadon.__main__ import build_executable, patch_llvm
 
     mod_dir = make_native_module(tmp_path, "cpppow", "cpp", CPP_SQUARE_SOURCE, export="square Int32 Int32")
     imp = Importer()
@@ -955,7 +955,7 @@ def test_native_cpp_module_exe(tmp_path):
 
 @pytest.mark.skipif(shutil.which("rustc") is None, reason="rustc not available")
 def test_native_rust_module_exe(tmp_path):
-    from compiler.main import build_executable, patch_llvm
+    from compiler.threadon.__main__ import build_executable, patch_llvm
 
     mod_dir = make_native_module(tmp_path, "rsum", "rust", RUST_SUM_SOURCE, export="sum Int32 Int32 Int32")
     imp = Importer()

@@ -10,13 +10,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from compiler.checker import CombinedChecker
-from compiler.compiler import compile_source
-from compiler.importer import Importer
-from compiler.optimalise_ir import IROptimizer
-from compiler.parser import Parser
-from compiler.to_high_ir import SSABuilder
-from compiler.to_llvm_ir import LLVMIRCompiler
+from compiler.threadon.checker import CombinedChecker
+from compiler.threadon.compiler import compile_source
+from compiler.threadon.importer import Importer
+from compiler.threadon.optimalise_ir import IROptimizer
+from compiler.threadon.parser import Parser
+from compiler.threadon.to_high_ir import SSABuilder
+from compiler.threadon.to_llvm_ir import LLVMIRCompiler
 
 COMPLEX_SOURCE = """
 struct Z:

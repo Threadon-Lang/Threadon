@@ -6,10 +6,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 from compile_test import COMPLEX_SOURCE
 
-from compiler.checker import CombinedChecker
-from compiler.optimalise_ir import IROptimizer
-from compiler.parser import Parser
-from compiler.to_high_ir import IRPhi, SSABuilder, SSAValue
+from compiler.threadon.checker import CombinedChecker
+from compiler.threadon.optimalise_ir import IROptimizer
+from compiler.threadon.parser import Parser
+from compiler.threadon.to_high_ir import IRPhi, SSABuilder, SSAValue
 
 
 def build_module(source):

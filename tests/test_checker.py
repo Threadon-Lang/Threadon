@@ -1,6 +1,6 @@
 import pytest
 
-from compiler.checker import (
+from compiler.threadon.checker import (
     AliasChecker,
     CombinedChecker,
     DeadStoreChecker,
@@ -10,7 +10,7 @@ from compiler.checker import (
     UnreachableChecker,
     UnusedVariableChecker,
 )
-from compiler.parser import Parser
+from compiler.threadon.parser import Parser
 
 
 def build(source):

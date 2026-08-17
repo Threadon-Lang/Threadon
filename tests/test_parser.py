@@ -1,6 +1,6 @@
 import pytest
 
-from compiler.parser import Parser
+from compiler.threadon.parser import Parser
 
 
 def parse_ok(code: str):

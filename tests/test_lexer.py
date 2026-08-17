@@ -1,6 +1,6 @@
 import pytest
 
-from compiler.lexer import TokenType, lex
+from compiler.threadon.lexer import TokenType, lex
 
 
 def test_identifiers():
@@ -281,7 +281,7 @@ def test_class_nested():
     assert TokenType.INDENT in types
     assert TokenType.DEDENT in types
 def test_import_with_dots():
-    tokens = lex("import compiler.lexer")
+    tokens = lex("import compiler.threadon.lexer")
     assert tokens[0].type == TokenType.IMPORT
     assert tokens[1].type == TokenType.IDENT
 
@@ -351,7 +351,7 @@ def test_nonetype_token():
 
 
 def test_lex_lines_groups_tokens():
-    from compiler.lexer import lex_lines
+    from compiler.threadon.lexer import lex_lines
 
     lines = lex_lines("a: Int32 = 1\nb: Int32 = 2")
     assert len(lines) == 2

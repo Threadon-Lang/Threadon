@@ -3,8 +3,8 @@ from contextlib import redirect_stdout
 
 import pytest
 
-from compiler.importer import Importer, ImporterError, parse_manifest
-from compiler.nodes import ImportStmt
+from compiler.threadon.importer import Importer, ImporterError, parse_manifest
+from compiler.threadon.nodes import ImportStmt
 
 MATH_SOURCE = """
 def abs(x: Int32) -> Int32
@@ -268,7 +268,7 @@ class TestManifest:
 
 class TestParserImportNode:
     def parse(self, imp, code):
-        from compiler.parser import Parser
+        from compiler.threadon.parser import Parser
 
         return Parser(importer=imp).parse(code)
 

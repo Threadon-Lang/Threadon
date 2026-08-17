@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Command-line driver for the Threadon compiler.
+"""Command-line driver for the Threadon compiler.threadon.
 
 Compiles a ``.th`` file (together with the modules it imports) to LLVM IR,
 or executes it with ``lli``.

@@ -1,9 +1,9 @@
 import pytest
 
-from compiler.checker import CombinedChecker
-from compiler.builtins import is_union_type
-from compiler.parser import Parser
-from compiler.to_high_ir import IRPhi, SSABuilder
+from compiler.threadon.checker import CombinedChecker
+from compiler.threadon.builtins import is_union_type
+from compiler.threadon.parser import Parser
+from compiler.threadon.to_high_ir import IRPhi, SSABuilder
 
 
 def build_module(source):
