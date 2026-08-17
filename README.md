@@ -47,7 +47,6 @@ Optimizer inline threshold. Default `0` = no inlining.
 
 `--debug`
 
-Enable runtime checks. See the [Debug](debug.html) page.
 
 `--flag-inf`
 
