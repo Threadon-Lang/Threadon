@@ -522,7 +522,7 @@ class Parser:
         j = start
         while j < len(ts):
             tok = ts[j]
-            if tok.type in (TokenType.LPAREN, TokenType.LBRACKET):
+            if tok.type in (TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE):
                 depth += 1
                 current.append(tok)
             elif tok.type == TokenType.RPAREN:
@@ -530,7 +530,7 @@ class Parser:
                     break
                 depth -= 1
                 current.append(tok)
-            elif tok.type == TokenType.RBRACKET:
+            elif tok.type in (TokenType.RBRACKET, TokenType.RBRACE):
                 depth -= 1
                 current.append(tok)
             elif tok.type == TokenType.COMMA and depth == 0:
@@ -698,7 +698,7 @@ class Parser:
         """Parse a single (non-union) type starting at ``tokens[start]``.
 
         Returns ``(type_str, next_index)``. Supports primitives, dotted
-        struct names and ``List[T]``.
+        struct names, ``List[T]`` and ``Dict[K,V]``.
         """
         if start >= len(tokens):
             self.give_error(f"Expected a type in {ctx}")
@@ -732,6 +732,45 @@ class Parser:
                     f"List element type cannot be a type group or union in {ctx}"
                 )
             return f"List[{elem_type}]", end + 1
+
+        if tok.type == TokenType.IDENT and tok.value == "Dict":
+            if start + 1 >= len(tokens) or tokens[start + 1].type != TokenType.LBRACKET:
+                self.give_error("Expected '[' after 'Dict' in type")
+
+            depth = 0
+            end = None
+            for k in range(start + 1, len(tokens)):
+                if tokens[k].type == TokenType.LBRACKET:
+                    depth += 1
+                elif tokens[k].type == TokenType.RBRACKET:
+                    depth -= 1
+                    if depth == 0:
+                        end = k
+                        break
+            if end is None:
+                self.give_error("Unmatched '[' in type")
+
+            inner_tokens = tokens[start + 2:end]
+            comma_idx = None
+            depth = 0
+            for ci, ct in enumerate(inner_tokens):
+                if ct.type == TokenType.LBRACKET:
+                    depth += 1
+                elif ct.type == TokenType.RBRACKET:
+                    depth -= 1
+                elif ct.type == TokenType.COMMA and depth == 0:
+                    comma_idx = ci
+                    break
+            if comma_idx is None:
+                self.give_error("Dict type requires two type parameters: Dict[K, V]")
+
+            key_type, _ = self.parse_type_from_tokens(
+                inner_tokens[:comma_idx], ctx, 0, allow_union=False
+            )
+            val_type, _ = self.parse_type_from_tokens(
+                inner_tokens[comma_idx + 1:], ctx, 0, allow_union=False
+            )
+            return f"Dict[{key_type},{val_type}]", end + 1
 
         if tok.type == TokenType.TYPE:
             return tok.value, start + 1
@@ -1933,8 +1972,75 @@ class Parser:
                 elements.append(self.parse_expr(current))
             return ListLiteralExpr(elements)
 
+        def parse_dict_literal(ts):
+            if not ts or ts[0].type != TokenType.LBRACE:
+                return None
+
+            depth = 0
+            end = None
+            for k, tok in enumerate(ts):
+                if tok.type == TokenType.LBRACE:
+                    depth += 1
+                elif tok.type == TokenType.RBRACE:
+                    depth -= 1
+                    if depth == 0:
+                        end = k
+                        break
+            if end is None:
+                self.give_error("Unmatched '{' in dict literal")
+            if end != len(ts) - 1:
+                self.give_error("Unexpected tokens after dict literal")
+
+            inner = ts[1:end]
+            if not inner:
+                return DictLiteralExpr([], [])
+
+            pair_tokens_list = []
+            current_pair = []
+            depth = 0
+            for tok in inner:
+                if tok.type in (TokenType.LBRACE, TokenType.LPAREN, TokenType.LBRACKET):
+                    depth += 1
+                elif tok.type in (TokenType.RBRACE, TokenType.RPAREN, TokenType.RBRACKET):
+                    depth -= 1
+                if tok.type == TokenType.COMMA and depth == 0:
+                    pair_tokens_list.append(current_pair)
+                    current_pair = []
+                else:
+                    current_pair.append(tok)
+            if current_pair:
+                pair_tokens_list.append(current_pair)
+
+            keys = []
+            values = []
+            for pair in pair_tokens_list:
+                colon_idx = None
+                depth = 0
+                for ci, ct in enumerate(pair):
+                    if ct.type in (TokenType.LBRACE, TokenType.LPAREN, TokenType.LBRACKET):
+                        depth += 1
+                    elif ct.type in (TokenType.RBRACE, TokenType.RPAREN, TokenType.RBRACKET):
+                        depth -= 1
+                    elif ct.type == TokenType.COLON and depth == 0:
+                        colon_idx = ci
+                        break
+                if colon_idx is None:
+                    self.give_error("Dict literal entries must be 'key: value' pairs")
+                key_tokens = pair[:colon_idx]
+                val_tokens = pair[colon_idx + 1:]
+                if not key_tokens or not val_tokens:
+                    self.give_error("Dict literal entry cannot have empty key or value")
+                keys.append(self.parse_expr(key_tokens))
+                values.append(self.parse_expr(val_tokens))
+
+            return DictLiteralExpr(keys, values)
+
         def index_postfix(ts):
             lit = parse_list_literal(ts)
+            if lit is not None:
+                return lit
+
+            lit = parse_dict_literal(ts)
             if lit is not None:
                 return lit
 
@@ -2124,14 +2230,62 @@ class Parser:
                         )
             expr.type = f"List[{first}]"
             return expr.type
+        if t == "DictLiteralExpr":
+            if getattr(expr, "type", None) is not None:
+                return expr.type
+            if not expr.keys:
+                return "Dict[Unknown,Unknown]"
+            key_type = self.detect_expr_type(expr.keys[0])
+            val_type = self.detect_expr_type(expr.values[0])
+            for i in range(1, len(expr.keys)):
+                kt = self.detect_expr_type(expr.keys[i])
+                if kt != key_type:
+                    if not self._try_adapt_literal(
+                        expr.keys[i], kt, key_type
+                    ):
+                        self.give_error(
+                            "All keys of a dict must have the same type"
+                        )
+                vt = self.detect_expr_type(expr.values[i])
+                if vt != val_type:
+                    if not self._try_adapt_literal(
+                        expr.values[i], vt, val_type
+                    ):
+                        self.give_error(
+                            "All values of a dict must have the same type"
+                        )
+            expr.type = f"Dict[{key_type},{val_type}]"
+            return expr.type
         if t == "IndexExpr":
             obj_type = self.detect_expr_type(expr.obj)
-            if not (isinstance(obj_type, str) and obj_type.startswith("List[")):
-                self.give_error(f"'{obj_type}' is not a list, cannot index")
             index_type = self.detect_expr_type(expr.index)
-            if index_type not in ALL_INT_TYPES:
-                self.give_error(f"List index must be an integer, got {index_type}")
-            return obj_type[5:-1]
+            if isinstance(obj_type, str) and obj_type.startswith("List["):
+                if index_type not in ALL_INT_TYPES:
+                    self.give_error(f"List index must be an integer, got {index_type}")
+                return obj_type[5:-1]
+            if isinstance(obj_type, str) and obj_type.startswith("Dict["):
+                bracket_content = obj_type[5:-1]
+                comma_idx = None
+                depth = 0
+                for ci, ch in enumerate(bracket_content):
+                    if ch == '[':
+                        depth += 1
+                    elif ch == ']':
+                        depth -= 1
+                    elif ch == ',' and depth == 0:
+                        comma_idx = ci
+                        break
+                if comma_idx is not None:
+                    key_expected = bracket_content[:comma_idx].strip()
+                    val_type = bracket_content[comma_idx + 1:].strip()
+                else:
+                    val_type = bracket_content.strip()
+                if index_type != key_expected:
+                    self.give_error(
+                        f"Dict index must be {key_expected}, got {index_type}"
+                    )
+                return val_type
+            self.give_error(f"'{obj_type}' is not indexable")
         if t == "FieldAccessExpr":
             obj_type = self.detect_expr_type(expr.obj)
 
@@ -2681,6 +2835,25 @@ class Parser:
             return True
         if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):
             return self._is_valid_type(t[5:-1])
+        if isinstance(t, str) and t.startswith("Dict[") and t.endswith("]"):
+            inner = t[5:-1]
+            comma_idx = None
+            depth = 0
+            for ci, ch in enumerate(inner):
+                if ch == '[':
+                    depth += 1
+                elif ch == ']':
+                    depth -= 1
+                elif ch == ',' and depth == 0:
+                    comma_idx = ci
+                    break
+            if comma_idx is not None:
+                k = inner[:comma_idx].strip()
+                v = inner[comma_idx + 1:].strip()
+            else:
+                k = inner.strip()
+                v = "Unknown"
+            return self._is_valid_type(k) and self._is_valid_type(v)
         if isinstance(t, str) and t.endswith("*") and self._is_valid_type(t[:-1]):
             return True
         return False
@@ -2737,7 +2910,29 @@ class Parser:
             self._set_expr_type(e.right, new_type)
         elif t == "UnaryExpr":
             self._set_expr_type(e.expr, new_type)
+    def _dict_parse_inner(self, dict_type):
+        """Parse 'Dict[K,V]' into (K, V) or return None."""
+        if not dict_type.startswith("Dict[") or not dict_type.endswith("]"):
+            return None
+        inner = dict_type[5:-1]
+        comma_idx = None
+        depth = 0
+        for ci, ch in enumerate(inner):
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                comma_idx = ci
+                break
+        if comma_idx is None:
+            return None
+        return inner[:comma_idx].strip(), inner[comma_idx + 1:].strip()
+
     def _try_adapt_literal(self, node, node_type, want_type):
+        return self._try_adapt_literal_inner(node, node_type, want_type, promote_num=False)
+
+    def _try_adapt_literal_inner(self, node, node_type, want_type, promote_num=False):
         if node_type == want_type:
             return True
         if (
@@ -2753,13 +2948,47 @@ class Parser:
                 elem_type = self.detect_expr_type(elem)
                 if elem_type == dst_elem:
                     continue
-                if not self._try_adapt_literal(elem, elem_type, dst_elem):
+                if not self._try_adapt_literal_inner(elem, elem_type, dst_elem, promote_num=True):
                     return False
+            node.type = want_type
+            return True
+        if (
+            isinstance(node_type, str)
+            and node_type.startswith("Dict[")
+            and isinstance(want_type, str)
+            and want_type.startswith("Dict[")
+        ):
+            if type(node).__name__ != "DictLiteralExpr":
+                return False
+            wk = self._dict_parse_inner(want_type)
+            dk = self._dict_parse_inner(node_type)
+            if wk is None or dk is None:
+                return False
+            wk_key, wk_val = wk
+            dk_key, dk_val = dk
+            for i in range(len(node.keys)):
+                kt = self.detect_expr_type(node.keys[i])
+                if kt != wk_key:
+                    if not self._try_adapt_literal_inner(node.keys[i], kt, wk_key, promote_num=True):
+                        return False
+                vt = self.detect_expr_type(node.values[i])
+                if vt != wk_val:
+                    if is_group(wk_val) and is_union_type(
+                        expand_type(wk_val)
+                    ):
+                        if vt not in union_members(expand_type(wk_val)):
+                            return False
+                    elif not self._try_adapt_literal_inner(node.values[i], vt, wk_val, promote_num=True):
+                        return False
             node.type = want_type
             return True
         if node_type in self._INT_TYPES and want_type in self._INT_TYPES:
             if self._is_const_int_expr(node):
                 self._check_literal_range(node, want_type)
+                self._set_expr_type(node, want_type)
+                return True
+        elif promote_num and node_type in self._INT_TYPES and want_type in self._FLOAT_TYPES:
+            if self._is_const_int_expr(node):
                 self._set_expr_type(node, want_type)
                 return True
         elif node_type in self._FLOAT_TYPES and want_type in self._FLOAT_TYPES:

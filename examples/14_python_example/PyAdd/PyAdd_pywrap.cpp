@@ -24,7 +24,7 @@ double add(double a0, double a1) {
     PyObject* _pyv2 = PyFloat_FromDouble(a1);
     PyTuple_SetItem(args, 1, _pyv2);
     PyObject* mod = PyImport_ImportModule("padd");
-    if (!mod) return 0.0;
+    if (!mod) { return 0.0; }
     PyObject* f = PyObject_GetAttrString(mod, "add");
     Py_DECREF(mod);
     if (!f || !PyCallable_Check(f)) { Py_XDECREF(f); return 0.0; }
@@ -44,7 +44,7 @@ double scale(double a0, double a1) {
     PyObject* _pyv5 = PyFloat_FromDouble(a1);
     PyTuple_SetItem(args, 1, _pyv5);
     PyObject* mod = PyImport_ImportModule("padd");
-    if (!mod) return 0.0;
+    if (!mod) { return 0.0; }
     PyObject* f = PyObject_GetAttrString(mod, "scale");
     Py_DECREF(mod);
     if (!f || !PyCallable_Check(f)) { Py_XDECREF(f); return 0.0; }
@@ -67,7 +67,7 @@ double mean(ThList_Float64 a0) {
     PyObject* _pyv7 = _lst8;
     PyTuple_SetItem(args, 0, _pyv7);
     PyObject* mod = PyImport_ImportModule("padd");
-    if (!mod) return 0.0;
+    if (!mod) { return 0.0; }
     PyObject* f = PyObject_GetAttrString(mod, "mean");
     Py_DECREF(mod);
     if (!f || !PyCallable_Check(f)) { Py_XDECREF(f); return 0.0; }
@@ -90,7 +90,7 @@ ThList_Float64 normalize(ThList_Float64 a0) {
     PyObject* _pyv12 = _lst13;
     PyTuple_SetItem(args, 0, _pyv12);
     PyObject* mod = PyImport_ImportModule("padd");
-    if (!mod) return ThList_Float64{0, nullptr};
+    if (!mod) { return ThList_Float64{0, nullptr}; }
     PyObject* f = PyObject_GetAttrString(mod, "normalize");
     Py_DECREF(mod);
     if (!f || !PyCallable_Check(f)) { Py_XDECREF(f); return ThList_Float64{0, nullptr}; }
@@ -110,41 +110,44 @@ ThList_Float64 normalize(ThList_Float64 a0) {
     Py_DECREF(r);
     return out;
 }
-ThDict_String_Float64 describe(ThList_Float64 a0) {
+void describe(ThDict_String_Float64* a0, ThDict_String_Float64* _sret_out) {
     ensure_init();
     PyObject* args = PyTuple_New(1);
-    PyObject* _lst20 = PyList_New(a0.len);
-    for (long long _i21 = 0; _i21 < a0.len; _i21++) {
-    PyObject* _it22 = PyFloat_FromDouble(a0.data[_i21]);
-        PyList_SetItem(_lst20, _i21, _it22);
+    PyObject* _d20 = PyDict_New();
+    for (long long _i21 = 0; _i21 < (*a0).len; _i21++) {
+    PyObject* _kobj22 = PyUnicode_FromString((*a0).keys[_i21] ? (*a0).keys[_i21] : "");
+    PyObject* _vobj23 = PyFloat_FromDouble((*a0).values[_i21]);
+        PyDict_SetItem(_d20, _kobj22, _vobj23);
+        Py_DECREF(_kobj22);
+        Py_DECREF(_vobj23);
     }
-    PyObject* _pyv19 = _lst20;
+    PyObject* _pyv19 = _d20;
     PyTuple_SetItem(args, 0, _pyv19);
     PyObject* mod = PyImport_ImportModule("padd");
-    if (!mod) return ThDict_String_Float64{0, nullptr, nullptr};
+    if (!mod) { *_sret_out = ThDict_String_Float64{0, nullptr, nullptr}; }
     PyObject* f = PyObject_GetAttrString(mod, "describe");
     Py_DECREF(mod);
-    if (!f || !PyCallable_Check(f)) { Py_XDECREF(f); return ThDict_String_Float64{0, nullptr, nullptr}; }
+    if (!f || !PyCallable_Check(f)) { Py_XDECREF(f); *_sret_out = ThDict_String_Float64{0, nullptr, nullptr}; }
     PyObject* r = PyObject_CallObject(f, args);
     Py_DECREF(f);
     Py_DECREF(args);
-    if (!r) { PyErr_Clear(); return ThDict_String_Float64{0, nullptr, nullptr}; }
-    ThDict_String_Float64 out;
-    Py_ssize_t _n23 = PyDict_Size(r);
-    out.len = (long long)_n23;
-    out.keys = (char**)malloc(sizeof(char*) * (size_t)_n23);
-    out.values = (double*)malloc(sizeof(double) * (size_t)_n23);
-    PyObject* _items24 = PyDict_Items(r);
-    for (Py_ssize_t _i25 = 0; _i25 < _n23; _i25++) {
-        PyObject* _pair26 = PyList_GetItem(_items24, _i25);
-        PyObject* _k27 = PyTuple_GetItem(_pair26, 0);
-        PyObject* _v28 = PyTuple_GetItem(_pair26, 1);
-    const char* _s29 = PyUnicode_AsUTF8(_k27);
-    out.keys[_i25] = _s29 ? strdup(_s29) : nullptr;
-    out.values[_i25] = PyFloat_AsDouble(_v28);
+    if (!r) { PyErr_Clear(); *_sret_out = ThDict_String_Float64{0, nullptr, nullptr}; }
+    auto& _dout = *_sret_out;
+    Py_ssize_t _n24 = PyDict_Size(r);
+    _dout.len = (long long)_n24;
+    _dout.keys = (char**)malloc(sizeof(char*) * (size_t)_n24);
+    _dout.values = (double*)malloc(sizeof(double) * (size_t)_n24);
+    PyObject* _items25 = PyDict_Items(r);
+    for (Py_ssize_t _i26 = 0; _i26 < _n24; _i26++) {
+        PyObject* _pair27 = PyList_GetItem(_items25, _i26);
+        PyObject* _k28 = PyTuple_GetItem(_pair27, 0);
+        PyObject* _v29 = PyTuple_GetItem(_pair27, 1);
+    const char* _s30 = PyUnicode_AsUTF8(_k28);
+    _dout.keys[_i26] = _s30 ? strdup(_s30) : nullptr;
+    _dout.values[_i26] = PyFloat_AsDouble(_v29);
     }
-    Py_DECREF(_items24);
+    Py_DECREF(_items25);
     Py_DECREF(r);
-    return out;
+    return;
 }
 } // extern C

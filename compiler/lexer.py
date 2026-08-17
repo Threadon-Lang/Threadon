@@ -36,6 +36,8 @@ class TokenType(Enum):
     RPAREN = auto()
     LBRACKET = auto()
     RBRACKET = auto()
+    LBRACE = auto()
+    RBRACE = auto()
     ASSIGN = auto()
     ARROW = auto()
 
@@ -422,6 +424,13 @@ class Lexer:
             if self.current_char == "]":
                 self.advance()
                 return Token(TokenType.RBRACKET, "]")
+
+            if self.current_char == "{":
+                self.advance()
+                return Token(TokenType.LBRACE, "{")
+            if self.current_char == "}":
+                self.advance()
+                return Token(TokenType.RBRACE, "}")
 
             if self.current_char == "=":
                 if self.peek() == "=":

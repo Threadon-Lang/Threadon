@@ -46,6 +46,7 @@ class LLVMIRCompiler:
         self.block_end_label = {}
         self.used_checked_pow_widths = set()
         self.used_list_print = set()
+        self.used_dict_print = set()
         self.used_struct_print = set()
         self.templates_enabled = False
         self._tmp_seq = 0
@@ -98,15 +99,20 @@ class LLVMIRCompiler:
         self._emit_native_declares()
 
         emitted_list = set()
+        emitted_dict = set()
         emitted_struct = set()
         while True:
             p_list = set(self.used_list_print) - emitted_list
+            p_dict = set(self.used_dict_print) - emitted_dict
             p_struct = set(self.used_struct_print) - emitted_struct
-            if not p_list and not p_struct:
+            if not p_list and not p_dict and not p_struct:
                 break
             for elem_t in p_list:
                 self._emit_list_str_helper(elem_t)
                 emitted_list.add(elem_t)
+            for kv_t in p_dict:
+                self._emit_dict_str_helper(kv_t)
+                emitted_dict.add(kv_t)
             for stype in p_struct:
                 self._emit_struct_str_helper(stype)
                 emitted_struct.add(stype)
@@ -198,6 +204,8 @@ class LLVMIRCompiler:
                 self.out.append("declare double @strtod(i8*, i8**)")
             if "strcasecmp" in self.used_c_runtime:
                 self.out.append("declare i32 @strcasecmp(i8*, i8*)")
+            if "strcmp" in self.used_c_runtime:
+                self.out.append("declare i32 @strcmp(i8*, i8*)")
             if "exit" in self.used_c_runtime:
                 self.out.append("declare void @exit(i32)")
             if "fprintf" in self.used_c_runtime:
@@ -253,6 +261,27 @@ class LLVMIRCompiler:
         if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):
             elem = self.to_llvm_type(t[5:-1])
             return f"{{ i64, {elem}* }}"
+        if isinstance(t, str) and t.startswith("Dict[") and t.endswith("]"):
+            inner = t[5:-1]
+            comma_idx = None
+            depth = 0
+            for ci, ch in enumerate(inner):
+                if ch == '[':
+                    depth += 1
+                elif ch == ']':
+                    depth -= 1
+                elif ch == ',' and depth == 0:
+                    comma_idx = ci
+                    break
+            if comma_idx is not None:
+                key_t = inner[:comma_idx].strip()
+                val_t = inner[comma_idx + 1:].strip()
+            else:
+                key_t = "i8"
+                val_t = "i8"
+            key_llvm = self.to_llvm_type(key_t)
+            val_llvm = self.to_llvm_type(val_t)
+            return f"{{ i64, {key_llvm}*, {val_llvm}* }}"
         if t in self.module.types:
             return f"%struct.{t}"
         for name in self.module.types:
@@ -301,17 +330,45 @@ class LLVMIRCompiler:
             return
         self.out.append("; native module exports")
         for _, (symbol, ret, args) in sorted(self.native_symbols.items()):
-            ret_t = "void" if ret == "NoneType" else self.to_llvm_type(ret)
-            arg_ts = ", ".join(self.to_llvm_type(a) for a in args)
+            dict_ret = ret.startswith("Dict[")
+            ret_t = "void" if (ret == "NoneType" or dict_ret) else self.to_llvm_type(ret)
+            arg_parts = []
+            for a in args:
+                llvm_t = self.to_llvm_type(a)
+                if a.startswith("Dict["):
+                    arg_parts.append(f"{llvm_t}*")
+                else:
+                    arg_parts.append(llvm_t)
+            if dict_ret:
+                ret_llvm = self.to_llvm_type(ret)
+                arg_parts.append(f"{ret_llvm}*")
+            arg_ts = ", ".join(arg_parts)
             self.out.append(f"declare {ret_t} @{symbol}({arg_ts})")
         self.out.append("")
         
+    def _current_label(self):
+        """Return the label of the block we are currently appending instructions to.
+
+        ``emit_block`` sets ``_current_block_label`` at the top, but
+        dict/list codegen helpers may emit inline block labels (e.g.
+        ``loop:``, ``body:``, ...) that effectively start new blocks.
+        We track the *last* such label so that phi nodes inserted later
+        reference the correct predecessor.
+        """
+        return getattr(self, '_current_block_label', 'entry')
+
+    def _advance_label(self, label):
+        """Update the tracked current label (called when a new inline
+        label is emitted by a codegen helper)."""
+        self._current_block_label = label
+
     def emit_block(self, block, dry=False):
         if dry:
             old_out = self.out
             self.out = _NullOut()
         self.out.append(f"{block.label}:")
         last_label = block.label
+        self._current_block_label = block.label
 
         if (block.label == getattr(self, 'current_func_entry_label', None) and
                 getattr(self, 'current_func_name', None) not in
@@ -335,6 +392,7 @@ class LLVMIRCompiler:
                     and re.match(r"^[A-Za-z_.][A-Za-z0-9_.]*:$", stripped)
                 ):
                     last_label = stripped[:-1]
+                    self._current_block_label = last_label
 
         self.block_end_label[block.label] = last_label
 
@@ -1427,6 +1485,15 @@ class LLVMIRCompiler:
         if op == "list_set":
             return self._emit_list_set(res, instr)
 
+        if op == "dict_init":
+            return self._emit_dict_init(res, rtype, instr)
+
+        if op == "dict_get":
+            return self._emit_dict_get(res, instr)
+
+        if op == "dict_set":
+            return self._emit_dict_set(res, instr)
+
         if op == "select":
             return self._emit_select(res, instr)
         if op == "alloca":
@@ -1676,20 +1743,41 @@ class LLVMIRCompiler:
             return self._emit_builtin(res, fname, instr.args[1:])
         args = instr.args[1:]
         arg_strs = []
-        for a in args:
+        prefix_lines = []
+        native_info = self.native_symbols.get(fname)
+        dict_ret = native_info and native_info[1].startswith("Dict[")
+        for i, a in enumerate(args):
             atype = self.to_llvm_type(a.type)
             aval = self.operand(a)
-            arg_strs.append(f"{atype} {aval}")
+            if native_info and a.type.startswith("Dict["):
+                ptr_t = f"{atype}*"
+                ptr = f"{aval}_dptr"
+                prefix_lines.append(f"  {ptr} = alloca {atype}")
+                prefix_lines.append(f"  store {atype} {aval}, {atype}* {ptr}")
+                arg_strs.append(f"{ptr_t} {ptr}")
+            else:
+                arg_strs.append(f"{atype} {aval}")
+        if dict_ret:
+            ret_llvm = self.to_llvm_type(native_info[1])
+            sret_ptr = f"{res}_sret"
+            prefix_lines.append(f"  {sret_ptr} = alloca {ret_llvm}")
+            arg_strs.append(f"{ret_llvm}* {sret_ptr}")
         args_str = ", ".join(arg_strs)
+        real_fname = native_info[0] if native_info else fname
+        if dict_ret:
+            call = f"call void @{real_fname}({args_str})"
+            load = f"{res} = load {self.to_llvm_type(native_info[1])}, {self.to_llvm_type(native_info[1])}* {sret_ptr}"
+            return prefix_lines + [call, load] if prefix_lines else [call, load]
         ret_type = self.to_llvm_type(instr.result.type)
-        if fname in self.native_symbols:
-            fname = self.native_symbols[fname][0]
+        if native_info:
+            real_fname = native_info[0]
         if instr.result.type == "NoneType":
-            call = f"call void @{fname}({args_str})"
+            call = f"call void @{real_fname}({args_str})"
             if res is None:
-                return call
-            return [call, f"{res} = add i8 0, 0"]
-        return f"{res} = call {ret_type} @{fname}({args_str})"
+                return prefix_lines + [call] if prefix_lines else call
+            return prefix_lines + [call, f"{res} = add i8 0, 0"]
+        line = f"{res} = call {ret_type} @{real_fname}({args_str})"
+        return prefix_lines + [line] if prefix_lines else line
 
     def _emit_builtin(self, res, fname, args):
         if fname == "print":
@@ -1797,6 +1885,15 @@ class LLVMIRCompiler:
             tmp = f"{res}_list{i}"
             lines.append(
                 f"{tmp} = call i8* @__threadon_list_str_{tag}({atype} {val})"
+            )
+            return "%s", f"i8* {tmp}"
+        if isinstance(arg.type, str) and arg.type.startswith("Dict["):
+            inner = arg.type[5:-1]
+            tag = re.sub(r"[^A-Za-z0-9]", "_", inner)
+            self.used_dict_print.add(inner)
+            tmp = f"{res}_dict{i}"
+            lines.append(
+                f"{tmp} = call i8* @__threadon_dict_str_{tag}({atype} {val})"
             )
             return "%s", f"i8* {tmp}"
         if atype.startswith("%struct."):
@@ -2413,6 +2510,130 @@ class LLVMIRCompiler:
         for line in out:
             self.out.append(line)
 
+    def _emit_dict_str_helper(self, kv_t):
+        key_t, val_t = kv_t.split(",", 1)
+        key_llvm = self.to_llvm_type(key_t)
+        val_llvm = self.to_llvm_type(val_t)
+        dict_llvm = f"{{ i64, {key_llvm}*, {val_llvm}* }}"
+        tag = re.sub(r"[^A-Za-z0-9]", "_", kv_t)
+        buf_size = 8192
+
+        self.used_c_runtime.update(["snprintf", "strlen"])
+        brace_open = self._string_global("{")
+        brace_close = self._string_global("}")
+        kv_sep = self._string_global(": ")
+        entry_sep = self._string_global(", ")
+
+        out = []
+        out.append(f"define i8* @__threadon_dict_str_{tag}({dict_llvm} %dict) {{")
+        out.append("entry:")
+        out.append(f"  %len = extractvalue {dict_llvm} %dict, 0")
+        out.append(f"  %kd = extractvalue {dict_llvm} %dict, 1")
+        out.append(f"  %vd = extractvalue {dict_llvm} %dict, 2")
+        out.append(f"  %buf = alloca [{buf_size} x i8], align 8")
+        out.append(f"  %bufp = getelementptr inbounds [{buf_size} x i8], [{buf_size} x i8]* %buf, i64 0, i64 0")
+        out.append(f"  %f1 = getelementptr inbounds [2 x i8], [2 x i8]* {brace_open}, i64 0, i64 0")
+        out.append(f"  %c1 = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %bufp, i64 {buf_size}, i8* %f1)")
+        out.append("  %e0 = icmp eq i64 %len, 0")
+        out.append("  br i1 %e0, label %close, label %loop")
+        out.append("")
+        out.append("loop:")
+        out.append("  %i = phi i64 [ 0, %entry ], [ %inc, %afterentry ]")
+        out.append("  %off = phi i64 [ 1, %entry ], [ %newoff, %afterentry ]")
+        out.append("  %nz = icmp ne i64 %i, 0")
+        out.append("  br i1 %nz, label %sep, label %kvprint")
+        out.append("")
+        out.append("sep:")
+        out.append("  %psep = getelementptr i8, i8* %bufp, i64 %off")
+        out.append(f"  %fsep = getelementptr inbounds [3 x i8], [3 x i8]* {entry_sep}, i64 0, i64 0")
+        out.append(f"  %csep = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %psep, i64 {buf_size}, i8* %fsep)")
+        out.append("  %offsep = add i64 %off, 2")
+        out.append("  br label %kvprint")
+        out.append("")
+
+        out.append("kvprint:")
+        out.append("  %boff = phi i64 [ %off, %loop ], [ %offsep, %sep ]")
+        out.append(f"  %kp = getelementptr {key_llvm}, {key_llvm}* %kd, i64 %i")
+        out.append(f"  %kv = load {key_llvm}, {key_llvm}* %kp")
+        out.append(f"  %vp = getelementptr {val_llvm}, {val_llvm}* %vd, i64 %i")
+        out.append(f"  %vv = load {val_llvm}, {val_llvm}* %vp")
+        out.append("")
+
+        out.append("  ; format key")
+        out.append(f"  %pk = getelementptr i8, i8* %bufp, i64 %boff")
+
+        kf = self._emit_type_snprintf(out, key_t, "%kv", "  ", buf_size)
+        out.append(f"  %fk = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global(kf)}, i64 0, i64 0")
+        out.append(f"  %ck = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pk, i64 {buf_size}, i8* %fk, {self._snprintf_arg(key_t, '%kv')})")
+        out.append(f"  %kl = call i64 @strlen(i8* %pk)")
+        out.append(f"  %koff = add i64 %boff, %kl")
+
+        out.append("  ; format ': '")
+        out.append(f"  %pks = getelementptr i8, i8* %bufp, i64 %koff")
+        out.append(f"  %fkv = getelementptr inbounds [3 x i8], [3 x i8]* {kv_sep}, i64 0, i64 0")
+        out.append(f"  %ckv = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pks, i64 {buf_size}, i8* %fkv)")
+        out.append(f"  %voff = add i64 %koff, 2")
+
+        out.append("  ; format value")
+        out.append(f"  %pv = getelementptr i8, i8* %bufp, i64 %voff")
+
+        vf = self._emit_type_snprintf(out, val_t, "%vv", "  ", buf_size)
+        out.append(f"  %fv = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global(vf)}, i64 0, i64 0")
+        out.append(f"  %cv = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pv, i64 {buf_size}, i8* %fv, {self._snprintf_arg(val_t, '%vv')})")
+        out.append(f"  %vl = call i64 @strlen(i8* %pv)")
+        out.append(f"  %newoff = add i64 %voff, %vl")
+        out.append(f"  %inc = add i64 %i, 1")
+        out.append("  br label %afterentry")
+        out.append("")
+        out.append("afterentry:")
+        out.append("  %done = icmp sge i64 %inc, %len")
+        out.append("  br i1 %done, label %close, label %loop")
+        out.append("")
+        out.append("close:")
+        out.append("  %close_off = phi i64 [ 1, %entry ], [ %newoff, %afterentry ]")
+        out.append(f"  %pend = getelementptr i8, i8* %bufp, i64 %close_off")
+        out.append(f"  %fc = getelementptr inbounds [2 x i8], [2 x i8]* {brace_close}, i64 0, i64 0")
+        out.append(f"  %cc = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pend, i64 {buf_size}, i8* %fc)")
+        out.append("  ret i8* %bufp")
+        out.append("}")
+        out.append("")
+
+        for line in out:
+            self.out.append(line)
+
+    def _emit_type_snprintf(self, out, t, var, indent, buf_size):
+        if t == "String":
+            return "%s"
+        if t == "bool" or t in ("Bool", "Boolean"):
+            tmp = f"{var}_bstr"
+            out.append(
+                f"{indent}{tmp} = select i1 {var}, "
+                f"getelementptr inbounds [5 x i8], [5 x i8]* "
+                f"{self._string_global('true')}, i64 0, i64 0, "
+                f"getelementptr inbounds [6 x i8], [6 x i8]* "
+                f"{self._string_global('false')}, i64 0, i64 0"
+            )
+            return "%s"
+        if t in THREADON_INT_BITS or t == "int":
+            return "%lld"
+        if t == "float" or t in ("Float16", "Float32", "Float64"):
+            return "%f"
+        return "%lld"
+
+    def _snprintf_arg(self, t, var):
+        if t == "String":
+            return f"i8* {var}"
+        if t == "bool" or t in ("Bool", "Boolean"):
+            tmp = f"{var}_bstr"
+            return f"i8* {tmp}"
+        if t in THREADON_INT_BITS or t == "int":
+            llvm = self.to_llvm_type(t)
+            return f"{llvm} {var}"
+        if t == "float" or t in ("Float16", "Float32", "Float64"):
+            llvm = self.to_llvm_type(t)
+            return f"{llvm} {var}"
+        return f"i64 {var}"
+
     def _zero_value(self, t):
         if t == "bool" or t in ("Bool", "Boolean"):
             return "false"
@@ -2831,7 +3052,322 @@ class LLVMIRCompiler:
         lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {data}, 1")
         return lines
 
-    def _emit_select(self, res, instr):
+    def _parse_dict_kv_types(self, dict_type):
+        inner = dict_type[5:-1]
+        comma_idx = None
+        depth = 0
+        for ci, ch in enumerate(inner):
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                comma_idx = ci
+                break
+        if comma_idx is not None:
+            key_type = inner[:comma_idx].strip()
+            val_type = inner[comma_idx + 1:].strip()
+        else:
+            key_type = "Unknown"
+            val_type = "Unknown"
+        return key_type, val_type
+
+    def _emit_dict_init(self, res, rtype, instr):
+        key_type = instr.args[0]
+        val_type = instr.args[1]
+        all_args = instr.args[2:]
+        n = len(all_args) // 2
+        keys = all_args[:n]
+        vals = all_args[n:]
+        n = len(keys)
+        key_llvm = self.to_llvm_type(key_type)
+        val_llvm = self.to_llvm_type(val_type)
+        self.used_c_runtime.add("malloc")
+        lines = []
+
+        key_total = n * self._llvm_sizeof(key_llvm)
+        keys_raw = f"{res}_kr"
+        lines.append(f"{keys_raw} = call i8* @malloc(i64 {key_total})")
+        keys_data = f"{res}_kd"
+        lines.append(f"{keys_data} = bitcast i8* {keys_raw} to {key_llvm}*")
+
+        val_total = n * self._llvm_sizeof(val_llvm)
+        vals_raw = f"{res}_vr"
+        lines.append(f"{vals_raw} = call i8* @malloc(i64 {val_total})")
+        vals_data = f"{res}_vd"
+        lines.append(f"{vals_data} = bitcast i8* {vals_raw} to {val_llvm}*")
+
+        for i, (k, v) in enumerate(zip(keys, vals)):
+            kval = self.operand(k)
+            vval = self.operand(v)
+            if i == 0:
+                lines.append(f"store {key_llvm} {kval}, {key_llvm}* {keys_data}")
+                lines.append(f"store {val_llvm} {vval}, {val_llvm}* {vals_data}")
+            else:
+                kptr = f"{res}_kp{i}"
+                vptr = f"{res}_vp{i}"
+                lines.append(
+                    f"{kptr} = getelementptr {key_llvm}, {key_llvm}* {keys_data}, i64 {i}"
+                )
+                lines.append(f"store {key_llvm} {kval}, {key_llvm}* {kptr}")
+                lines.append(
+                    f"{vptr} = getelementptr {val_llvm}, {val_llvm}* {vals_data}, i64 {i}"
+                )
+                lines.append(f"store {val_llvm} {vval}, {val_llvm}* {vptr}")
+
+        v0 = f"{res}_v0"
+        v1 = f"{res}_v1"
+        lines.append(f"{v0} = insertvalue {rtype} undef, i64 {n}, 0")
+        lines.append(f"{v1} = insertvalue {rtype} {v0}, {key_llvm}* {keys_data}, 1")
+        lines.append(f"{res} = insertvalue {rtype} {v1}, {val_llvm}* {vals_data}, 2")
+        return lines
+
+    def _emit_dict_get(self, res, instr):
+        obj = instr.args[0]
+        key = instr.args[1]
+        key_type, val_type = self._parse_dict_kv_types(obj.type)
+        key_llvm = self.to_llvm_type(key_type)
+        val_llvm = self.to_llvm_type(val_type)
+        llvm_type = self.to_llvm_type(obj.type)
+        obj_op = self.operand(obj)
+        key_op = self.operand(key)
+
+        count = f"{res}_cnt"
+        keys = f"{res}_kd"
+        vals = f"{res}_vd"
+        lines = [
+            f"{count} = extractvalue {llvm_type} {obj_op}, 0",
+            f"{keys} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{vals} = extractvalue {llvm_type} {obj_op}, 2",
+        ]
+
+        base = res.lstrip('%')
+        loop_label = f"{base}_loop"
+        body_label = f"{base}_body"
+        found_label = f"{base}_found"
+        notfound_label = f"{base}_nf"
+        merge_label = f"{base}_merge"
+        i_var = f"{res}_i"
+        iphi = f"{res}_iphi"
+        pred_label = self._current_label()
+
+        lines.append(f"br label %{loop_label}")
+        self._advance_label(loop_label)
+        lines.append(f"{loop_label}:")
+        nxt_label = f"{base}_nxt"
+        lines.append(f"{iphi} = phi i64 [ 0, %{pred_label} ], [ {i_var}_next, %{nxt_label} ]")
+        cmp = f"{res}_cmp"
+        lines.append(f"{cmp} = icmp sge i64 {iphi}, {count}")
+        lines.append(f"br i1 {cmp}, label %{notfound_label}, label %{body_label}")
+        lines.append(f"{body_label}:")
+
+        kgep = f"{res}_kg"
+        loaded_key = f"{res}_lk"
+        lines.append(
+            f"{kgep} = getelementptr {key_llvm}, {key_llvm}* {keys}, i64 {iphi}"
+        )
+        lines.append(f"{loaded_key} = load {key_llvm}, {key_llvm}* {kgep}")
+
+        if key_type == "String":
+            self.used_c_runtime.add("strcmp")
+            eq = f"{res}_eq"
+            lines.append(
+                f"{eq} = call i32 @strcmp(i8* {loaded_key}, i8* {key_op})"
+            )
+            keq = f"{res}_keq"
+            lines.append(f"{keq} = icmp eq i32 {eq}, 0")
+        else:
+            keq = f"{res}_keq"
+            lines.append(f"{keq} = icmp eq {key_llvm} {loaded_key}, {key_op}")
+
+        lines.append(f"br i1 {keq}, label %{found_label}, label %{base}_nxt")
+        lines.append(f"{base}_nxt:")
+        lines.append(f"{i_var}_next = add i64 {iphi}, 1")
+        lines.append(f"br label %{loop_label}")
+        lines.append(f"{found_label}:")
+
+        vgep = f"{res}_vg"
+        found_val = f"{res}_fval"
+        lines.append(
+            f"{vgep} = getelementptr {val_llvm}, {val_llvm}* {vals}, i64 {iphi}"
+        )
+        lines.append(f"{found_val} = load {val_llvm}, {val_llvm}* {vgep}")
+        lines.append(f"br label %{merge_label}")
+        lines.append(f"{notfound_label}:")
+
+        if val_llvm.endswith("*"):
+            lines.append(f"{res}_nfval = bitcast i8* null to {val_llvm}")
+        else:
+            lines.append(f"{res}_nfval = add {val_llvm} 0, 0")
+        lines.append(f"br label %{merge_label}")
+        lines.append(f"{merge_label}:")
+        lines.append(
+            f"{res} = phi {val_llvm} [ {found_val}, %{found_label} ], [ {res}_nfval, %{notfound_label} ]"
+        )
+
+        return lines
+
+    def _emit_dict_set(self, res, instr):
+        obj = instr.args[0]
+        key = instr.args[1]
+        val = instr.args[2]
+        key_type, val_type = self._parse_dict_kv_types(obj.type)
+        key_llvm = self.to_llvm_type(key_type)
+        val_llvm = self.to_llvm_type(val_type)
+        llvm_type = self.to_llvm_type(obj.type)
+        obj_op = self.operand(obj)
+        key_op = self.operand(key)
+        val_op = self.operand(val, materialize=False)
+
+        old_count = f"{res}_oc"
+        old_keys = f"{res}_okd"
+        old_vals = f"{res}_ovd"
+        lines = [
+            f"{old_count} = extractvalue {llvm_type} {obj_op}, 0",
+            f"{old_keys} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{old_vals} = extractvalue {llvm_type} {obj_op}, 2",
+        ]
+
+        self.used_c_runtime.add("malloc")
+        new_count = f"{res}_nc"
+        lines.append(f"{new_count} = add i64 {old_count}, 1")
+
+        key_size = self._llvm_sizeof(key_llvm)
+        val_size = self._llvm_sizeof(val_llvm)
+
+        key_total = f"{res}_kt"
+        lines.append(f"{key_total} = mul i64 {new_count}, {key_size}")
+        keys_raw = f"{res}_kr"
+        lines.append(f"{keys_raw} = call i8* @malloc(i64 {key_total})")
+        new_keys = f"{res}_nkd"
+        lines.append(f"{new_keys} = bitcast i8* {keys_raw} to {key_llvm}*")
+
+        val_total = f"{res}_vt"
+        lines.append(f"{val_total} = mul i64 {new_count}, {val_size}")
+        vals_raw = f"{res}_vr"
+        lines.append(f"{vals_raw} = call i8* @malloc(i64 {val_total})")
+        new_vals = f"{res}_nvd"
+        lines.append(f"{new_vals} = bitcast i8* {vals_raw} to {val_llvm}*")
+
+        base = res.lstrip('%')
+        loop_label = f"{base}_loop"
+        body_label = f"{base}_body"
+        done_label = f"{base}_done"
+        nxt_label = f"{base}_nxt"
+        iphi = f"{res}_iphi"
+        i_var = f"{res}_i"
+
+        pred_label = self._current_label()
+
+        lines.append(f"br label %{loop_label}")
+        self._advance_label(loop_label)
+        lines.append(f"{loop_label}:")
+        lines.append(f"{iphi} = phi i64 [ 0, %{pred_label} ], [ {i_var}_next, %{nxt_label} ]")
+        cmp = f"{res}_cmp"
+        lines.append(f"{cmp} = icmp sge i64 {iphi}, {old_count}")
+        lines.append(f"br i1 {cmp}, label %{done_label}, label %{body_label}")
+        lines.append(f"{body_label}:")
+
+        okgep = f"{res}_okg"
+        old_loaded = f"{res}_ol"
+        lines.append(
+            f"{okgep} = getelementptr {key_llvm}, {key_llvm}* {old_keys}, i64 {iphi}"
+        )
+        lines.append(f"{old_loaded} = load {key_llvm}, {key_llvm}* {okgep}")
+
+        if key_type == "String":
+            self.used_c_runtime.add("strcmp")
+            seq = f"{res}_seq"
+            lines.append(
+                f"{seq} = call i32 @strcmp(i8* {old_loaded}, i8* {key_op})"
+            )
+            keq = f"{res}_keq"
+            lines.append(f"{keq} = icmp eq i32 {seq}, 0")
+        else:
+            keq = f"{res}_keq"
+            lines.append(f"{keq} = icmp eq {key_llvm} {old_loaded}, {key_op}")
+
+        lines.append(f"br i1 {keq}, label %{done_label}, label %{nxt_label}")
+        lines.append(f"{nxt_label}:")
+        lines.append(f"{i_var}_next = add i64 {iphi}, 1")
+        lines.append(f"br label %{loop_label}")
+        lines.append(f"{done_label}:")
+
+        iphi_final = f"{res}_iphi_f"
+        lines.append(
+            f"{iphi_final} = phi i64 [ {iphi}, %{body_label} ], [ {old_count}, %{loop_label} ]"
+        )
+        found_flag = f"{res}_found"
+        lines.append(
+            f"{found_flag} = phi i1 [ true, %{body_label} ], [ false, %{loop_label} ]"
+        )
+        actual_count = f"{res}_ac"
+        lines.append(
+            f"{actual_count} = select i1 {found_flag}, i64 {old_count}, i64 {new_count}"
+        )
+
+        cpy_loop = f"{base}_cpy"
+        cpy_body = f"{base}_cpyb"
+        cpy_nxt = f"{base}_cpyn"
+        cpy_done = f"{base}_cpyd"
+        ci = f"{res}_ci"
+        ciphi = f"{res}_ciphi"
+
+        lines.append(f"br label %{cpy_loop}")
+        lines.append(f"{cpy_loop}:")
+        lines.append(f"{ciphi} = phi i64 [ 0, %{done_label} ], [ {ci}_next, %{cpy_nxt} ]")
+        ccmp = f"{res}_ccmp"
+        lines.append(f"{ccmp} = icmp sge i64 {ciphi}, {old_count}")
+        lines.append(f"br i1 {ccmp}, label %{cpy_done}, label %{cpy_body}")
+        lines.append(f"{cpy_body}:")
+
+        ck_src = f"{res}_cks"
+        ck_dst = f"{res}_ckd"
+        lines.append(
+            f"{ck_src} = getelementptr {key_llvm}, {key_llvm}* {old_keys}, i64 {ciphi}"
+        )
+        lines.append(
+            f"{ck_dst} = getelementptr {key_llvm}, {key_llvm}* {new_keys}, i64 {ciphi}"
+        )
+        ck_val = f"{res}_ckv"
+        lines.append(f"{ck_val} = load {key_llvm}, {key_llvm}* {ck_src}")
+        lines.append(f"store {key_llvm} {ck_val}, {key_llvm}* {ck_dst}")
+
+        cv_src = f"{res}_cvs"
+        cv_dst = f"{res}_cvd"
+        lines.append(
+            f"{cv_src} = getelementptr {val_llvm}, {val_llvm}* {old_vals}, i64 {ciphi}"
+        )
+        lines.append(
+            f"{cv_dst} = getelementptr {val_llvm}, {val_llvm}* {new_vals}, i64 {ciphi}"
+        )
+        cv_val = f"{res}_cvv"
+        lines.append(f"{cv_val} = load {val_llvm}, {val_llvm}* {cv_src}")
+        lines.append(f"store {val_llvm} {cv_val}, {val_llvm}* {cv_dst}")
+
+        lines.append(f"{ci}_next = add i64 {ciphi}, 1")
+        lines.append(f"br label %{cpy_nxt}")
+        lines.append(f"{cpy_nxt}:")
+        lines.append(f"br label %{cpy_loop}")
+        lines.append(f"{cpy_done}:")
+
+        kgend = f"{res}_kgend"
+        lines.append(
+            f"{kgend} = getelementptr {key_llvm}, {key_llvm}* {new_keys}, i64 {iphi_final}"
+        )
+        lines.append(f"store {key_llvm} {key_op}, {key_llvm}* {kgend}")
+        vgend = f"{res}_vgend"
+        lines.append(
+            f"{vgend} = getelementptr {val_llvm}, {val_llvm}* {new_vals}, i64 {iphi_final}"
+        )
+        lines.append(f"store {val_llvm} {val_op}, {val_llvm}* {vgend}")
+
+        v0 = f"{res}_v0"
+        v1 = f"{res}_v1"
+        lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {actual_count}, 0")
+        lines.append(f"{v1} = insertvalue {llvm_type} {v0}, {key_llvm}* {new_keys}, 1")
+        lines.append(f"{res} = insertvalue {llvm_type} {v1}, {val_llvm}* {new_vals}, 2")
+        return lines
         cond = self.operand(instr.args[0])
         tval = self.operand(instr.args[1], materialize=False)
         fval = self.operand(instr.args[2], materialize=False)

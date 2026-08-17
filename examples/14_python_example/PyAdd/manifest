@@ -6,4 +6,4 @@ export add Float64 Float64 Float64
 export scale Float64 Float64 Float64
 export mean Float64 List[Float64]
 export normalize List[Float64] List[Float64]
-export describe Dict[String,Float64] List[Float64]
+export describe Dict[String,Float64] Dict[String,Float64]

@@ -1139,3 +1139,101 @@ def main() -> Int32
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "3.200000\n3.200000\n4.200000\n"
+
+
+def test_dict_literal_and_get_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Dict[String, Int32] = {"a": 1, "b": 2}
+    y: Int32 = x["a"]
+    print(y)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\n"
+
+
+def test_dict_set_overwrite_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Dict[String, Int32] = {"a": 1, "b": 2}
+    x["a"] = 10
+    y: Int32 = x["a"]
+    print(y)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "10\n"
+
+
+def test_dict_set_append_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Dict[String, Int32] = {"a": 1, "b": 2}
+    x["c"] = 3
+    y: Int32 = x["c"]
+    print(y)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3\n"
+
+
+def test_dict_print_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Dict[String, Int32] = {"a": 1, "b": 2}
+    print(x)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "{a: 1, b: 2}\n"
+
+
+def test_dict_empty_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Dict[String, Int32] = {}
+    print(x)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "{}\n"
+
+
+def test_dict_int_keys_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Dict[Int32, String] = {1: "hello", 2: "world"}
+    y: String = x[1]
+    print(y)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "hello\n"
+
+
+def test_dict_overwrite_and_print_runtime():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Dict[String, Int32] = {"a": 1, "b": 2}
+    x["a"] = 10
+    print(x)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "{a: 10, b: 2}\n"

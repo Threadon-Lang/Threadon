@@ -3,5 +3,6 @@ import PyAdd
 def main() -> Int32:
     print(PyAdd.add(2.0,23.0))
 
-    print(PyAdd.mean([1.0,2.0,3.0])
+    print(PyAdd.mean([1.0,2.0,3.0]))
+    print(PyAdd.describe({"1":1.0,"2":2.0,"3":3.0}))
     return 0

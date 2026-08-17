@@ -14,6 +14,7 @@ from .nodes import (
     CallExpr,
     CastExpr,
     ClassInitExpr,
+    DictLiteralExpr,
     Expr,
     ExprStmt,
     FieldAccessExpr,
@@ -127,6 +128,49 @@ class IRInstr:
                     f"{self.result.type} = {inner}"
                 )
 
+            return inner
+
+        if self.op == "dict_init":
+            inner = f"dict_init {self.args[0]},{self.args[1]} {{"
+            pairs = []
+            keys_args = self.args[2::2]
+            vals_args = self.args[3::2]
+            for k, v in zip(keys_args, vals_args):
+                pairs.append(f"{k.name}: {v.name}")
+            inner += ", ".join(pairs)
+            inner += "}"
+            if isinstance(self.result, SSAValue):
+                return (
+                    f"{self.result.name}: "
+                    f"{self.result.type} = {inner}"
+                )
+            return inner
+
+        if self.op == "dict_get":
+            inner = (
+                f"dict_get "
+                f"{self.args[0].name}"
+                f"[{self.args[1].name}]"
+            )
+            if isinstance(self.result, SSAValue):
+                return (
+                    f"{self.result.name}: "
+                    f"{self.result.type} = {inner}"
+                )
+            return inner
+
+        if self.op == "dict_set":
+            inner = (
+                f"dict_set "
+                f"{self.args[0].name}"
+                f"[{self.args[1].name}]"
+                f" = {self.args[2].name}"
+            )
+            if isinstance(self.result, SSAValue):
+                return (
+                    f"{self.result.name}: "
+                    f"{self.result.type} = {inner}"
+                )
             return inner
 
         args = ", ".join(str(a) for a in self.args)
@@ -1044,13 +1088,25 @@ class SSABuilder:
                 base.type
             )
 
-            self.current_block.add_instr(
-                IRInstr(
-                    "list_set",
-                    [base, idx, value],
-                    result=new,
+            if (
+                isinstance(base.type, str)
+                and base.type.startswith("Dict[")
+            ):
+                self.current_block.add_instr(
+                    IRInstr(
+                        "dict_set",
+                        [base, idx, value],
+                        result=new,
+                    )
                 )
-            )
+            else:
+                self.current_block.add_instr(
+                    IRInstr(
+                        "list_set",
+                        [base, idx, value],
+                        result=new,
+                    )
+                )
 
             return self.assign_into(
                 target.obj,
@@ -2505,6 +2561,55 @@ class SSABuilder:
 
             return v
 
+        if isinstance(expr, DictLiteralExpr):
+            keys_vals = []
+            for k in expr.keys:
+                keys_vals.append(self.emit_expr(k))
+            for v in expr.values:
+                keys_vals.append(self.emit_expr(v))
+
+            if (
+                expr.type is not None
+                and expr.type.startswith("Dict[")
+            ):
+                inner = expr.type[5:-1]
+                comma_idx = None
+                depth = 0
+                for ci, ch in enumerate(inner):
+                    if ch == '[':
+                        depth += 1
+                    elif ch == ']':
+                        depth -= 1
+                    elif ch == ',' and depth == 0:
+                        comma_idx = ci
+                        break
+                if comma_idx is not None:
+                    key_type = inner[:comma_idx].strip()
+                    val_type = inner[comma_idx + 1:].strip()
+                else:
+                    key_type = "Unknown"
+                    val_type = "Unknown"
+            elif keys_vals:
+                key_type = keys_vals[0].type
+                val_type = keys_vals[len(expr.keys)].type
+            else:
+                key_type = "Unknown"
+                val_type = "Unknown"
+
+            v = self.new_temp(
+                f"Dict[{key_type},{val_type}]"
+            )
+
+            self.current_block.add_instr(
+                IRInstr(
+                    "dict_init",
+                    [key_type, val_type] + keys_vals,
+                    result=v,
+                )
+            )
+
+            return v
+
         if isinstance(expr, IndexExpr):
             obj = self.emit_expr(
                 expr.obj
@@ -2521,13 +2626,46 @@ class SSABuilder:
                 and obj_type.startswith("List[")
             ):
                 elem_type = obj_type[5:-1]
-            else:
-                elem_type = "Unknown"
+                v = self.new_temp(elem_type)
+                self.current_block.add_instr(
+                    IRInstr(
+                        "list_get",
+                        [obj, idx],
+                        result=v,
+                    )
+                )
+                return v
 
-            v = self.new_temp(
-                elem_type
-            )
+            if (
+                isinstance(obj_type, str)
+                and obj_type.startswith("Dict[")
+            ):
+                inner = obj_type[5:-1]
+                comma_idx = None
+                depth = 0
+                for ci, ch in enumerate(inner):
+                    if ch == '[':
+                        depth += 1
+                    elif ch == ']':
+                        depth -= 1
+                    elif ch == ',' and depth == 0:
+                        comma_idx = ci
+                        break
+                if comma_idx is not None:
+                    val_type = inner[comma_idx + 1:].strip()
+                else:
+                    val_type = "Unknown"
+                v = self.new_temp(val_type)
+                self.current_block.add_instr(
+                    IRInstr(
+                        "dict_get",
+                        [obj, idx],
+                        result=v,
+                    )
+                )
+                return v
 
+            v = self.new_temp("Unknown")
             self.current_block.add_instr(
                 IRInstr(
                     "list_get",
@@ -2535,7 +2673,6 @@ class SSABuilder:
                     result=v,
                 )
             )
-
             return v
 
         if isinstance(expr, FieldAccessExpr):

@@ -146,6 +146,11 @@ class ListLiteralExpr(Expr):
     elements: list
 
 @dataclass
+class DictLiteralExpr(Expr):
+    keys: list
+    values: list
+
+@dataclass
 class IndexExpr(Expr):
     obj: Expr
     index: Expr

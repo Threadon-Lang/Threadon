@@ -110,6 +110,25 @@ def _is_printable(t, aggregate_types=None):
         return True
     if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):
         return _is_printable(t[5:-1], aggregate_types)
+    if isinstance(t, str) and t.startswith("Dict[") and t.endswith("]"):
+        inner = t[5:-1]
+        comma_idx = None
+        depth = 0
+        for ci, ch in enumerate(inner):
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                comma_idx = ci
+                break
+        if comma_idx is not None:
+            key_type = inner[:comma_idx].strip()
+            val_type = inner[comma_idx + 1:].strip()
+        else:
+            key_type = inner.strip()
+            val_type = "Unknown"
+        return _is_printable(key_type, aggregate_types) and _is_printable(val_type, aggregate_types)
     return False
 
 

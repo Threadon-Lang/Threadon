@@ -459,6 +459,11 @@ class UnusedVariableChecker:
         elif t == "ListLiteralExpr":
             for e in expr.elements:
                 self.visit_expr(e, used)
+        elif t == "DictLiteralExpr":
+            for k in expr.keys:
+                self.visit_expr(k, used)
+            for v in expr.values:
+                self.visit_expr(v, used)
         elif t == "RefExpr":
             self.visit_expr(expr.inner, used)
         elif t == "InterpolatedStringExpr":
@@ -575,6 +580,12 @@ class DeadStoreChecker:
         elif t == "ListLiteralExpr":
             for e in expr.elements:
                 self.walk_expr(e, reads)
+
+        elif t == "DictLiteralExpr":
+            for k in expr.keys:
+                self.walk_expr(k, reads)
+            for v in expr.values:
+                self.walk_expr(v, reads)
 
         elif t == "RefExpr":
             self.walk_expr(expr.inner, reads)

@@ -686,11 +686,20 @@ class Importer:
 
     def _emit_export_thunk(self, func, ret_t: ThType, arg_ts, modname, fresh):
         c_ret = self._c_type_for(ret_t)
-        params = ", ".join(f"{self._c_type_for(t)} a{i}" for i, t in enumerate(arg_ts))
+        dict_ret = ret_t.is_dict
+        param_parts = []
+        for i, t in enumerate(arg_ts):
+            if t.is_dict:
+                param_parts.append(f"{self._c_type_for(t)}* a{i}")
+            else:
+                param_parts.append(f"{self._c_type_for(t)} a{i}")
+        if dict_ret:
+            param_parts.append(f"{c_ret}* _sret_out")
+        params = ", ".join(param_parts)
         nargs = len(arg_ts)
 
         out = []
-        out.append(f"{c_ret} {func}({params}) {{")
+        out.append(f"{'void' if dict_ret else c_ret} {func}({params}) {{")
         out.append("    ensure_init();")
 
         if nargs == 0:
@@ -699,25 +708,26 @@ class Importer:
             out.append(f"    PyObject* args = PyTuple_New({nargs});")
             for i, t in enumerate(arg_ts):
                 pyv = fresh("pyv")
+                src_var = f"(*a{i})" if t.is_dict else f"a{i}"
                 if t.is_list:
                     self._emit_native_to_py_list(out, pyv, f"a{i}", t, fresh)
                 elif t.is_dict:
-                    self._emit_native_to_py_dict(out, pyv, f"a{i}", t, fresh)
+                    self._emit_native_to_py_dict(out, pyv, src_var, t, fresh)
                 else:
                     self._emit_native_to_py_scalar(out, pyv, f"a{i}", t)
                 out.append(f"    PyTuple_SetItem(args, {i}, {pyv});")
 
         out.append(f'    PyObject* mod = PyImport_ImportModule("{modname}");')
-        out.append(f"    if (!mod) return {self._zero_c_value(ret_t)};")
+        out.append(f"    if (!mod) {{ {'*_sret_out = ' + self._zero_c_value(ret_t) + ';' if dict_ret else 'return ' + self._zero_c_value(ret_t) + ';'} }}")
         out.append(f'    PyObject* f = PyObject_GetAttrString(mod, "{func}");')
         out.append("    Py_DECREF(mod);")
-        out.append(f"    if (!f || !PyCallable_Check(f)) {{ Py_XDECREF(f); return {self._zero_c_value(ret_t)}; }}")
+        out.append(f"    if (!f || !PyCallable_Check(f)) {{ Py_XDECREF(f); {'*_sret_out = ' + self._zero_c_value(ret_t) + ';' if dict_ret else 'return ' + self._zero_c_value(ret_t) + ';'} }}")
 
         out.append("    PyObject* r = PyObject_CallObject(f, args);")
         out.append("    Py_DECREF(f);")
         if nargs > 0:
             out.append("    Py_DECREF(args);")
-        out.append(f"    if (!r) {{ PyErr_Clear(); return {self._zero_c_value(ret_t)}; }}")
+        out.append(f"    if (!r) {{ PyErr_Clear(); {'*_sret_out = ' + self._zero_c_value(ret_t) + ';' if dict_ret else 'return ' + self._zero_c_value(ret_t) + ';'} }}")
 
         if ret_t.is_list:
             out.append(f"    {self._c_type_for(ret_t)} out;")
@@ -725,10 +735,10 @@ class Importer:
             out.append("    Py_DECREF(r);")
             out.append("    return out;")
         elif ret_t.is_dict:
-            out.append(f"    {self._c_type_for(ret_t)} out;")
-            self._emit_py_to_native_dict(out, "out", "r", ret_t, fresh)
+            out.append(f"    auto& _dout = *_sret_out;")
+            self._emit_py_to_native_dict(out, "_dout", "r", ret_t, fresh)
             out.append("    Py_DECREF(r);")
-            out.append("    return out;")
+            out.append("    return;")
         else:
             outv = fresh("out")
             self._emit_py_to_native_scalar(out, f"{c_ret} {outv}", "r", ret_t, fresh)
