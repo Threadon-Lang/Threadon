@@ -6,11 +6,11 @@ or executes it with ``lli``.
 
 Examples::
 
-    python3 -m compiler.main examples/01_hello/main.th
-    python3 -m compiler.main --run examples/03_imports/main.th
-    python3 -m compiler.main -o out.ll examples/02_structs/main.th
-    python3 -m compiler.main --exe hello examples/01_hello/main.th
-    python3 -m compiler.main --run -I ./lib examples/app/main.th
+    python3 -m threadon examples/01_hello/main.th
+    python3 -m threadon --run examples/03_imports/main.th
+    python3 -m threadon -o out.ll examples/02_structs/main.th
+    python3 -m threadon --exe hello examples/01_hello/main.th
+    python3 -m threadon --run -I ./lib examples/app/main.th
 """
 
 import argparse
@@ -24,8 +24,8 @@ import shlex
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from compiler.compiler import compile_file
-from compiler.importer import Importer
+from .compiler import compile_file
+from .importer import Importer
 
 def _python_includes():
     """Include flags needed when compiling a Python-bridge module."""
