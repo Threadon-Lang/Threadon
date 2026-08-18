@@ -173,18 +173,15 @@ class Parser:
     def __init__(self, importer=None, module_name=""):
         self.importer = importer or Importer()
         self.module_name = module_name
-        self.lexed_lines = []
+
         self.line_number = 1
         self.current_line_number = 0
-        self.current_line = []
         self.current_indent = 0
-        self.return_type = None
+        self.current_indent_col = 0
         self.ast = []
-        self.scopes = []
-        self.func_sigs = {}
         self.indent_stack = [0]
         self.struct_defs = {}
-        self.current_indent_col = 0
+        self.func_sigs = {}
         self.aliases = {}
         self.qfunc = {}
         self.qstruct = {}
@@ -202,11 +199,15 @@ class Parser:
         self._inferred_ret = None
         self._pending_inferred = {}
         self._in_init = False
-        self._in_function = False
         self._in_struct = False
         self._in_class = False
+        self._in_function = False
+        self.return_type = None
 
-
+        self.scopes = []
+        self.var_declared_stack = []
+        self.modified_stack = []
+        self.push_scope()
     def give_error(self, msg, line_num=None):
         RED = "\033[91m"
         BOLD = "\033[1m"
@@ -890,41 +891,7 @@ class Parser:
         return self.import_member(usage_path, member)
 
     def parse(self, code: str):
-        self.line_number = 1
-        self.current_line_number = 0
-        self.current_indent = 0
-        self.current_indent_col = 0
-        self.ast = []
         self.original_lines = code.splitlines()
-        self.indent_stack = [0]
-        self.struct_defs = {}
-        self.func_sigs = {}
-        self.aliases = {}
-        self.qfunc = {}
-        self.qstruct = {}
-        self.qclass = {}
-        self.class_defs = {}
-        self.class_ast = {}
-        self.class_method_map = {}
-        self.func_import_aliases = {}
-        self.struct_import_aliases = {}
-        self.class_import_aliases = {}
-        self.module_aliases = {}
-        self.lazy_imports = {}
-        self.current_class = None
-        self._infer_return = False
-        self._inferred_ret = None
-        self._pending_inferred = {}
-        self._in_init = False
-        self._in_struct = False
-        self._in_class = False
-        self._in_function = False
-
-        self.scopes = []
-        self.var_declared_stack = []
-        self.modified_stack = []
-        self.push_scope()
-
         try:
             self.lexed_lines = lex_lines(code)
         except SyntaxError as e:
