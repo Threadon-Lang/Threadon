@@ -1,14 +1,20 @@
 
 
-CLI
+Threadon
 ===
+Installation
+---
+Install threadon using pip
+```bash
+sudo apt install llvm
+pip3 install threadon
+```
 
-the command-line compiler
 
 Usage
 -----
 
-Threadon is a Python module that drives LLVM. From the project root:
+Threadon is a Python module that drives LLVM
 
     python3 -m threadon FILE.th [options]
 
