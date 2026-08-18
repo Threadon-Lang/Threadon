@@ -1,0 +1,28 @@
+def main() -> Int32
+    a: String = "Hello"
+    b: String = " World"
+    c: String = a + b
+    print(c)
+
+    d: String = String(42)
+    print(d)
+
+    e: String = String(3.14)
+    print(e)
+
+    f: String = String(True)
+    print(f)
+
+    g: Int32 = Int32("123")
+    print(g)
+
+    h: Float32 = Float32("3.5")
+    print(h)
+
+    i: Bool = Bool("true")
+    print(i)
+
+    j: String = "one" + " " + "two"
+    print(j)
+
+    return 0

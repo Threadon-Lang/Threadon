@@ -2452,10 +2452,18 @@ class Parser:
                                 )
                     return "Bool"
 
+                if expr.op == "+" and "String" in lms and "String" in rms:
+                    other = (lms | rms) - {"String"}
+                    if not other:
+                        return "String"
+
                 if expr.op in ("+", "-", "*", "/", "**", "%", "//"):
                     result_members = set()
                     for lm in lms:
                         for rm in rms:
+                            if expr.op == "+" and lm == "String" and rm == "String":
+                                result_members.add("String")
+                                continue
                             common = common_numeric_type(lm, rm)
                             if common is None:
                                 self.give_error(
@@ -2484,6 +2492,9 @@ class Parser:
                 if left != "Bool" or right != "Bool":
                     self.give_error("Boolean operators require Bool operands")
                 return "Bool"
+
+            if expr.op == "+" and left == "String" and right == "String":
+                return "String"
 
             if expr.op in ("+", "-", "*", "/", "**", "%", "//"):
                 if left != right:

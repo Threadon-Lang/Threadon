@@ -167,6 +167,8 @@ class LLVMIRCompiler:
                     suffix = intrin.rsplit(".", 1)[1]
                     t = {"f16": "half", "f32": "float", "f64": "double"}[suffix]
                     self.out.append(f"declare {t} @{intrin}({t}) #0")
+                elif intrin.startswith("llvm.memcpy."):
+                    self.out.append(f"declare void @{intrin}(i8*, i8*, i64, i1) #0")
             self.out.append("")
             self.out.append('attributes #0 = { nounwind readnone speculatable willreturn }')
 
@@ -945,6 +947,36 @@ class LLVMIRCompiler:
         return f"{res} = {llvm_op} {ltype} {l}, {r}"
 
 
+    def _emit_str_concat(self, res, left, right):
+        self.used_c_runtime.add("strlen")
+        self.used_c_runtime.add("malloc")
+        self.used_c_runtime.add("memcpy")
+
+        l = self.operand(left)
+        r = self.operand(right)
+
+        len_l = f"{res}_lenl"
+        len_r = f"{res}_lenr"
+        total = f"{res}_total"
+        buf = f"{res}_buf"
+
+        lines = [
+            f"{len_l} = call i64 @strlen(i8* {l})",
+            f"{len_r} = call i64 @strlen(i8* {r})",
+            f"{total} = add i64 {len_l}, {len_r}",
+            f"{total}_1 = add i64 {total}, 1",
+            f"{buf} = call i8* @malloc(i64 {total}_1)",
+            f"call void @llvm.memcpy.p0i8.p0i8.i64(i8* {buf}, i8* {l}, i64 {len_l}, i1 false)",
+            f"{buf}_mid = getelementptr i8, i8* {buf}, i64 {len_l}",
+            f"call void @llvm.memcpy.p0i8.p0i8.i64(i8* {buf}_mid, i8* {r}, i64 {len_r}, i1 false)",
+            f"{buf}_end = getelementptr i8, i8* {buf}, i64 {total}",
+            f"store i8 0, i8* {buf}_end",
+            f"{res} = getelementptr i8, i8* {buf}, i64 0",
+        ]
+        self.used_intrinsics.add("llvm.memcpy.p0i8.p0i8.i64")
+        return lines
+
+
     def _emit_i256_checked_binop(self, res, op, l, r, unsigned, msg_global, msg_size, ctx_global):
         ext = "zext" if unsigned else "sext"
         ex = f"{res}_ex"
@@ -981,6 +1013,8 @@ class LLVMIRCompiler:
         tgt_unsigned = self._is_unsigned(target_type)
 
         if src_type == "i8*":
+            if rtype == "i8*":
+                return self._emit_identity(res, src)
             if rtype in INT_LLVM_BITS:
                 self.used_c_runtime.add("strtoull" if tgt_unsigned else "strtol")
                 tmp = f"{res}_tmp"
@@ -1441,6 +1475,9 @@ class LLVMIRCompiler:
             return self._emit_identity(res, instr.args[0])
         if op == "not":
             return self._emit_unary(res, "not", instr.args[0])
+
+        if op == "str_concat":
+            return self._emit_str_concat(res, instr.args[0], instr.args[1])
 
         if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow", "and", "or"):
             if (

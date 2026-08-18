@@ -2395,6 +2395,17 @@ class SSABuilder:
                 expr.right
             )
 
+            if expr.op == "+" and left.type == "String" and right.type == "String":
+                v = self.new_temp("String")
+                self.current_block.add_instr(
+                    IRInstr(
+                        "str_concat",
+                        [left, right],
+                        result=v,
+                    )
+                )
+                return v
+
             op_map = {
                 "<": "cmp_lt",
                 ">": "cmp_gt",
