@@ -665,7 +665,10 @@ class SSABuilder:
             self.emit_stmt(stmt)
 
 
-    def build_from_ast(self, ast, native_sigs=None):
+    def build_from_ast(self, ast, native_sigs=None, native_types=None):
+        for type_name, fields in (native_types or []):
+            self.module.add_type(type_name, fields)
+
         for node in ast:
             if type(node).__name__ == "StructDef":
                 fields = [

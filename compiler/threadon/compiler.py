@@ -27,6 +27,7 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
             CombinedChecker().run_all(merged)
             native_sigs = {}
             native_exports = []
+            native_types = []
             for mod in importer.modules():
                 if not mod.is_native:
                     continue
@@ -37,7 +38,13 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
                     native_exports.append(
                         {"module": mod.name, "name": export_name, "ret": ret, "args": args}
                     )
-            module = SSABuilder().build_from_ast(merged, native_sigs=native_sigs)
+                for type_name, fields in mod.class_defs.items():
+                    native_types.append(
+                        (type_name, [(f.name, f.var_type) for f in fields])
+                    )
+            module = SSABuilder().build_from_ast(
+                merged, native_sigs=native_sigs, native_types=native_types
+            )
             IROptimizer(inline_threshold=inline_threshold, debug_mode=debug_mode).optimize(module)
     except BaseException as e:
         raise RuntimeError(f"compiler error:\n{buf.getvalue()}") from e

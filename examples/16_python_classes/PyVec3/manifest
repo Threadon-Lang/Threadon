@@ -1,0 +1,6 @@
+module PyVec3
+lang python
+source vec3.py
+
+class Vec3 init Float64 Float64 Float64
+class Vec3 method length -> Float64

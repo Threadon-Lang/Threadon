@@ -24,5 +24,6 @@ where = ["compiler"]
 threadon = [
     "../stdlib/*.th",
     "../stdlib/**/*.th",
-    "../stdlib/**/manifest"
+    "../stdlib/**/manifest",
+    "*.cpp"
 ]

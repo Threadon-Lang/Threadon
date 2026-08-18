@@ -5,6 +5,10 @@ import sysconfig
 import os
 import re
 
+from .nodes import (
+    ClassDef, FunctionDef, VarDecl,
+)
+
 MODULE_EXTENSION = ".th"
 MANIFEST_FILENAME = "manifest"
 STDLIB_DIR = Path(__file__).resolve().parent.parent / "stdlib"
@@ -191,13 +195,14 @@ def parse_type(token, path="<manifest>"):
 class Manifest:
 
     def __init__(self, module=None, lang="threadon", source=None, flags=None,
-                 links=None, exports=None):
+                 links=None, exports=None, classes=None):
         self.module = module
         self.lang = lang
         self.source = source
         self.flags = flags or []
         self.links = links or []
         self.exports = exports or []
+        self.classes = classes or {}
 
 
 def parse_manifest(text, path):
@@ -244,6 +249,34 @@ def parse_manifest(text, path):
             for arg in parts[3:]:
                 parse_type(arg, path)
             man.exports.append((name, ret, parts[3:]))
+        elif directive == "class":
+            if len(parts) < 3:
+                raise ImporterError(
+                    f"Manifest '{path}': 'class' needs a name and declaration"
+                )
+            class_name = parts[1]
+            if class_name not in man.classes:
+                man.classes[class_name] = {"init_args": [], "methods": []}
+            if parts[2] == "init":
+                man.classes[class_name]["init_args"] = parts[3:]
+            elif parts[2] == "method":
+                if len(parts) < 5 or "->" not in parts:
+                    raise ImporterError(
+                        f"Manifest '{path}': 'class' method needs: "
+                        "method <name> [ArgType ...] -> RetType"
+                    )
+                method_name = parts[3]
+                arrow_idx = parts.index("->")
+                arg_types = parts[4:arrow_idx]
+                ret_type = parts[arrow_idx + 1]
+                man.classes[class_name]["methods"].append(
+                    (method_name, arg_types, ret_type)
+                )
+            else:
+                raise ImporterError(
+                    f"Manifest '{path}': unknown class declaration '{parts[2]}' "
+                    "(expected 'init' or 'method')"
+                )
         else:
             raise ImporterError(
                 f"Manifest '{path}': unknown directive '{directive}'"
@@ -440,7 +473,11 @@ class Importer:
         for export_name, ret, args in man.exports:
             exports.append((export_name, ret, args))
 
-        code = self._emit_python_wrapper(name, pyfile, exports)
+        classes = {}
+        for class_name, class_info in man.classes.items():
+            classes[class_name] = class_info
+
+        code = self._emit_python_wrapper(name, pyfile, exports, classes)
         wrapper.write_text(code)
         return wrapper
 
@@ -636,7 +673,8 @@ class Importer:
         out.append("    }")
         out.append(f"    PyObject* {dst_pyobj} = {d};")
 
-    def _emit_python_wrapper(self, module_name, pyfile, exports):
+    def _emit_python_wrapper(self, module_name, pyfile, exports, classes=None):
+        classes = classes or {}
         parsed_exports = []
         all_types = []
         for func, ret_tok, arg_toks in exports:
@@ -645,6 +683,22 @@ class Importer:
             parsed_exports.append((func, ret_t, arg_ts))
             all_types.append(ret_t)
             all_types.extend(arg_ts)
+
+        emitted_names = {func for func, _, _ in parsed_exports}
+        for class_name, class_info in classes.items():
+            init_name = f"{class_name}___init__"
+            if init_name not in emitted_names:
+                emitted_names.add(init_name)
+                parsed_exports.append(
+                    (init_name, class_name, list(class_info["init_args"]))
+                )
+            for method_name, arg_types, ret_type in class_info["methods"]:
+                thunk_name = f"{class_name}___{method_name}"
+                if thunk_name not in emitted_names:
+                    emitted_names.add(thunk_name)
+                    parsed_exports.append(
+                        (thunk_name, ret_type, list(arg_types))
+                    )
 
         lines = []
         lines.append('#include <Python.h>')
@@ -669,6 +723,12 @@ class Importer:
         lines.extend(struct_lines)
         lines.append('')
 
+        for class_name, class_info in classes.items():
+            lines.append(f'struct {class_name} {{')
+            lines.append(f'    char* __handle;')
+            lines.append(f'}};')
+        lines.append('')
+
         lines.append('extern "C" {')
 
         modname = pyfile.stem
@@ -679,7 +739,21 @@ class Importer:
             return f"_{base}{seq[0]}"
 
         for func, ret_t, arg_ts in parsed_exports:
-            lines.append(self._emit_export_thunk(func, ret_t, arg_ts, modname, fresh))
+            is_class_method = False
+            for class_name, class_info in classes.items():
+                if func == f"{class_name}___init__":
+                    lines.append(self._emit_class_init_thunk(class_name, class_info, modname, fresh))
+                    is_class_method = True
+                    break
+                for method_name, _, _ in class_info["methods"]:
+                    if func == f"{class_name}___{method_name}":
+                        lines.append(self._emit_class_method_thunk(class_name, method_name, class_info, modname, fresh))
+                        is_class_method = True
+                        break
+                if is_class_method:
+                    break
+            if not is_class_method:
+                lines.append(self._emit_export_thunk(func, ret_t, arg_ts, modname, fresh))
 
         lines.append("} // extern C")
         return '\n'.join(lines)
@@ -748,6 +822,90 @@ class Importer:
         out.append("}")
         return "\n".join(out)
 
+    def _emit_class_init_thunk(self, class_name, class_info, modname, fresh):
+        arg_types = class_info["init_args"]
+        param_parts = [f"{class_name} self"]
+        for i, at in enumerate(arg_types):
+            param_parts.append(f"{C_SCALAR_TYPES[at]} a{i}")
+        params = ", ".join(param_parts)
+
+        out = []
+        out.append(f"{class_name} {class_name}___init__({params}) {{")
+        out.append("    ensure_init();")
+
+        nargs = len(arg_types)
+        if nargs == 0:
+            out.append("    PyObject* args = PyTuple_New(0);")
+        else:
+            out.append(f"    PyObject* args = PyTuple_New({nargs});")
+            for i, arg_type in enumerate(arg_types):
+                th = parse_type(arg_type)
+                pyv = fresh("pyv")
+                self._emit_native_to_py_scalar(out, pyv, f"a{i}", th)
+                out.append(f"    PyTuple_SetItem(args, {i}, {pyv});")
+
+        out.append(f'    PyObject* mod = PyImport_ImportModule("{modname}");')
+        out.append("    if (!mod) { PyErr_Clear(); return {nullptr}; }")
+        out.append(f'    PyObject* cls = PyObject_GetAttrString(mod, "{class_name}");')
+        out.append("    Py_DECREF(mod);")
+        out.append("    if (!cls || !PyCallable_Check(cls)) { Py_XDECREF(cls); PyErr_Clear(); return {nullptr}; }")
+
+        out.append("    PyObject* obj = PyObject_CallObject(cls, args);")
+        out.append("    Py_DECREF(cls);")
+        out.append("    Py_DECREF(args);")
+        out.append("    if (!obj) { PyErr_Clear(); return {nullptr}; }")
+
+        out.append(f"    {class_name} result;")
+        out.append("    result.__handle = (char*)obj;")
+        out.append("    return result;")
+        out.append("}")
+        return "\n".join(out)
+
+    def _emit_class_method_thunk(self, class_name, method_name, class_info, modname, fresh):
+        method_info = None
+        for mn, arg_types, ret_type in class_info["methods"]:
+            if mn == method_name:
+                method_info = (arg_types, ret_type)
+                break
+
+        arg_types, ret_type = method_info
+        c_ret = C_SCALAR_TYPES[ret_type]
+
+        param_parts = [f"{class_name} self"]
+        for i, at in enumerate(arg_types):
+            param_parts.append(f"{C_SCALAR_TYPES[at]} a{i}")
+        params = ", ".join(param_parts)
+
+        out = []
+        out.append(f"{c_ret} {class_name}___{method_name}({params}) {{")
+        out.append("    ensure_init();")
+
+        nargs = len(arg_types)
+        if nargs == 0:
+            out.append("    PyObject* args = PyTuple_New(0);")
+        else:
+            out.append(f"    PyObject* args = PyTuple_New({nargs});")
+            for i, arg_type in enumerate(arg_types):
+                th = parse_type(arg_type)
+                pyv = fresh("pyv")
+                self._emit_native_to_py_scalar(out, pyv, f"a{i}", th)
+                out.append(f"    PyTuple_SetItem(args, {i}, {pyv});")
+
+        out.append(f"    PyObject* f = PyObject_GetAttrString((PyObject*)self.__handle, \"{method_name}\");")
+        out.append("    if (!f || !PyCallable_Check(f)) { Py_XDECREF(f); PyErr_Clear(); return 0; }")
+
+        out.append("    PyObject* r = PyObject_CallObject(f, args);")
+        out.append("    Py_DECREF(f);")
+        out.append("    Py_DECREF(args);")
+        out.append("    if (!r) { PyErr_Clear(); return 0; }")
+
+        outv = fresh("out")
+        self._emit_py_to_native_scalar(out, f"{c_ret} {outv}", "r", parse_type(ret_type), fresh)
+        out.append("    Py_DECREF(r);")
+        out.append(f"    return {outv};")
+        out.append("}")
+        return "\n".join(out)
+
     def _zero_c_value(self, t: ThType):
         if t.is_list:
             sname = self._list_struct_name(t)
@@ -806,6 +964,62 @@ class Importer:
             qname = f"{name}.{export_name}"
             params = [(f"a{i}", t, None) for i, t in enumerate(args)]
             module.func_sigs[qname] = (params, ret)
+
+        for class_name, class_info in man.classes.items():
+            qname = f"{name}.{class_name}"
+
+            handle_field = VarDecl("__handle", "String", None)
+            fields = [handle_field]
+
+            method_map = {}
+
+            init_qname = f"{qname}___init__"
+            init_params = [("self", qname, None)]
+            for i, arg_type in enumerate(class_info["init_args"]):
+                init_params.append((f"a{i}", arg_type, None))
+            init_func = FunctionDef(
+                name=init_qname,
+                params=init_params,
+                return_type=qname,
+                body=[],
+            )
+            module.func_sigs[init_qname] = (init_params, qname)
+            method_map["__init__"] = init_qname
+
+            methods = [init_func]
+            for method_name, arg_types, ret_type in class_info["methods"]:
+                method_qname = f"{qname}___{method_name}"
+                params = [("self", qname, None)]
+                for i, arg_type in enumerate(arg_types):
+                    params.append((f"a{i}", arg_type, None))
+                func = FunctionDef(
+                    name=method_qname,
+                    params=params,
+                    return_type=ret_type,
+                    body=[],
+                )
+                methods.append(func)
+                module.func_sigs[method_qname] = (params, ret_type)
+                method_map[method_name] = method_qname
+
+            class_def = ClassDef(
+                name=qname,
+                base=None,
+                fields=fields,
+                methods=methods,
+                own_fields=fields,
+            )
+
+            module.class_defs[qname] = fields
+            module.class_ast[qname] = class_def
+            module.class_method_map[qname] = method_map
+            module.class_exports.add(class_name)
+
+            module.exports.append((f"{class_name}___init__", qname,
+                                   [qname] + class_info["init_args"]))
+            for method_name, arg_types, ret_type in class_info["methods"]:
+                module.exports.append((f"{class_name}___{method_name}", ret_type,
+                                       [qname] + arg_types))
 
         out = build_native(module)
         module.native_binary = out

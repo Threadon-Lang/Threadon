@@ -1083,6 +1083,18 @@ class Parser:
 
             if cleaned[0].type == TokenType.DEF:
                 methods.append(self.parse_method())
+            elif (
+                len(cleaned) >= 2
+                and cleaned[0].type == TokenType.IDENT
+                and cleaned[1].type == TokenType.COLON
+            ) or (
+                len(cleaned) >= 4
+                and cleaned[0].value == "self"
+                and cleaned[1].type == TokenType.DOT
+                and cleaned[2].type == TokenType.IDENT
+                and cleaned[3].type == TokenType.COLON
+            ):
+                continue
             else:
                 self.parse_line()
 
@@ -1272,6 +1284,8 @@ class Parser:
 
         self.class_method_map.setdefault(self.current_class, {})[method_name] = func_name
 
+        _prev_in_function = self._in_function
+        self._in_function = True
         self.push_scope()
         for pname, ptype, _ in params:
             self.declare_var(pname, ptype)
@@ -1289,6 +1303,7 @@ class Parser:
         func_body = self.parse_block(parent_indent)
 
         self.pop_scope()
+        self._in_function = _prev_in_function
         self.return_type = None
         self._in_init = False
 

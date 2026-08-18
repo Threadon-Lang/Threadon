@@ -1,0 +1,6 @@
+import PyVec3
+
+def main() -> Int32:
+    v: PyVec3.Vec3 = PyVec3.Vec3(3.0, 4.0, 0.0)
+    print(v.length())
+    return 0

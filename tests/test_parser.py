@@ -1225,6 +1225,7 @@ class DMW(Car):
 """,
     """
 class Counter:
+    count: Int32
     def __init__(self: Counter, start: Int32 = 0):
         count: Int32 = start
     def bump(self: Counter, amount: Int32 = 1) -> Int32:
