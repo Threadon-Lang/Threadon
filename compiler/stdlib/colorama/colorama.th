@@ -1,0 +1,30 @@
+# colorama.th
+# Een module die dezelfde interface biedt als Python's colorama.
+
+struct Fore:
+    BLACK: String
+    RED: String
+    GREEN: String
+    YELLOW: String
+    BLUE: String
+    MAGENTA: String
+    CYAN: String
+    WHITE: String
+    RESET: String
+
+struct Back:
+    BLACK: String
+    RED: String
+    GREEN: String
+    YELLOW: String
+    BLUE: String
+    MAGENTA: String
+    CYAN: String
+    WHITE: String
+    RESET: String
+
+struct Style:
+    BRIGHT: String
+    DIM: String
+    NORMAL: String
+    RESET_ALL: String

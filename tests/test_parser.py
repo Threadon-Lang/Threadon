@@ -367,8 +367,8 @@ def f(x: Int32, y: Int32) -> Int32
     """
 struct A:
     x: Int32
-p: A = A(x=1)
 def f() -> Int32
+    p: A = A(x=1)
     q: A = p^
     return q.x
 """,
@@ -914,6 +914,35 @@ return 5
     )
 
 
+def test_top_level_var_decl_fails():
+    parse_fail("x: Int32")
+
+
+def test_top_level_var_decl_after_func_fails():
+    parse_fail("""
+def f() -> Int32
+    return 0
+x: Int32
+""")
+
+
+def test_var_inside_func_ok():
+    parse_ok("""
+def f() -> Int32
+    x: Int32 = 5
+    return x
+""")
+
+
+def test_var_inside_if_in_func_ok():
+    parse_ok("""
+def f() -> Int32
+    if 1 > 0:
+        x: Int32 = 5
+    return 0
+""")
+
+
 def test_nonetype_variable_fails():
     parse_fail(
         """
@@ -1196,9 +1225,8 @@ class DMW(Car):
 """,
     """
 class Counter:
-    count: Int32
     def __init__(self: Counter, start: Int32 = 0):
-        self.count = start
+        count: Int32 = start
     def bump(self: Counter, amount: Int32 = 1) -> Int32:
         self.count = self.count + amount
         return self.count

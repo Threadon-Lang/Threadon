@@ -202,9 +202,7 @@ class Parser:
         self._inferred_ret = None
         self._pending_inferred = {}
         self._in_init = False
-        self._in_function = False
-        self._in_struct = False
-        self._in_class = False
+        self._func_scope_depth = 0
 
 
     def give_error(self, msg, line_num=None):
@@ -325,11 +323,13 @@ class Parser:
         self.scopes.append({})
         self.var_declared_stack.append({})
         self.modified_stack.append(set())
+        self._func_scope_depth += 1
 
     def pop_scope(self):
         self.scopes.pop()
         self.var_declared_stack.pop()
         self.modified_stack.pop()
+        self._func_scope_depth -= 1
 
     def declare_var(self, name, type_):
         if name in self.scopes[-1]:
@@ -916,9 +916,6 @@ class Parser:
         self._inferred_ret = None
         self._pending_inferred = {}
         self._in_init = False
-        self._in_struct = False
-        self._in_class = False
-        self._in_function = False
 
         self.scopes = []
         self.var_declared_stack = []
@@ -971,7 +968,6 @@ class Parser:
         self.qstruct[name] = qname
         parent_indent = self.current_indent
 
-        self._in_struct = True
         fields = []
         self.push_scope()
 
@@ -999,7 +995,6 @@ class Parser:
             else:
                 self.give_error("Struct body may only contain variable declarations")
 
-        self._in_struct = False
         self.pop_scope()
         self.struct_defs[qname] = fields
 
@@ -1687,7 +1682,6 @@ class Parser:
         self.qfunc[func_name] = func_name_q
         self.func_sigs[func_name_q] = (params, return_type)
 
-        self._in_function = True
         self.push_scope()
         for pname, ptype, _ in params:
             self.declare_var(pname, ptype)
@@ -1695,7 +1689,6 @@ class Parser:
         self.return_type = return_type
         func_body = self.parse_block(parent_indent)
         self.pop_scope()
-        self._in_function = False
         self.return_type = None
 
         if return_type != "NoneType" and not self.all_paths_return(func_body):
@@ -2726,7 +2719,7 @@ class Parser:
 
         return ReturnStmt(self.return_type, expr)
     def parse_variable_decl(self, allow_union=True):
-        if not self._in_function and not self._in_struct:
+        if self._func_scope_depth == 0:
             self.give_error("Variable declaration at top level is not allowed; declare variables inside a function instead")
         
         tokens = self.current_line

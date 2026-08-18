@@ -1,6 +1,6 @@
 [project]
 name = "threadon"
-version = "0.1.0"
+version = "0.1.5"
 description = ""
 authors = [
     { name="Threadon-Lang", email="threadon-lang@proton.me" }
@@ -15,7 +15,14 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = { "" = "compiler" }
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["compiler"]
-exclude = ["docs"]
+
+[tool.setuptools.package-data]
+threadon = [
+    "../stdlib/*.th",
+    "../stdlib/**/*.th",
+    "../stdlib/**/manifest"
+]

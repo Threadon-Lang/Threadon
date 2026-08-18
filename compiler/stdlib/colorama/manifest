@@ -1,0 +1,3 @@
+module colorama
+lang threadon
+source colorama.th
