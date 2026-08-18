@@ -196,6 +196,24 @@ def build_native_shared_libs(modules, output_dir):
             )
         libs.append(so)
     return libs
+def _python_link_flags():
+    """Link flags needed to embed the Python interpreter (Py_Initialize etc.)."""
+    try:
+        out = subprocess.check_output(
+            ["python3-config", "--embed", "--ldflags"], text=True
+        ).strip()
+        return shlex.split(out)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    try:
+        out = subprocess.check_output(
+            ["python3-config", "--ldflags"], text=True
+        ).strip()
+        return shlex.split(out)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+
+
 def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
     """Compile the (patched, harnessed) LLVM IR to a native executable."""
     out_path = Path(out_path)
@@ -215,6 +233,7 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
         objs = [str(obj)]
         link_flags = []
         linker = cc
+        link_extra = []
         for mod in native:
                     if mod.toolchain is None:
                         raise SystemExit(f"error: module '{mod.name}' has no registered toolchain")
@@ -228,6 +247,7 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
                     mod_obj = td / f"{mod.name}.{tc.object_ext}"
                     flags = mod.flags or []
                     includes = _python_includes() if tc.name == "python" else []
+                    link_extra = _python_link_flags() if tc.name == "python" else []
                     result = subprocess.run(
                         [tc.compiler, *tc.object_args, *includes, *flags, "-o", str(mod_obj), str(mod.native_source)],
                         capture_output=True,
@@ -239,7 +259,7 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
                         )
                     objs.append(str(mod_obj))
         result = subprocess.run(
-            [linker, *objs, "-o", str(out_path), "-no-pie", "-lm", *link_flags],
+            [linker, *objs, "-o", str(out_path), "-no-pie", "-lm", *link_flags, *link_extra],
             capture_output=True,
             text=True,
         )

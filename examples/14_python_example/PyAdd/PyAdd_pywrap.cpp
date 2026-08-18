@@ -6,7 +6,7 @@ static bool _py_init = false;
 static void ensure_init() {
     if (!_py_init) {
         Py_Initialize();
-        PyRun_SimpleString("import sys; sys.path.insert(0, \"/home/joep/projects/AGI/threadon/examples/14_python_example/PyAdd\")");
+        PyRun_SimpleString("import sys; sys.path.insert(0, \"/home/joep/projects/AGI/ThreadonFull/threadon/examples/14_python_example/PyAdd\")");
         _py_init = true;
     }
 }
@@ -14,6 +14,7 @@ static void ensure_init() {
 
 struct ThList_Float64 { long long len; double* data; };
 struct ThDict_String_Float64 { long long len; char** keys; double* values; };
+
 
 extern "C" {
 double add(double a0, double a1) {
