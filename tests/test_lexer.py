@@ -35,6 +35,7 @@ def test_strings():
     ("else", TokenType.ELSE),
     ("while", TokenType.WHILE),
     ("for", TokenType.FOR),
+    ("in", TokenType.IN),
     ("return", TokenType.RETURN),
     ("and", TokenType.AND),
     ("or", TokenType.OR),

@@ -1534,3 +1534,174 @@ def run() -> Int32
     return 0
 """
     )
+
+
+# ---------------------------------------------------------------------------
+# for loops (new)
+# ---------------------------------------------------------------------------
+
+def _for_ast(func_body):
+    prelude = func_body[0]
+    assert prelude.name.startswith("_it")
+    assert prelude.var_type == "std.Iterable"
+    assert type(prelude.expr).__name__ == "CallExpr"
+    assert prelude.expr.func_name == "std.range"
+    assert len(prelude.expr.args) == 3
+    return func_body[1], func_body[2]
+
+
+def test_for_loop_desugars_into_while():
+    ast = parse_ok(
+        """
+def run() -> Int32
+    for i in range(3):
+        print(i)
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    var_decl, while_stmt = _for_ast(func.body)
+
+    assert var_decl.name == "i"
+    assert var_decl.var_type == "Int64"
+    assert var_decl.expr is None
+
+    assert type(while_stmt).__name__ == "WhileStmt"
+    assert while_stmt.condition.op == "not"
+    assert while_stmt.condition.expr.method == "done"
+    assert while_stmt.condition.expr.obj.name == "_it0"
+
+    body = while_stmt.body
+    assert type(body[0]).__name__ == "Assign"
+    assert body[0].name == "i"
+    assert body[0].expr.method == "value"
+    assert type(body[1]).__name__ == "ExprStmt"
+    assert body[-1].name == "_it0"
+    assert body[-1].expr.method == "advance"
+
+
+def test_for_loop_reuses_existing_loop_var():
+    ast = parse_ok(
+        """
+def run() -> Int32
+    for i in range(3):
+        print(i)
+    for i in range(2):
+        print(i)
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    names = [s.name for s in func.body if type(s).__name__ == "VarDecl"]
+    assert names.count("i") == 1
+    assert len([n for n in names if n.startswith("_it")]) == 2
+    while_count = len([s for s in func.body if type(s).__name__ == "WhileStmt"])
+    assert while_count == 2
+
+
+def test_range_call_normalizes_start_stop_step():
+    cases = [("range(5)", ["0", "5", "1"]),
+             ("range(2, 5)", ["2", "5", "1"]),
+             ("range(0, 10, 2)", ["0", "10", "2"])]
+    for src, expected in cases:
+        ast = parse_ok(f"def f() -> Iterable\n    return {src}\n")
+        func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+        ret = func.body[0]
+        assert type(ret).__name__ == "ReturnStmt"
+        call = ret.value
+        assert call.func_name == "std.range"
+        vals = [a.value.value for a in call.args]
+        assert vals == expected
+
+
+def test_for_range_too_many_args_errors():
+    parse_fail(
+        """
+def run() -> Int32
+    for i in range(0, 5, 1, 2):
+        print(i)
+    return 0
+"""
+    )
+
+
+def test_for_non_iterable_errors():
+    parse_fail(
+        """
+def run() -> Int32
+    for i in 5:
+        print(i)
+    return 0
+"""
+    )
+
+
+def test_for_missing_colon_errors():
+    parse_fail(
+        """
+def run() -> Int32
+    for i in range(3)
+        print(i)
+    return 0
+"""
+    )
+
+
+# ---------------------------------------------------------------------------
+# for loops over lists and dicts (new)
+# ---------------------------------------------------------------------------
+
+def test_for_list_desugars_to_index_loop():
+    ast = parse_ok(
+        """
+def run() -> Int32
+    for i in [1, 2, 3]:
+        print(i)
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    assert func.body[0].name.startswith("_it")
+    assert func.body[0].var_type == "List[Int32]"
+    assert func.body[1].name.startswith("_ix")
+    assert func.body[1].var_type == "Int64"
+    assert func.body[2].name == "i"
+    assert func.body[2].var_type == "Int32"
+    while_stmt = func.body[3]
+    assert type(while_stmt).__name__ == "WhileStmt"
+    assert while_stmt.condition.op == "<"
+    assert len(while_stmt.body) == 3
+    first = while_stmt.body[0]
+    assert first.name == "i"
+    assert type(first.expr).__name__ == "IndexExpr"
+    assert while_stmt.body[-1].name.startswith("_ix")
+
+
+def test_for_dict_desugars_to_key_loop():
+    ast = parse_ok(
+        """
+def run() -> Int32
+    for k in {"a": 1, "b": 2}:
+        print(k)
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    while_stmt = func.body[3]
+    first = while_stmt.body[0]
+    assert first.name == "k"
+    assert type(first.expr).__name__ == "CallExpr"
+    assert first.expr.func_name == "dict_key"
+
+
+def test_for_list_reuses_loop_var_type():
+    parse_fail(
+        """
+def run() -> Int32
+    for i in range(3):
+        print(i)
+    for i in [1, 2, 3]:
+        print(i)
+    return 0
+"""
+    )

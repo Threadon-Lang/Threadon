@@ -1,8 +1,39 @@
 BUILTIN_SIGS = {
     "print": ([("values", "poly*")], "NoneType"),
     "input": ([("prompt", "String")], "String"),
+    "len": ([("coll", "poly")], "Int64"),
+    "dict_key": ([("dict", "poly"), ("index", "Int64")], "poly"),
 
 }
+
+
+def is_list_type(t):
+    if not isinstance(t, str):
+        return False
+    return t.startswith("List[") and t.endswith("]")
+
+
+def is_dict_type(t):
+    if not isinstance(t, str):
+        return False
+    return t.startswith("Dict[") and t.endswith("]")
+
+
+def dict_kv_types(t):
+    inner = t[5:-1]
+    comma_idx = None
+    depth = 0
+    for ci, ch in enumerate(inner):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            comma_idx = ci
+            break
+    if comma_idx is not None:
+        return inner[:comma_idx].strip(), inner[comma_idx + 1:].strip()
+    return inner.strip(), "Unknown"
 
 INT_TYPES = ("Int8", "Int16", "Int32", "Int64", "Int256")
 UINT_TYPES = ("UInt8", "UInt16", "UInt32", "UInt64", "UInt256")
@@ -162,6 +193,21 @@ def builtin_return_type(func_name, arg_types, aggregate_types=None):
                 )
         return "NoneType"
 
+    if func_name == "len":
+        for arg_type in arg_types:
+            if not (is_list_type(arg_type) or is_dict_type(arg_type)):
+                raise ValueError(
+                    f"Function 'len' expects a List or Dict, got {arg_type}"
+                )
+        return "Int64"
+
+    if func_name == "dict_key":
+        arg_type = arg_types[0]
+        if not is_dict_type(arg_type):
+            raise ValueError(
+                f"Function 'dict_key' expects a Dict, got {arg_type}"
+            )
+        return dict_kv_types(arg_type)[0]
 
 
     return ret

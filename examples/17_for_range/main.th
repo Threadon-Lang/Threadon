@@ -1,0 +1,17 @@
+def main() -> Int32:
+    total: Int64 = 0
+    for i in range(5):
+        print("i =", i)
+        total = total + i
+    print("sum =", total)
+    for j in range(10, 0, -3):
+        print("j =", j)
+    for k in range(15, 10):
+        print("k =", k)  # empty: start == stop behavior with step +1
+    names: List[String] = ["ann", "bob", "clyde"]
+    for name in names:
+        print("name =", name)
+    ages: Dict[String, Int32] = {"ann": 30, "bob": 40}
+    for key in ages:
+        print("key =", key, "value =", ages[key])
+    return 0

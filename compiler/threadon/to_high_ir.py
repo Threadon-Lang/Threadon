@@ -553,6 +553,14 @@ class SSABuilder:
             f"Unknown variable {name}"
         )
 
+    def _effective_env(self):
+        """Return the variable mapping for the current block, merging all
+        inherited scopes (the innermost frame wins)."""
+        merged = {}
+        for env in self.env_stack:
+            merged.update(env)
+        return merged
+
     def set_var(self, name, value):
         name = self._resolve_alias(name)
 
@@ -1257,7 +1265,7 @@ class SSABuilder:
 
 
     def emit_if(self, node):
-        parent_env = self.env_stack[-1].copy()
+        parent_env = self._effective_env()
 
         seq = self._if_seq
         self._if_seq += 1
@@ -1370,8 +1378,9 @@ class SSABuilder:
 
             self.pop_env()
 
-            if bb.terminator is None:
-                bb.set_terminator(
+            body_end = self.current_block
+            if body_end.terminator is None:
+                body_end.set_terminator(
                     IRInstr(
                         "br",
                         [merge.label],
@@ -1379,7 +1388,7 @@ class SSABuilder:
                 )
 
                 merge_preds.append(
-                    (bb, env)
+                    (body_end, env)
                 )
 
         if has_else:
@@ -1395,8 +1404,9 @@ class SSABuilder:
 
             self.pop_env()
 
-            if else_block.terminator is None:
-                else_block.set_terminator(
+            else_end = self.current_block
+            if else_end.terminator is None:
+                else_end.set_terminator(
                     IRInstr(
                         "br",
                         [merge.label],
@@ -1404,7 +1414,7 @@ class SSABuilder:
                 )
 
                 merge_preds.append(
-                    (else_block, env)
+                    (else_end, env)
                 )
 
         else:
@@ -1544,9 +1554,7 @@ class SSABuilder:
 
 
     def emit_while(self, node):
-
-
-        parent_env = self.env_stack[-1].copy()
+        parent_env = self._effective_env()
 
         seq = self._if_seq
         self._if_seq += 1
@@ -2493,10 +2501,29 @@ class SSABuilder:
             )
 
             if ret_type is None:
-                ret_type = BUILTIN_SIGS.get(
-                    expr.func_name,
-                    ("", "Unknown"),
-                )[1]
+                if expr.func_name == "dict_key":
+                    coll_type = args[0].type
+                    bracket = coll_type[5:-1]
+                    comma_idx = None
+                    depth = 0
+                    for ci, ch in enumerate(bracket):
+                        if ch == "[":
+                            depth += 1
+                        elif ch == "]":
+                            depth -= 1
+                        elif ch == "," and depth == 0:
+                            comma_idx = ci
+                            break
+                    ret_type = (
+                        bracket[:comma_idx].strip()
+                        if comma_idx is not None
+                        else bracket.strip()
+                    )
+                else:
+                    ret_type = BUILTIN_SIGS.get(
+                        expr.func_name,
+                        ("", "Unknown"),
+                    )[1]
 
             v = self.new_temp(
                 ret_type

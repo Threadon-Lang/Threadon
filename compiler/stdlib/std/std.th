@@ -36,3 +36,46 @@ def is_even(n: Int32) -> Bool
 
 def is_odd(n: Int32) -> Bool
     return n % 2 != 0
+
+class Iterable:
+    _cur: Int64
+    _step: Int64
+    _stop: Int64
+    _done: Bool
+
+    def __init__(self: Iterable, cur: Int64, step: Int64, stop: Int64, done: Bool)
+        self._cur = cur
+        self._step = step
+        self._stop = stop
+        self._done = done
+
+    def done(self: Iterable) -> Bool
+        return self._done
+
+    def value(self: Iterable) -> Int64
+        return self._cur
+
+    def advance(self: Iterable) -> Iterable
+        n: Int64 = self._cur + self._step
+        d: Bool = False
+        if self._step > 0:
+            if n >= self._stop:
+                d = True
+        if self._step < 0:
+            if n <= self._stop:
+                d = True
+        if self._step == 0:
+            d = True
+        return Iterable(n, self._step, self._stop, d)
+
+def range(start: Int64, stop: Int64, step: Int64) -> Iterable
+    d: Bool = False
+    if step > 0:
+        if start >= stop:
+            d = True
+    if step < 0:
+        if start <= stop:
+            d = True
+    if step == 0:
+        d = True
+    return Iterable(start, step, stop, d)

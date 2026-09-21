@@ -5,9 +5,12 @@ from .builtins import (
     NUMERIC_TYPES,
     builtin_return_type,
     common_numeric_type,
+    dict_kv_types,
     expand_type,
     group_members,
+    is_dict_type,
     is_group,
+    is_list_type,
     is_union_type,
     union_members,
     union_str,
@@ -208,6 +211,7 @@ class Parser:
         self.var_declared_stack = []
         self.modified_stack = []
         self.push_scope()
+        self._for_seq = 0
     def give_error(self, msg, line_num=None):
         RED = "\033[91m"
         BOLD = "\033[1m"
@@ -309,7 +313,10 @@ class Parser:
             self.read_line()
             node = self.parse_line()
             if node is not None:
-                block.append(node)
+                if isinstance(node, list):
+                    block.extend(node)
+                else:
+                    block.append(node)
 
         return block
 
@@ -387,6 +394,8 @@ class Parser:
             return self.parse_if()
         if first == TokenType.WHILE:
             return self.parse_while()
+        if first == TokenType.FOR:
+            return self.parse_for()
         if first == TokenType.STRUCT:
             return self.parse_struct()
         if first == TokenType.CLASS:
@@ -904,7 +913,10 @@ class Parser:
             self.read_line()
             node = self.parse_line()
             if node is not None:
-                self.ast.append(node)
+                if isinstance(node, list):
+                    self.ast.extend(node)
+                else:
+                    self.ast.append(node)
 
         return self.ast
 
@@ -923,6 +935,7 @@ class Parser:
             self.struct_defs[qname] = mod.struct_defs[qname]
         for name in sorted(mod.class_exports):
             qname = f"std.{name}"
+            self.class_import_aliases[name] = qname
             self._copy_class_recursive(qname, mod)
     def parse_struct(self):
         if self.return_type is not None:
@@ -1558,6 +1571,218 @@ class Parser:
 
         return WhileStmt(condition, body)
 
+    def parse_for(self):
+        tokens = self.current_line
+        parent_indent = self.current_indent
+
+        if len(tokens) < 4:
+            self.give_error("Invalid 'for' statement")
+
+        if tokens[0].type != TokenType.FOR:
+            self.give_error("Invalid 'for' statement")
+
+        if tokens[1].type != TokenType.IDENT:
+            self.give_error("Expected a loop variable after 'for'")
+
+        if tokens[2].type != TokenType.IN:
+            self.give_error("Expected 'in' after the loop variable")
+
+        if len(tokens) < 5:
+            self.give_error("Expected an iterable in 'for' statement")
+
+        if tokens[-1].type != TokenType.COLON:
+            self.give_error("Expected ':' after the iterable")
+
+        var_name = tokens[1].value
+        iter_tokens = tokens[3:-1]
+
+        iterable = self.parse_expr(iter_tokens)
+        iter_type = self.detect_expr_type(iterable)
+
+        if is_list_type(iter_type):
+            return self._parse_for_sequence(
+                var_name, iterable, iter_type, iter_type[5:-1], parent_indent
+            )
+
+        if is_dict_type(iter_type):
+            key_type, _ = dict_kv_types(iter_type)
+            return self._parse_for_sequence(
+                var_name, iterable, iter_type, key_type, parent_indent
+            )
+
+        if iter_type not in self.class_defs:
+            self.give_error(
+                f"'{iter_type}' is not iterable: expected a class that provides "
+                f"done(), value() and advance()"
+            )
+
+        methods = self.class_method_map[iter_type]
+        for mname in ("done", "value", "advance"):
+            if mname not in methods:
+                self.give_error(
+                    f"'{iter_type}' is not iterable: missing method '{mname}()'"
+                )
+
+        elt_type = self.func_sigs[methods["value"]][1]
+        adv_ret = self.func_sigs[methods["advance"]][1]
+        if adv_ret != iter_type:
+            self.give_error(
+                f"'{iter_type}.advance()' must return '{iter_type}', got '{adv_ret}'"
+            )
+
+        seq = self._for_seq
+        while True:
+            self._for_seq += 1
+            it_name = f"_it{seq}"
+            if it_name not in self.scopes[-1]:
+                break
+            seq += 1
+
+        reuse_var = var_name in self.scopes[-1]
+        if reuse_var:
+            existing = self.scopes[-1][var_name]
+            if existing != elt_type:
+                self.give_error(
+                    f"Loop variable '{var_name}' already exists with type "
+                    f"'{existing}', cannot reuse it as '{elt_type}'"
+                )
+        else:
+            self.declare_var(var_name, elt_type)
+
+        self.declare_var(it_name, iter_type)
+        self.modified_stack[-1].add(it_name)
+
+        done_call = MethodCallExpr(VarExpr(it_name), "done", [])
+        self.detect_expr_type(done_call)
+
+        body_nodes = self.parse_block(parent_indent)
+
+        value_call = MethodCallExpr(VarExpr(it_name), "value", [])
+        self.detect_expr_type(value_call)
+
+        adv_call = MethodCallExpr(VarExpr(it_name), "advance", [])
+        self.detect_expr_type(adv_call)
+
+        body = [
+            Assign(var_name, value_call),
+        ]
+        body.extend(body_nodes)
+        body.append(Assign(it_name, adv_call))
+
+        body_modified = self.modified_stack[-1]
+        self.pop_scope()
+
+        for name in body_modified:
+            if name in self.scopes[-1]:
+                self.scopes[-1][name] = self.var_declared_stack[-1].get(
+                    name, self.scopes[-1][name]
+                )
+
+        condition = UnaryExpr("not", done_call)
+        self.detect_expr_type(condition)
+
+        stmts = [VarDecl(it_name, iter_type, iterable)]
+        if not reuse_var:
+            stmts.append(VarDecl(var_name, elt_type, None))
+        stmts.append(WhileStmt(condition, body))
+        return stmts
+
+    def _parse_for_sequence(self, var_name, iterable, iter_type, elt_type, parent_indent):
+        seq = self._for_seq
+        while True:
+            it_name = f"_it{seq}"
+            ix_name = f"_ix{seq}"
+            self._for_seq += 1
+            if it_name not in self.scopes[-1] and ix_name not in self.scopes[-1]:
+                break
+            seq += 1
+
+        reuse_var = var_name in self.scopes[-1]
+        if reuse_var:
+            existing = self.scopes[-1][var_name]
+            if existing != elt_type:
+                self.give_error(
+                    f"Loop variable '{var_name}' already exists with type "
+                    f"'{existing}', cannot reuse it as '{elt_type}'"
+                )
+        else:
+            self.declare_var(var_name, elt_type)
+
+        self.declare_var(it_name, iter_type)
+        self.declare_var(ix_name, "Int64")
+        self.modified_stack[-1].add(ix_name)
+
+        len_call = CallExpr("len", [VarExpr(it_name)])
+        self.detect_expr_type(len_call)
+
+        condition = BinaryExpr(
+            VarExpr(ix_name), "<", len_call
+        )
+        self.detect_expr_type(condition)
+
+        body_nodes = self.parse_block(parent_indent)
+
+        if is_dict_type(iter_type):
+            value_expr = CallExpr(
+                "dict_key", [VarExpr(it_name), VarExpr(ix_name)]
+            )
+        else:
+            value_expr = IndexExpr(VarExpr(it_name), VarExpr(ix_name))
+        self.detect_expr_type(value_expr)
+
+        one = LiteralExpr(Token(TokenType.NUMBER, "1"), "Int64")
+        advance = BinaryExpr(VarExpr(ix_name), "+", one)
+        self.detect_expr_type(advance)
+
+        body = [Assign(var_name, value_expr)]
+        body.extend(body_nodes)
+        body.append(Assign(ix_name, advance))
+
+        body_modified = self.modified_stack[-1]
+        self.pop_scope()
+
+        for name in body_modified:
+            if name in self.scopes[-1]:
+                self.scopes[-1][name] = self.var_declared_stack[-1].get(
+                    name, self.scopes[-1][name]
+                )
+
+        zero = LiteralExpr(Token(TokenType.NUMBER, "0"), "Int64")
+        stmts = [
+            VarDecl(it_name, iter_type, iterable),
+            VarDecl(ix_name, "Int64", zero),
+        ]
+        if not reuse_var:
+            stmts.append(VarDecl(var_name, elt_type, None))
+        stmts.append(WhileStmt(condition, body))
+        return stmts
+
+    def _parse_range_call(self, ts):
+        if len(ts) < 3 or ts[-1].type != TokenType.RPAREN:
+            self.give_error("Unmatched '(' in range() call")
+
+        args = self._split_call_args(ts, 2)
+
+        if len(args) < 1:
+            self.give_error("range() expects 1 to 3 arguments")
+
+        if len(args) > 3:
+            self.give_error(
+                f"range() expects 1 to 3 arguments, got {len(args)}"
+            )
+
+        one = LiteralExpr(Token(TokenType.NUMBER, "1"), "Int32")
+        zero = LiteralExpr(Token(TokenType.NUMBER, "0"), "Int32")
+
+        if len(args) == 1:
+            start, stop, step = zero, args[0], one
+        elif len(args) == 2:
+            start, stop, step = args[0], args[1], one
+        else:
+            start, stop, step = args
+
+        return CallExpr("std.range", [start, stop, step])
+
     def parse_function(self):
         tokens = self.current_line
 
@@ -1900,6 +2125,8 @@ class Parser:
 
             if len(ts) >= 3 and ts[0].type == TokenType.IDENT and ts[1].type == TokenType.LPAREN:
                 func_name = self.resolve_func_name(ts[0].value)
+                if func_name == "std.range":
+                    return self._parse_range_call(ts)
                 args = self._split_call_args(ts, 2)
                 return CallExpr(func_name, args)
 

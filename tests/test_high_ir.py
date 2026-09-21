@@ -957,3 +957,76 @@ def f(x: Int | Float) -> Int | Float
     ops = [i.op for i in entry.instructions]
     assert "union_retag" in ops
     assert entry.terminator.op == "ret"
+
+
+# ---------------------------------------------------------------------------
+# for loops (new)
+# ---------------------------------------------------------------------------
+
+def test_for_loop_ir_builds_while_blocks():
+    module = build_module(
+        """
+def run() -> Int64
+    total: Int64 = 0
+    for i in range(4):
+        total = total + i
+    return total
+"""
+    )
+    f = get_func(module, "run")
+    labels = [b.label for b in f.blocks]
+    assert any(l.startswith("whilecond") for l in labels)
+    assert any(l.startswith("whilebody") for l in labels)
+    assert any(l.startswith("whilemerge") for l in labels)
+    cond = next(b for b in f.blocks if b.label.startswith("whilecond"))
+    assert cond.terminator.op == "cond_br"
+    phis = [i for b in f.blocks for i in b.instructions if isinstance(i, IRPhi)]
+    assert any(p.result.type == "Int64" for p in phis)
+
+
+def test_for_loop_ir_calls_iterable_methods():
+    module = build_module(
+        """
+def run() -> Int32
+    for i in range(3):
+        print(i)
+    return 0
+"""
+    )
+    f = get_func(module, "run")
+    calls = [i.args[0] for b in f.blocks for i in b.instructions if i.op == "call"]
+    assert "std.range" in calls
+    assert any(c.startswith("std.Iterable.") for c in calls)
+
+
+def test_for_list_loop_index_and_len():
+    module = build_module(
+        """
+def run() -> Int32
+    for i in [1, 2, 3]:
+        print(i)
+    return 0
+"""
+    )
+    f = get_func(module, "run")
+    ops = [i.op for b in f.blocks for i in b.instructions]
+    assert "list_get" in ops
+    assert "list_len" in ops or "list_init" in ops
+    labels = [b.label for b in f.blocks]
+    assert any(l.startswith("while") for l in labels)
+
+
+def test_for_dict_loop_uses_dict_key():
+    module = build_module(
+        """
+def run() -> Int32
+    for k in {"a": 1}:
+        print(k)
+    return 0
+"""
+    )
+    f = get_func(module, "run")
+    ops = [i.op for b in f.blocks for i in b.instructions]
+    assert "call" in ops
+    calls = [i.args[0] for b in f.blocks for i in b.instructions if i.op == "call"]
+    assert "dict_key" in calls

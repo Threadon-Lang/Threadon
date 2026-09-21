@@ -1237,3 +1237,219 @@ def main() -> Int32
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "{a: 10, b: 2}\n"
+
+
+# ---------------------------------------------------------------------------
+# for loops / range (new)
+# ---------------------------------------------------------------------------
+
+def assert_for_output(source, expected, inline_threshold=0):
+    result = ct.compile_stdlib_run(source, inline_threshold=inline_threshold)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+
+
+def test_for_range_basic():
+    assert_for_output(
+        """def main() -> Int32
+    for i in range(3):
+        print(i)
+    return 0
+""",
+        "0\n1\n2\n",
+    )
+
+
+def test_for_range_two_args():
+    assert_for_output(
+        """def main() -> Int32
+    for i in range(2, 5):
+        print(i)
+    return 0
+""",
+        "2\n3\n4\n",
+    )
+
+
+def test_for_range_three_args_negative_step():
+    assert_for_output(
+        """def main() -> Int32
+    for i in range(10, 0, -3):
+        print(i)
+    return 0
+""",
+        "10\n7\n4\n1\n",
+    )
+
+
+def test_for_range_empty():
+    assert_for_output(
+        """def main() -> Int32
+    for i in range(0):
+        print(i)
+    return 0
+""",
+        "",
+    )
+
+
+def test_for_range_exact_stop_not_included():
+    assert_for_output(
+        """def main() -> Int32
+    for i in range(3, 3):
+        print(i)
+    return 0
+""",
+        "",
+    )
+
+
+def test_for_loop_variable_leaks_after_loop():
+    assert_for_output(
+        """def main() -> Int32
+    k: Int64 = 0
+    for k in range(3, 6):
+        print(k)
+    print(k)
+    return 0
+""",
+        "3\n4\n5\n5\n",
+    )
+
+
+def test_for_loop_nested():
+    assert_for_output(
+        """def main() -> Int32
+    for i in range(2):
+        for j in range(3):
+            print(i * 3 + j)
+    return 0
+""",
+        "0\n1\n2\n3\n4\n5\n",
+    )
+
+
+def test_for_loop_sum_accumulates():
+    assert_for_output(
+        """def main() -> Int32
+    total: Int64 = 0
+    for i in range(1, 6):
+        total = total + i
+    print(total)
+    return 0
+""",
+        "15\n",
+    )
+
+
+def test_for_loop_inside_while():
+    assert_for_output(
+        """def main() -> Int32
+    n: Int64 = 0
+    while n < 2:
+        for a in range(2):
+            print(n + a)
+        n = n + 1
+    return 0
+""",
+        "0\n1\n1\n2\n",
+    )
+
+
+def test_for_loop_custom_iterable_class():
+    assert_for_output(
+        """class Count:
+    cur: Int64
+    stop: Int64
+    def __init__(self: Count, cur: Int64, stop: Int64)
+        self.cur = cur
+        self.stop = stop
+    def done(self: Count) -> Bool
+        return self.cur >= self.stop
+    def value(self: Count) -> Int64
+        return self.cur
+    def advance(self: Count) -> Count
+        n: Int64 = self.cur + 1
+        return Count(n, self.stop)
+def main() -> Int32
+    start: Int64 = 0
+    for i in Count(start, 3):
+        print(i)
+    return 0
+""",
+        "0\n1\n2\n",
+    )
+
+
+def test_for_loop_over_list():
+    assert_for_output(
+        """def main() -> Int32
+    nums: List[Int32] = [10, 20, 30]
+    for n in nums:
+        print(n)
+    return 0
+""",
+        "10\n20\n30\n",
+    )
+
+
+def test_for_loop_over_list_literal():
+    assert_for_output(
+        """def main() -> Int32
+    for s in ["a", "b", "c"]:
+        print(s)
+    return 0
+""",
+        "a\nb\nc\n",
+    )
+
+
+def test_for_loop_over_dict_keys():
+    assert_for_output(
+        """def main() -> Int32
+    ages: Dict[String, Int32] = {"ann": 30, "bob": 40}
+    for k in ages:
+        print(k)
+    return 0
+""",
+        "ann\nbob\n",
+    )
+
+
+def test_for_loop_list_empty():
+    assert_for_output(
+        """def main() -> Int32
+    empty: List[Int32] = []
+    for e in empty:
+        print(e)
+    print("done")
+    return 0
+""",
+        "done\n",
+    )
+
+
+def test_for_loop_list_accumulates_with_dict_value():
+    assert_for_output(
+        """def main() -> Int32
+    ages: Dict[String, Int32] = {"ann": 30, "bob": 40}
+    total: Int32 = 0
+    for k in ages:
+        total = total + ages[k]
+    print(total)
+    return 0
+""",
+        "70\n",
+    )
+
+
+def test_for_loop_list_nested():
+    assert_for_output(
+        """def main() -> Int32
+    for i in [1, 2]:
+        for j in ["x", "y"]:
+            print(i, j)
+    return 0
+""",
+        "1 x\n1 y\n2 x\n2 y\n",
+    )

@@ -1821,8 +1821,33 @@ class LLVMIRCompiler:
             return self._emit_print(res, args)
         if fname == "input":
             return self._emit_input(res, args[0])
+        if fname == "len":
+            return self._emit_len(res, args[0])
+        if fname == "dict_key":
+            return self._emit_dict_key(res, args)
 
         return f"; unknown builtin {fname}"
+
+    def _emit_len(self, res, obj):
+        obj_llvm = self.to_llvm_type(obj.type)
+        obj_op = self.operand(obj)
+        return [f"{res} = extractvalue {obj_llvm} {obj_op}, 0"]
+
+    def _emit_dict_key(self, res, args):
+        obj, idx = args
+        key_type, _ = self._parse_dict_kv_types(obj.type)
+        key_llvm = self.to_llvm_type(key_type)
+        dict_llvm = self.to_llvm_type(obj.type)
+        obj_op = self.operand(obj)
+        idx_op = self.operand(idx)
+        keys = f"{res}_keys"
+        gep = f"{res}_gep"
+        lines = [
+            f"{keys} = extractvalue {dict_llvm} {obj_op}, 1",
+            f"{gep} = getelementptr {key_llvm}, {key_llvm}* {keys}, i64 {idx_op}",
+            f"{res} = load {key_llvm}, {key_llvm}* {gep}",
+        ]
+        return lines
 
     def _emit_print(self, res, args):
         self.used_c_runtime.add("printf")

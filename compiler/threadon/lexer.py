@@ -20,6 +20,7 @@ class TokenType(Enum):
     ELSE = auto()
     WHILE = auto()
     FOR = auto()
+    IN = auto()
     RETURN = auto()
     AND = auto()
     OR = auto()
@@ -89,6 +90,7 @@ KEYWORDS = {
     "else": TokenType.ELSE,
     "while": TokenType.WHILE,
     "for": TokenType.FOR,
+    "in": TokenType.IN,
     "return": TokenType.RETURN,
     "and": TokenType.AND,
     "or": TokenType.OR,
