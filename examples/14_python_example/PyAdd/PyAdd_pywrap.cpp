@@ -6,7 +6,7 @@ static bool _py_init = false;
 static void ensure_init() {
     if (!_py_init) {
         Py_Initialize();
-        PyRun_SimpleString("import sys; sys.path.insert(0, \"/home/joep/projects/AGI/ThreadonFull/threadon/examples/14_python_example/PyAdd\")");
+        PyRun_SimpleString("import sys; sys.path.insert(0, \"/home/joep/projects/threadon/Threadon/examples/14_python_example/PyAdd\")");
         _py_init = true;
     }
 }
