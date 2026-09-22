@@ -2588,17 +2588,60 @@ class SSABuilder:
             expr.class_name,
         )
 
+        is_inherited = ret_type != expr.class_name
+
+        if is_inherited:
+            base_fields = self.module.types.get(ret_type, {})
+            all_fields = self.module.types.get(expr.class_name, {})
+
+            parts = [ret_type]
+            for fname in base_fields:
+                fv = self.new_temp(base_fields[fname])
+                self.current_block.add_instr(
+                    IRInstr("field", [self_val, fname], result=fv)
+                )
+                parts.append(fname)
+                parts.append(fv)
+            call_self = self.new_temp(ret_type)
+            self.current_block.add_instr(
+                IRInstr("struct_init", parts, result=call_self)
+            )
+        else:
+            call_self = self_val
+
         v = self.new_temp(ret_type)
 
         self.current_block.add_instr(
             IRInstr(
                 "call",
-                [init_name] + [self_val] + args,
+                [init_name] + [call_self] + args,
                 result=v,
             )
         )
 
-        return v
+        if not is_inherited:
+            return v
+
+        parts = [expr.class_name]
+        for fname in all_fields:
+            if fname in base_fields:
+                fv = self.new_temp(base_fields[fname])
+                self.current_block.add_instr(
+                    IRInstr("field", [v, fname], result=fv)
+                )
+            else:
+                fv = self.new_temp(all_fields[fname])
+                self.current_block.add_instr(
+                    IRInstr("field", [self_val, fname], result=fv)
+                )
+            parts.append(fname)
+            parts.append(fv)
+        d = self.new_temp(expr.class_name)
+        self.current_block.add_instr(
+            IRInstr("struct_init", parts, result=d)
+        )
+
+        return d
 
     def emit_expr(self, expr):
         if isinstance(expr, LiteralExpr):

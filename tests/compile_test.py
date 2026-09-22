@@ -767,6 +767,43 @@ def test_class_inheritance_inlined():
     assert result.stdout == "BMW\nDMW\n100\n"
 
 
+CLASS_DERIVED_FIELDS_SOURCE = """
+class Base:
+    x: Int32
+    def __init__(self: Base, x: Int32):
+        self.x = x
+
+class Mid(Base):
+    y: Int32
+    def add(self: Mid) -> Int32:
+        return self.x + self.y
+
+class Deep(Mid):
+    def twice(self: Deep) -> Int32:
+        return self.x * 2
+
+def main() -> Int32
+    m: Mid = Mid(3)
+    m.y = 4
+    print(m.add())
+    d: Deep = Deep(5)
+    print(d.twice())
+    return 0
+"""
+
+
+def test_class_derived_own_fields():
+    result = compile_stdlib_run(CLASS_DERIVED_FIELDS_SOURCE)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "7\n10\n"
+
+
+def test_class_derived_own_fields_inlined():
+    result = compile_stdlib_run(CLASS_DERIVED_FIELDS_SOURCE, inline_threshold=10000)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "7\n10\n"
+
+
 CLASS_COUNTER_SOURCE = """
 class Counter:
     def __init__(self: Counter, start: Int32 = 5):
