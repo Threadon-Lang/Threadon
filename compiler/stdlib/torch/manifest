@@ -1,0 +1,23 @@
+module torch
+lang cpp
+source torch.cpp
+flag -std=c++20
+flag -fPIC
+flag -I$TORCH_ROOT/include
+flag -I$TORCH_ROOT/include/torch/csrc/api/include
+link -L$TORCH_ROOT/lib
+link -Wl,-rpath,$TORCH_ROOT/lib
+link torch_cpu
+link c10
+
+class Tensor init List[Float64]
+class Tensor method item -> Float64
+class Tensor method at Int64 -> Float64
+class Tensor method sum -> Float64
+class Tensor method mean -> Float64
+class Tensor method max -> Float64
+class Tensor method min -> Float64
+class Tensor method dim -> Int64
+class Tensor method numel -> Int64
+
+export arange List[Float64] Float64

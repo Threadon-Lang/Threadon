@@ -364,9 +364,28 @@ def _python_link_flags():
         return []
 
 
+def default_torch_root():
+    try:
+        import torch
+        root = Path(torch.__file__).parent
+        if (root / "include").is_dir() and (root / "lib").is_dir():
+            return str(root)
+    except Exception:
+        pass
+    return "/home/joep/.local/lib/python3.13/site-packages/torch"
+
+
+def expand_native_flags(module):
+    os.environ.setdefault("TORCH_ROOT", default_torch_root())
+    flags = [os.path.expandvars(f) for f in (module.flags or [])]
+    links = [os.path.expandvars(l) for l in (module.links or [])]
+    return flags, links
+
+
 def build_native(module):
     tc = module.toolchain
     env = os.environ.copy()
+    module.flags, module.links = expand_native_flags(module)
 
     includes = _python_include_dirs() if tc.name == "python" else []
     link_extra = _python_link_flags() if tc.name == "python" else []
@@ -388,7 +407,7 @@ def build_native(module):
         objects.append(str(obj))
     link_flags = []
     for lib in module.links:
-        if lib.startswith("-l"):
+        if lib.startswith("-"):
             link_flags.append(lib)
         else:
             link_flags.append(f"-l{lib}")

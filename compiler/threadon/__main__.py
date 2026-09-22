@@ -14,6 +14,7 @@ Examples::
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -150,20 +151,34 @@ def dedupe_decls(llvm):
     return "\n".join(out)
 
 
-def run_llvm(llvm, capture=False, loads=None):
+def run_llvm(llvm, capture=False, loads=None, library_dirs=None):
     with tempfile.NamedTemporaryFile("w", suffix=".ll", delete=False) as f:
         f.write(llvm)
         path = f.name
     try:
         kwargs = {"capture_output": True, "text": True} if capture else {}
+        env = os.environ.copy()
+        if library_dirs:
+            prev = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = ":".join(library_dirs) + (f":{prev}" if prev else "")
         cmd = ["lli"]
         for so in (loads or []):
             cmd.append("-load")
             cmd.append(str(so))
         cmd.append(path)
-        return subprocess.run(cmd, **kwargs)
+        return subprocess.run(cmd, env=env, **kwargs)
     finally:
         Path(path).unlink(missing_ok=True)
+
+
+def native_library_dirs(modules):
+    dirs = []
+    for mod in modules:
+        for link in mod.links or []:
+            link = os.path.expandvars(link)
+            if link.startswith("-L"):
+                dirs.append(link[2:])
+    return dirs
 
 
 def native_modules(importer):
@@ -177,6 +192,10 @@ def build_native_shared_libs(modules, output_dir):
             raise SystemExit(f"error: module '{mod.name}' has no registered toolchain")
         if mod.native_source is None or not mod.native_source.is_file():
             raise SystemExit(f"error: native module '{mod.name}' has no source file")
+        existing = Path(mod.manifest_dir) / f"{mod.name}.so"
+        if existing.is_file():
+            libs.append(existing)
+            continue
         tc = mod.toolchain
         so = output_dir / f"lib{mod.name}.so"
         flags = mod.flags or []
@@ -344,7 +363,7 @@ def main(argv=None):
         if mods:
             with tempfile.TemporaryDirectory() as td:
                 libs = build_native_shared_libs(mods, output_dir=td)
-                result = run_llvm(final, loads=libs)
+                result = run_llvm(final, loads=libs, library_dirs=native_library_dirs(mods))
         else:
             result = run_llvm(final)
         sys.exit(result.returncode)
