@@ -3257,15 +3257,34 @@ class LLVMIRCompiler:
         lines.append(f"br label %{merge_label}")
         lines.append(f"{notfound_label}:")
 
-        if val_llvm.endswith("*"):
-            lines.append(f"{res}_nfval = bitcast i8* null to {val_llvm}")
+        if self.debug_mode:
+            self.used_c_runtime.add("exit")
+            msg = "Error: KeyError: dict key not found\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            ctx = self._string_global(f"Dict index on {obj.type}")
+            nf_msg = f"{res}_emsg"
+            lines.append(
+                f"{nf_msg} = getelementptr inbounds "
+                f"[{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0"
+            )
+            lines.append(
+                f"call void @__threadon_debug_error(i8* {nf_msg}, i8* {ctx})"
+            )
+            lines.append("unreachable")
         else:
-            lines.append(f"{res}_nfval = add {val_llvm} 0, 0")
-        lines.append(f"br label %{merge_label}")
+            if val_llvm.endswith("*"):
+                lines.append(f"{res}_nfval = bitcast i8* null to {val_llvm}")
+            else:
+                lines.append(f"{res}_nfval = add {val_llvm} 0, 0")
+            lines.append(f"br label %{merge_label}")
         lines.append(f"{merge_label}:")
-        lines.append(
-            f"{res} = phi {val_llvm} [ {found_val}, %{found_label} ], [ {res}_nfval, %{notfound_label} ]"
-        )
+        if self.debug_mode:
+            lines.append(f"{res} = phi {val_llvm} [ {found_val}, %{found_label} ]")
+        else:
+            lines.append(
+                f"{res} = phi {val_llvm} [ {found_val}, %{found_label} ], [ {res}_nfval, %{notfound_label} ]"
+            )
 
         return lines
 

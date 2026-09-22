@@ -724,18 +724,15 @@ def run() -> Int32
     assert f.block_map["entry"].terminator.args[0].name == "%t2"
 
 
-def test_unary_pos_emission():
-    module = build_module(
-        """
+def test_unary_plus_is_rejected():
+    with pytest.raises(SystemExit):
+        build_module(
+            """
 def f(a: Int32) -> Int32
     b: Int32 = +a
     return b
 """
-    )
-    f = get_func(module, "f")
-    poss = entry_instrs(f, "pos")
-    assert len(poss) == 1
-    assert poss[0].args[0].name == "%t0"
+        )
 
 
 def test_call_with_no_arguments():

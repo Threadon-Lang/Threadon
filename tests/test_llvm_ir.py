@@ -492,9 +492,9 @@ def test_float_pow_execution():
     )
 
 
-def test_float_unary_plus_execution():
+def test_float_unary_minus_execution():
     assert_float_output(
-        "def run() -> Float32\n    return +2.5\n", "2.500000\n"
+        "def run() -> Float32\n    return -2.5\n", "-2.500000\n"
     )
 
 
@@ -1237,6 +1237,32 @@ def main() -> Int32
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "{a: 10, b: 2}\n"
+
+
+def test_dict_missing_key_returns_zero_without_debug():
+    assert_run_output(
+        """
+def run() -> Int32
+    x: Dict[String, Int32] = {"a": 1, "b": 2}
+    return x["zzz"]
+""",
+        "0\n",
+    )
+
+
+def test_dict_missing_key_errors_in_debug():
+    result = ct.compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Dict[String, Int32] = {"a": 1, "b": 2}
+    y: Int32 = x["zzz"]
+    print(y)
+    return 0
+"""
+    )
+    assert result.returncode != 0
+    assert "KeyError" in result.stderr
+    assert "dict key not found" in result.stderr
 
 
 # ---------------------------------------------------------------------------
