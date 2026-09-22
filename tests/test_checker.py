@@ -255,7 +255,7 @@ def f(a: Int32, b: Int32) -> Int32
     assert "Parameter 'b' in function 'f' is never used" in out
 
 
-def test_dead_store_warning(capsys):
+def test_unused_variable_only_warned_once(capsys):
     source = build(
         """
 def f(a: Int32) -> Int32
@@ -263,9 +263,25 @@ def f(a: Int32) -> Int32
     return a
 """
     )
+    UnusedVariableChecker().check(source)
     DeadStoreChecker().check(source)
     out = capsys.readouterr().out
-    assert "Dead store: variable 'b' assigned but never used" in out
+    assert out.count("Variable 'b'") == 1
+    assert "Dead store" not in out
+
+
+def test_dead_store_overwritten_warning(capsys):
+    source = build(
+        """
+def f(a: Int32) -> Int32
+    b: Int32 = a + 1
+    b = 5
+    return b
+"""
+    )
+    DeadStoreChecker().check(source)
+    out = capsys.readouterr().out
+    assert "Dead store: 'b' assigned but overwritten before it is read" in out
 
 
 def test_no_warnings_when_everything_used(capsys):
@@ -388,20 +404,19 @@ def f(x: Int32) -> Int32
     )
 
 
-def test_dead_store_in_branch_warning(capsys):
+def test_no_dead_store_warning_for_conditional_overwrite(capsys):
     source = build(
         """
 def f(a: Int32) -> Int32
+    b: Int32 = 1
     if a > 0:
-        b: Int32 = 1
-    else:
-        b: Int32 = 2
-    return a
+        b = 2
+    return b
 """
     )
     DeadStoreChecker().check(source)
     out = capsys.readouterr().out
-    assert "Dead store: variable 'b' assigned but never used" in out
+    assert out == ""
 
 
 def test_unused_variable_in_branch_warning(capsys):

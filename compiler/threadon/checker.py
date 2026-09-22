@@ -339,7 +339,7 @@ class UnusedVariableChecker:
         self.warnings = []
 
     def warn(self, msg):
-        print("AST Warning:", msg)
+        print(f"\033[33m\033[1mWarning:\033[0m {msg}")
 
     def check(self, ast):
         global_decl = set()
@@ -480,125 +480,151 @@ class DeadStoreChecker:
         self.warnings = []
 
     def warn(self, msg):
-        print("AST Warning:", msg)
+        print(f"\033[33m\033[1mWarning:\033[0m {msg}")
 
     def check(self, ast):
         for func in iter_functions(ast):
             self.check_function(func)
 
     def check_function(self, func):
-        writes = {}
-        reads = set()
+        self.reads = set()
+        self.track = {}
+        self._pre_scan(func.body)
+        self._block(func.body)
 
-        self.walk_block(func.body, writes, reads)
+    def _store(self, name):
+        if name in self.track and name in self.reads:
+            self.warn(
+                f"Dead store: '{name}' assigned but overwritten before it is read"
+            )
+        self.track[name] = True
 
-        for var, write_list in writes.items():
-            if var not in reads:
-                for stmt, line in write_list:
-                    self.warn(f"Dead store: variable '{var}' assigned but never used")
+    def _branch(self, stmts):
+        self.track = {}
+        self._block(stmts)
+        self.track = {}
 
-    def walk_block(self, stmts, writes, reads):
+    def _pre_scan(self, stmts):
         for stmt in stmts:
             t = type(stmt).__name__
 
             if t == "VarDecl":
                 if stmt.expr:
-                    self.walk_expr(stmt.expr, reads)
-                writes.setdefault(stmt.name, []).append((stmt, None))
-
+                    self._walk_reads(stmt.expr)
             elif t == "Assign":
-                self.walk_expr(stmt.expr, reads)
-                reads.add(stmt.name)
-
-                writes.setdefault(stmt.name, []).append((stmt, None))
-
+                self._walk_reads(stmt.expr)
             elif t == "FieldAssign":
-                self.walk_expr(stmt.expr, reads)
-                reads.add(stmt.name)
-
+                self._walk_reads(stmt.expr)
+                self.reads.add(stmt.name)
             elif t == "AttrDecl":
                 if stmt.expr:
-                    self.walk_expr(stmt.expr, reads)
-
+                    self._walk_reads(stmt.expr)
             elif t == "IndexAssign":
-                self.walk_expr(stmt.target, reads)
-                self.walk_expr(stmt.value, reads)
-
+                self._walk_reads(stmt.target)
+                self._walk_reads(stmt.value)
             elif t == "ExprStmt":
-                self.walk_expr(stmt.expr, reads)
-
+                self._walk_reads(stmt.expr)
             elif t == "ReturnStmt":
                 if stmt.value:
-                    self.walk_expr(stmt.value, reads)
-
+                    self._walk_reads(stmt.value)
             elif t == "IfStmt":
-                self.walk_expr(stmt.condition, reads)
-                self.walk_block(stmt.body, writes, reads)
+                self._walk_reads(stmt.condition)
+                self._pre_scan(stmt.body)
                 for cond, body in stmt.elif_blocks:
-                    self.walk_expr(cond, reads)
-                    self.walk_block(body, writes, reads)
+                    self._walk_reads(cond)
+                    self._pre_scan(body)
                 if stmt.else_body:
-                    self.walk_block(stmt.else_body, writes, reads)
-
+                    self._pre_scan(stmt.else_body)
             elif t == "WhileStmt":
-                self.walk_expr(stmt.condition, reads)
-                self.walk_block(stmt.body, writes, reads)
+                self._walk_reads(stmt.condition)
+                self._pre_scan(stmt.body)
                 if stmt.step:
-                    self.walk_block(stmt.step, writes, reads)
+                    self._pre_scan(stmt.step)
 
-    def walk_expr(self, expr, reads):
+    def _block(self, stmts):
+        for stmt in stmts:
+            t = type(stmt).__name__
+
+            if t == "VarDecl":
+                if stmt.expr:
+                    self._walk_reads(stmt.expr)
+                self._store(stmt.name)
+            elif t == "Assign":
+                self._walk_reads(stmt.expr)
+                self._store(stmt.name)
+            elif t == "FieldAssign":
+                self._walk_reads(stmt.expr)
+                self._walk_reads(stmt.name)
+            elif t == "AttrDecl":
+                if stmt.expr:
+                    self._walk_reads(stmt.expr)
+            elif t == "IndexAssign":
+                self._walk_reads(stmt.target)
+                self._walk_reads(stmt.value)
+            elif t == "ExprStmt":
+                self._walk_reads(stmt.expr)
+            elif t == "ReturnStmt":
+                if stmt.value:
+                    self._walk_reads(stmt.value)
+            elif t == "IfStmt":
+                self._walk_reads(stmt.condition)
+                self._branch(stmt.body)
+                for cond, body in stmt.elif_blocks:
+                    self._walk_reads(cond)
+                    self._branch(body)
+                if stmt.else_body:
+                    self._branch(stmt.else_body)
+                self.track = {}
+            elif t == "WhileStmt":
+                self._walk_reads(stmt.condition)
+                self._branch(stmt.body)
+                if stmt.step:
+                    self._branch(stmt.step)
+                self.track = {}
+
+    def _walk_reads(self, expr):
         t = type(expr).__name__
 
         if t == "VarExpr":
-            reads.add(expr.name)
-
+            self.reads.add(expr.name)
+            self.track.pop(expr.name, None)
         elif t == "BinaryExpr":
-            self.walk_expr(expr.left, reads)
-            self.walk_expr(expr.right, reads)
-
+            self._walk_reads(expr.left)
+            self._walk_reads(expr.right)
         elif t == "UnaryExpr":
-            self.walk_expr(expr.expr, reads)
-
+            self._walk_reads(expr.expr)
         elif t == "CallExpr":
             for a in expr.args:
-                self.walk_expr(a, reads)
-
+                self._walk_reads(a)
         elif t == "StructInitExpr":
             for e in expr.fields.values():
-                self.walk_expr(e, reads)
-
+                self._walk_reads(e)
         elif t == "FieldAccessExpr":
-            self.walk_expr(expr.obj, reads)
-
+            self._walk_reads(expr.obj)
         elif t == "MethodCallExpr":
-            self.walk_expr(expr.obj, reads)
+            self._walk_reads(expr.obj)
             for a in expr.args:
-                self.walk_expr(a, reads)
-
+                self._walk_reads(a)
         elif t == "ClassInitExpr":
             for a in expr.args:
-                self.walk_expr(a, reads)
-
+                self._walk_reads(a)
         elif t == "IndexExpr":
-            self.walk_expr(expr.obj, reads)
-            self.walk_expr(expr.index, reads)
-
+            self._walk_reads(expr.obj)
+            self._walk_reads(expr.index)
         elif t == "ListLiteralExpr":
             for e in expr.elements:
-                self.walk_expr(e, reads)
-
+                self._walk_reads(e)
         elif t == "DictLiteralExpr":
             for k in expr.keys:
-                self.walk_expr(k, reads)
+                self._walk_reads(k)
             for v in expr.values:
-                self.walk_expr(v, reads)
-
+                self._walk_reads(v)
         elif t == "RefExpr":
-            self.walk_expr(expr.inner, reads)
+            self._walk_reads(expr.inner)
         elif t == "InterpolatedStringExpr":
             for kind, part in expr.parts:
                 if kind == "expr":
-                    self.walk_expr(part, reads)
+                    self._walk_reads(part)
 
 class MissingReturnChecker:
     def __init__(self):
