@@ -1576,8 +1576,12 @@ def run() -> Int32
     assert body[0].name == "i"
     assert body[0].expr.method == "value"
     assert type(body[1]).__name__ == "ExprStmt"
-    assert body[-1].name == "_it0"
-    assert body[-1].expr.method == "advance"
+    assert getattr(body[-1], "name", None) != "_it0"
+
+    step = while_stmt.step
+    assert type(step[0]).__name__ == "Assign"
+    assert step[0].name == "_it0"
+    assert step[0].expr.method == "advance"
 
 
 def test_for_loop_reuses_existing_loop_var():
@@ -1670,11 +1674,12 @@ def run() -> Int32
     while_stmt = func.body[3]
     assert type(while_stmt).__name__ == "WhileStmt"
     assert while_stmt.condition.op == "<"
-    assert len(while_stmt.body) == 3
+    assert len(while_stmt.body) == 2
     first = while_stmt.body[0]
     assert first.name == "i"
     assert type(first.expr).__name__ == "IndexExpr"
-    assert while_stmt.body[-1].name.startswith("_ix")
+    assert while_stmt.step[0].name.startswith("_ix")
+    assert while_stmt.step[0].expr.op == "+"
 
 
 def test_for_dict_desugars_to_key_loop():
@@ -1705,3 +1710,99 @@ def run() -> Int32
     return 0
 """
     )
+
+
+# ---------------------------------------------------------------------------
+# break / continue (new)
+# ---------------------------------------------------------------------------
+
+def test_break_inside_while_parses():
+    ast = parse_ok(
+        """
+def run() -> Int32
+    while True:
+        break
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    while_stmt = func.body[0]
+    assert type(while_stmt).__name__ == "WhileStmt"
+    assert type(while_stmt.body[0]).__name__ == "BreakStmt"
+
+
+def test_continue_inside_for_parses():
+    ast = parse_ok(
+        """
+def run() -> Int32
+    for i in range(3):
+        continue
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    while_stmt = next(n for n in func.body if type(n).__name__ == "WhileStmt")
+    body = while_stmt.body
+    ids = [type(s).__name__ for s in body]
+    assert "ContinueStmt" in ids
+
+
+def test_break_outside_loop_errors():
+    parse_fail(
+        """
+def run() -> Int32
+    break
+    return 0
+"""
+    )
+
+
+def test_continue_outside_loop_errors():
+    parse_fail(
+        """
+def run() -> Int32
+    if True:
+        continue
+    return 0
+"""
+    )
+
+
+def test_break_with_extra_token_errors():
+    parse_fail(
+        """
+def run() -> Int32
+    while True:
+        break 5
+    return 0
+"""
+    )
+
+
+def test_continue_with_extra_token_errors():
+    parse_fail(
+        """
+def run() -> Int32
+    while True:
+        continue x
+    return 0
+"""
+    )
+
+
+def test_break_in_nested_loop_parses():
+    ast = parse_ok(
+        """
+def run() -> Int32
+    while True:
+        while True:
+            break
+        continue
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    outer = func.body[0]
+    inner = outer.body[0]
+    assert type(inner.body[0]).__name__ == "BreakStmt"
+    assert type(outer.body[1]).__name__ == "ContinueStmt"

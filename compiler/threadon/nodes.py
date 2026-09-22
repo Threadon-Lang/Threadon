@@ -30,6 +30,14 @@ class ReturnStmt(Node):
     value: list[Token] | None
 
 @dataclass
+class BreakStmt(Node):
+    pass
+
+@dataclass
+class ContinueStmt(Node):
+    pass
+
+@dataclass
 class VarDecl:
     name: str
     var_type: str
@@ -79,6 +87,7 @@ class IfStmt:
 class WhileStmt:
     condition: any
     body: list
+    step: list | None = None
 @dataclass
 class Assign:
     name: str

@@ -1027,3 +1027,62 @@ def run() -> Int32
     assert "call" in ops
     calls = [i.args[0] for b in f.blocks for i in b.instructions if i.op == "call"]
     assert "dict_key" in calls
+
+
+def test_while_break_emits_merge_block():
+    module = build_module(
+        """
+def run() -> Int32
+    i: Int32 = 0
+    while i < 5:
+        i += 1
+        if i == 3:
+            break
+    return i
+"""
+    )
+    f = get_func(module, "run")
+    labels = [b.label for b in f.blocks]
+    assert any(l.startswith("whilemerge") for l in labels)
+    brs = [b.terminator.args[0] for b in f.blocks if b.terminator.op == "br"]
+    merge = next(l for l in labels if l.startswith("whilemerge"))
+    assert merge in brs
+
+
+def test_while_continue_emits_latch_block():
+    module = build_module(
+        """
+def run() -> Int32
+    i: Int32 = 0
+    while i < 5:
+        i += 1
+        if i % 2 == 0:
+            continue
+    return i
+"""
+    )
+    f = get_func(module, "run")
+    labels = [b.label for b in f.blocks]
+    assert any(l.startswith("whilelatch") for l in labels)
+
+
+def test_for_continue_routes_through_latch_step():
+    module = build_module(
+        """
+def run() -> Int32
+    for i in range(3):
+        if i == 1:
+            continue
+    return 0
+"""
+    )
+    f = get_func(module, "run")
+    labels = [b.label for b in f.blocks]
+    latch = next(l for l in labels if l.startswith("whilelatch"))
+    calls = [
+        i.args[0] for b in f.blocks for i in b.instructions if i.op == "call"
+    ]
+    assert any(c.endswith("advance") for c in calls)
+    latch_block = next(b for b in f.blocks if b.label == latch)
+    ops = [i.op for i in latch_block.instructions]
+    assert "call" in ops

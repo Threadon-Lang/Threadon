@@ -68,6 +68,10 @@ class UnreachableChecker:
             current_block["stmts"].append((stmt, True))
             return None
 
+        if t in ("BreakStmt", "ContinueStmt"):
+            current_block["stmts"].append((stmt, True))
+            return None
+
         if t == "IfStmt":
             current_block["stmts"].append((stmt, True))
 
@@ -539,6 +543,8 @@ class DeadStoreChecker:
             elif t == "WhileStmt":
                 self.walk_expr(stmt.condition, reads)
                 self.walk_block(stmt.body, writes, reads)
+                if stmt.step:
+                    self.walk_block(stmt.step, writes, reads)
 
     def walk_expr(self, expr, reads):
         t = type(expr).__name__

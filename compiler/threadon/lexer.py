@@ -22,6 +22,8 @@ class TokenType(Enum):
     FOR = auto()
     IN = auto()
     RETURN = auto()
+    BREAK = auto()
+    CONTINUE = auto()
     AND = auto()
     OR = auto()
     NOT = auto()
@@ -92,6 +94,8 @@ KEYWORDS = {
     "for": TokenType.FOR,
     "in": TokenType.IN,
     "return": TokenType.RETURN,
+    "break": TokenType.BREAK,
+    "continue": TokenType.CONTINUE,
     "and": TokenType.AND,
     "or": TokenType.OR,
     "not": TokenType.NOT,

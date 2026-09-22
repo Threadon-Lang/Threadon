@@ -212,6 +212,7 @@ class Parser:
         self.modified_stack = []
         self.push_scope()
         self._for_seq = 0
+        self._loop_depth = 0
     def give_error(self, msg, line_num=None):
         RED = "\033[91m"
         BOLD = "\033[1m"
@@ -388,6 +389,10 @@ class Parser:
 
         if first == TokenType.RETURN:
             return self.parse_return()
+        if first == TokenType.BREAK:
+            return self.parse_break()
+        if first == TokenType.CONTINUE:
+            return self.parse_continue()
         if first == TokenType.IDENT and len(self.current_line) > 1 and self.current_line[1].type == TokenType.COLON:
             return self.parse_variable_decl()
         if first == TokenType.IF:
@@ -1559,7 +1564,10 @@ class Parser:
         if cond_type != "Bool":
             self.give_error(f"While condition must be Bool, got {cond_type}")
 
+        self._loop_depth += 1
         body = self.parse_block(parent_indent)
+        self._loop_depth -= 1
+
         body_modified = self.modified_stack[-1]
         self.pop_scope()
 
@@ -1655,7 +1663,9 @@ class Parser:
         done_call = MethodCallExpr(VarExpr(it_name), "done", [])
         self.detect_expr_type(done_call)
 
+        self._loop_depth += 1
         body_nodes = self.parse_block(parent_indent)
+        self._loop_depth -= 1
 
         value_call = MethodCallExpr(VarExpr(it_name), "value", [])
         self.detect_expr_type(value_call)
@@ -1667,7 +1677,7 @@ class Parser:
             Assign(var_name, value_call),
         ]
         body.extend(body_nodes)
-        body.append(Assign(it_name, adv_call))
+        step = [Assign(it_name, adv_call)]
 
         body_modified = self.modified_stack[-1]
         self.pop_scope()
@@ -1684,7 +1694,7 @@ class Parser:
         stmts = [VarDecl(it_name, iter_type, iterable)]
         if not reuse_var:
             stmts.append(VarDecl(var_name, elt_type, None))
-        stmts.append(WhileStmt(condition, body))
+        stmts.append(WhileStmt(condition, body, step))
         return stmts
 
     def _parse_for_sequence(self, var_name, iterable, iter_type, elt_type, parent_indent):
@@ -1720,7 +1730,9 @@ class Parser:
         )
         self.detect_expr_type(condition)
 
+        self._loop_depth += 1
         body_nodes = self.parse_block(parent_indent)
+        self._loop_depth -= 1
 
         if is_dict_type(iter_type):
             value_expr = CallExpr(
@@ -1736,7 +1748,7 @@ class Parser:
 
         body = [Assign(var_name, value_expr)]
         body.extend(body_nodes)
-        body.append(Assign(ix_name, advance))
+        step = [Assign(ix_name, advance)]
 
         body_modified = self.modified_stack[-1]
         self.pop_scope()
@@ -1754,7 +1766,7 @@ class Parser:
         ]
         if not reuse_var:
             stmts.append(VarDecl(var_name, elt_type, None))
-        stmts.append(WhileStmt(condition, body))
+        stmts.append(WhileStmt(condition, body, step))
         return stmts
 
     def _parse_range_call(self, ts):
@@ -2945,6 +2957,26 @@ class Parser:
                     self.give_error(f"Expected {self.return_type}, got {detected}")
 
         return ReturnStmt(self.return_type, expr)
+    def parse_break(self):
+        tokens = self.current_line
+
+        if len(tokens) > 1:
+            self.give_error("'break' does not take arguments")
+
+        if self._loop_depth == 0:
+            self.give_error("'break' outside of a loop")
+
+        return BreakStmt()
+    def parse_continue(self):
+        tokens = self.current_line
+
+        if len(tokens) > 1:
+            self.give_error("'continue' does not take arguments")
+
+        if self._loop_depth == 0:
+            self.give_error("'continue' outside of a loop")
+
+        return ContinueStmt()
     def parse_variable_decl(self, allow_union=True):
         if not self._in_function and not self._in_struct:
             self.give_error("Variable declaration at top level is not allowed; declare variables inside a function instead")

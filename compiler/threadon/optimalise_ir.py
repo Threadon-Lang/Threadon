@@ -251,6 +251,22 @@ class IROptimizer:
         return sum(len(b.instructions) for b in func.blocks)
 
 
+    def _value_reads_phi(self, value, phi_result):
+        seen = set()
+        stack = [value]
+        while stack:
+            v = stack.pop()
+            if not isinstance(v, SSAValue) or v in seen:
+                continue
+            seen.add(v)
+            if v is phi_result:
+                return True
+            d = v.def_instr
+            if isinstance(d, IRPhi):
+                for _, iv in d.incoming:
+                    stack.append(iv)
+        return False
+
     def _sccp(self):
         if not self.func.blocks:
             return False
@@ -301,6 +317,13 @@ class IROptimizer:
                         active.append(v)
                 if not active:
                     return None
+                # A phi whose incoming values feed back through another phi is
+                # a loop-carried value (e.g. a variable left unchanged by a
+                # 'continue' path). Its lattice must not collapse to a signle
+                # constant while the cycle has only partially converged.
+                for a in active:
+                    if self._value_reads_phi(a, instr.result):
+                        return set()
                 first = get_lat(active[0].name)
                 if isinstance(first, set):
                     return set()
@@ -1156,10 +1179,13 @@ class IROptimizer:
                     if new_tgt:
                         for instr in new_tgt.instructions:
                             if isinstance(instr, IRPhi):
-                                instr.incoming = [
-                                    (block.label if blk == tgt.label else blk, val)
-                                    for blk, val in instr.incoming
-                                ]
+                                labels = {blk for blk, _ in instr.incoming}
+                                if block.label in labels:
+                                    continue
+                                for blk, val in instr.incoming:
+                                    if blk == tgt.label:
+                                        instr.incoming.append((block.label, val))
+                                        break
                     t.args[0] = new_target
                     changed = True
         return changed
@@ -1241,15 +1267,10 @@ class IROptimizer:
                     break
             if duplicate:
                 continue
-            for pred_label in list(block.predecessors):
+            pred_labels = list(block.predecessors)
+            for pred_label in pred_labels:
                 pred = self.func.block_map[pred_label]
                 self._replace_terminator_target(pred, block.label, target_label)
-                for t_instr in target.instructions:
-                    if isinstance(t_instr, IRPhi):
-                        t_instr.incoming = [
-                            (pred_label if blk == block.label else blk, val)
-                            for blk, val in t_instr.incoming
-                        ]
                 if block.label in target.predecessors:
                     target.predecessors.remove(block.label)
                 if pred_label not in target.predecessors:
@@ -1258,6 +1279,16 @@ class IROptimizer:
                     pred.successors.append(target_label)
                 if block.label in pred.successors:
                     pred.successors.remove(block.label)
+            for t_instr in target.instructions:
+                if isinstance(t_instr, IRPhi):
+                    new_incoming = []
+                    for blk, val in t_instr.incoming:
+                        if blk == block.label:
+                            for pl in pred_labels:
+                                new_incoming.append((pl, val))
+                        else:
+                            new_incoming.append((blk, val))
+                    t_instr.incoming = new_incoming
             for t_instr in target.instructions:
                 if isinstance(t_instr, IRPhi):
                     t_instr.incoming = [

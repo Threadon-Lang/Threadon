@@ -183,6 +183,106 @@ def run() -> Int32
     assert result.stdout == "3\n"
 
 
+def test_while_break_runs():
+    assert_run_output(
+        """
+def run() -> Int32
+    i: Int32 = 0
+    while True:
+        i += 1
+        if i == 3:
+            break
+    return i
+""",
+        "3\n",
+    )
+
+
+def test_while_continue_runs():
+    assert_run_output(
+        """
+def run() -> Int32
+    i: Int32 = 0
+    n: Int32 = 0
+    while i < 5:
+        i += 1
+        if i % 2 == 1:
+            continue
+        n += 1
+    return n
+""",
+        "2\n",
+    )
+
+
+def test_for_break_runs():
+    assert_for_output(
+        """
+def main() -> Int32
+    total: Int64 = 0
+    for i in range(10):
+        if i == 3:
+            break
+        total += i
+    print(total)
+    return 0
+""",
+        "3\n",
+    )
+
+
+def test_for_continue_runs():
+    assert_for_output(
+        """
+def main() -> Int32
+    total: Int64 = 0
+    for i in range(6):
+        if i % 2 == 1:
+            continue
+        total += i
+    print(total)
+    return 0
+""",
+        "6\n",
+    )
+
+
+def test_continue_keeps_accumulator_across_skip():
+    assert_run_output(
+        """
+def run() -> Int32
+    total: Int64 = 0
+    n: Int64 = 10
+    while n > 0:
+        n = n - 1
+        if n % 2 == 1:
+            continue
+        total = total + n
+    return Int32(total)
+""",
+        "20\n",
+    )
+
+
+def test_nested_loop_break_continue_runs():
+    assert_for_output(
+        """
+def main() -> Int32
+    s: Int32 = 0
+    for i in range(3):
+        for j in range(3):
+            if j == 1:
+                continue
+            if i == 2:
+                break
+            s += 1
+    print(s)
+    return 0
+""",
+        "4\n",
+    )
+
+
 def test_float_pow_intrinsic_emitted():
     llvm = compile_unoptimized("def run() -> Float32\n    return 2.0 ** 3.0\n")
     assert "@llvm.pow.f32" in llvm

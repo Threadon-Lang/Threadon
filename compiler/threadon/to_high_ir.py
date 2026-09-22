@@ -11,9 +11,11 @@ from .nodes import (
     Assign,
     AttrDecl,
     BinaryExpr,
+    BreakStmt,
     CallExpr,
     CastExpr,
     ClassInitExpr,
+    ContinueStmt,
     DictLiteralExpr,
     Expr,
     ExprStmt,
@@ -481,6 +483,8 @@ class SSABuilder:
 
         self.env_stack = []
 
+        self.loop_stack = []
+
         self.temp_counter = 0
 
         self.func_returns = {}
@@ -824,6 +828,10 @@ class SSABuilder:
                 for s in stmt.body:
                     walk_stmt(s)
 
+                if stmt.step:
+                    for s in stmt.step:
+                        walk_stmt(s)
+
         for stmt in func_ast.body:
             walk_stmt(stmt)
 
@@ -951,6 +959,12 @@ class SSABuilder:
 
         elif isinstance(node, ReturnStmt):
             self.emit_return(node)
+
+        elif isinstance(node, BreakStmt):
+            self.emit_break()
+
+        elif isinstance(node, ContinueStmt):
+            self.emit_continue()
 
         elif isinstance(node, IfStmt):
             self.emit_if(node)
@@ -1607,6 +1621,13 @@ class SSABuilder:
                 assigned,
             )
 
+        if node.step:
+            for stmt in node.step:
+                self._collect_assigned(
+                    stmt,
+                    assigned,
+                )
+
         loop_vars = {
             var
             for var in assigned
@@ -1688,6 +1709,17 @@ class SSABuilder:
                 phi.result
             )
 
+        loop_ctx = {
+            "cond_block": cond_block,
+            "latch_block": latch_block,
+            "merge_block": merge_block,
+            "phis": phis,
+            "continue_edges": [],
+            "merge_phis": {},
+        }
+
+        self.loop_stack.append(loop_ctx)
+
         self._emit_stmt_list(
             node.body
         )
@@ -1697,6 +1729,10 @@ class SSABuilder:
 
         self.pop_env()
 
+        continue_edges = loop_ctx["continue_edges"]
+        merge_phis = loop_ctx["merge_phis"]
+
+        self.loop_stack.pop()
 
         if body_end.terminator is None:
             body_end.set_terminator(
@@ -1706,13 +1742,22 @@ class SSABuilder:
                 )
             )
 
-            back_edge_exists = True
+            fallthrough_edge = (body_end, body_env)
 
         else:
-            back_edge_exists = False
+            fallthrough_edge = None
 
+        if node.step or continue_edges:
+            self._emit_loop_latch(
+                node,
+                phis,
+                cond_block,
+                latch_block,
+                fallthrough_edge,
+                continue_edges,
+            )
 
-        if back_edge_exists:
+        elif fallthrough_edge is not None:
             self.current_block = latch_block
 
             latch_block.set_terminator(
@@ -1794,15 +1839,262 @@ class SSABuilder:
                             phi
                         )
 
+        if merge_phis:
+            for var, phi in merge_phis.items():
+                cond_phi = phis[var]
+
+                phi.incoming.append(
+                    (
+                        cond_block.label,
+                        cond_phi.result,
+                    )
+                )
+
+                phi.args = [
+                    value
+                    for _, value in phi.incoming
+                ]
+
+                if isinstance(
+                    cond_phi.result,
+                    SSAValue,
+                ):
+                    if phi not in cond_phi.result.users:
+                        cond_phi.result.users.append(
+                            phi
+                        )
 
         self.current_block = merge_block
 
         merge_env = dict(parent_env)
 
         for var, phi in phis.items():
-            merge_env[var] = phi.result
+            if var in merge_phis:
+                merge_env[var] = merge_phis[var].result
+            else:
+                merge_env[var] = phi.result
 
         self.env_stack[-1] = merge_env
+
+
+    def emit_break(self):
+        if not self.loop_stack:
+            raise Exception(
+                "SSA error: 'break' outside of a loop"
+            )
+
+        ctx = self.loop_stack[-1]
+
+        merge = ctx["merge_block"]
+
+        env = dict(self._effective_env())
+
+        self.current_block.set_terminator(
+            IRInstr(
+                "br",
+                [merge.label],
+            )
+        )
+
+        merge_phis = ctx["merge_phis"]
+
+        for var, cond_phi in ctx["phis"].items():
+            val = self._safe_env_lookup(
+                env,
+                var,
+                self.current_block,
+            )
+
+            if (
+                is_union_type(cond_phi.result.type)
+                and val.type != cond_phi.result.type
+            ):
+                val = self._wrap_union_in_block(
+                    self.current_block,
+                    val,
+                    cond_phi.result.type,
+                )
+
+            phi = merge_phis.get(var)
+
+            if phi is None:
+                res = self.new_temp(
+                    cond_phi.result.type
+                )
+
+                phi = IRPhi(
+                    res,
+                    [],
+                )
+
+                merge.add_instr(phi)
+
+                merge_phis[var] = phi
+
+            phi.incoming.append(
+                (
+                    self.current_block.label,
+                    val,
+                )
+            )
+
+            phi.args = [
+                value
+                for _, value in phi.incoming
+            ]
+
+            if isinstance(
+                val,
+                SSAValue,
+            ):
+                if phi not in val.users:
+                    val.users.append(
+                        phi
+                    )
+
+
+    def emit_continue(self):
+        if not self.loop_stack:
+            raise Exception(
+                "SSA error: 'continue' outside of a loop"
+            )
+
+        ctx = self.loop_stack[-1]
+
+        env = dict(self._effective_env())
+
+        self.current_block.set_terminator(
+            IRInstr(
+                "br",
+                [ctx["latch_block"].label],
+            )
+        )
+
+        ctx["continue_edges"].append(
+            (self.current_block, env)
+        )
+
+
+    def _emit_loop_latch(
+        self,
+        node,
+        phis,
+        cond_block,
+        latch_block,
+        fallthrough_edge,
+        continue_edges,
+    ):
+        back_edges = []
+
+        if fallthrough_edge is not None:
+            back_edges.append(fallthrough_edge)
+
+        back_edges.extend(continue_edges)
+
+        if not back_edges:
+            return
+
+        self.current_block = latch_block
+
+        latch_env = {}
+
+        for var, cond_phi in phis.items():
+            edges = []
+
+            for blk, env in back_edges:
+                val = self._safe_env_lookup(
+                    env,
+                    var,
+                    blk,
+                )
+
+                if (
+                    is_union_type(cond_phi.result.type)
+                    and val.type != cond_phi.result.type
+                ):
+                    val = self._wrap_union_in_block(
+                        blk,
+                        val,
+                        cond_phi.result.type,
+                    )
+
+                edges.append((blk, val))
+
+            if len(edges) == 1:
+                latch_env[var] = edges[0][1]
+                continue
+
+            res = self.new_temp(
+                cond_phi.result.type
+            )
+
+            incoming = [
+                (blk.label, val)
+                for blk, val in edges
+            ]
+
+            phi = IRPhi(
+                res,
+                incoming,
+            )
+
+            latch_block.add_instr(phi)
+
+            for _, val in edges:
+                if isinstance(
+                    val,
+                    SSAValue,
+                ):
+                    if phi not in val.users:
+                        val.users.append(
+                            phi
+                        )
+
+            latch_env[var] = res
+
+        if node.step:
+            saved_env = self.env_stack[-1]
+
+            self.env_stack[-1] = latch_env
+
+            self._emit_stmt_list(
+                node.step
+            )
+
+            latch_env = dict(self._effective_env())
+
+            self.env_stack[-1] = saved_env
+
+        for var, cond_phi in phis.items():
+            val = latch_env[var]
+
+            cond_phi.incoming.append(
+                (
+                    latch_block.label,
+                    val,
+                )
+            )
+
+            cond_phi.args = [
+                value
+                for _, value in cond_phi.incoming
+            ]
+
+            if isinstance(
+                val,
+                SSAValue,
+            ):
+                if cond_phi not in val.users:
+                    val.users.append(
+                        cond_phi
+                    )
+
+        latch_block.set_terminator(
+            IRInstr(
+                "br",
+                [cond_block.label],
+            )
+        )
 
 
     def _collect_assigned(self, stmt, out):
@@ -1860,6 +2152,13 @@ class SSABuilder:
                     s,
                     out,
                 )
+
+            if stmt.step:
+                for s in stmt.step:
+                    self._collect_assigned(
+                        s,
+                        out,
+                    )
 
     def _collect_target_names(self, target, out):
         if isinstance(target, VarExpr):
