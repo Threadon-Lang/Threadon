@@ -2357,7 +2357,7 @@ class Parser:
             if ts and ts[0].type == TokenType.MINUS:
                 return UnaryExpr("-", unary(ts[1:]))
             if ts and ts[0].type == TokenType.PLUS:
-                return UnaryExpr("+", unary(ts[1:]))
+                self.give_error("Unary plus does not exist. What did you expect. Reconsider your life choices.")
             return power(ts)
 
         def comparison(ts):
