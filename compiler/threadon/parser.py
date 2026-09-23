@@ -1590,6 +1590,9 @@ class Parser:
     def parse_thread(self):
         """Parse ``thread <name>() on <condition>:`` followed by a block of
         statements that run on a new OS thread if the condition is true."""
+        if self.current_function is not None:
+            self.give_error("thread statements are only allowed at module level, not inside functions")
+
         tokens = self.current_line
 
         if (
