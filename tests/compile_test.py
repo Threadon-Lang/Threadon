@@ -1574,3 +1574,116 @@ def main() -> Int32
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "Boat(brand=Sunseeker)\n"
+
+
+def test_thread_basic_spawn():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    thread worker() on True:
+        print("hello from thread")
+    print("main done")
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = set(result.stdout.strip().splitlines())
+    assert "hello from thread" in out
+    assert "main done" in out
+
+
+def test_thread_cond_false_no_spawn():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    thread worker() on False:
+        print("should not appear")
+    print("main done")
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = set(result.stdout.strip().splitlines())
+    assert "should not appear" not in out
+    assert "main done" in out
+
+
+def test_thread_capture_by_value():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    x: Int32 = 42
+    thread capture() on True:
+        print("captured:", x)
+    x = 99
+    print("main:", x)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout.strip().splitlines()
+    # thread captures x=42 by value; main changes to 99
+    assert "captured: 42" in out
+    assert "main: 99" in out
+
+
+def test_thread_exit_ends_thread():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    thread exit_test() on True:
+        print("before exit")
+        thread_exit()
+        print("after exit - should not appear")
+    print("main done")
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = set(result.stdout.strip().splitlines())
+    assert "before exit" in out
+    assert "after exit - should not appear" not in out
+    assert "main done" in out
+
+
+def test_thread_multiple_threads():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    thread t1() on True:
+        print("thread 1")
+    thread t2() on True:
+        print("thread 2")
+    thread t3() on True:
+        print("thread 3")
+    print("main done")
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = set(result.stdout.strip().splitlines())
+    assert "thread 1" in out
+    assert "thread 2" in out
+    assert "thread 3" in out
+    assert "main done" in out
+
+
+def test_thread_module_level():
+    result = compile_stdlib_run(
+        """
+thread Worker1() on True:
+    print("module thread 1")
+
+thread Worker2() on True:
+    print("module thread 2")
+
+def main() -> Int32
+    print("main done")
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = set(result.stdout.strip().splitlines())
+    assert "module thread 1" in out
+    assert "module thread 2" in out
+    assert "main done" in out

@@ -206,6 +206,7 @@ class Parser:
         self._in_class = False
         self._in_function = False
         self.return_type = None
+        self.current_function = None
 
         self.scopes = []
         self.var_declared_stack = []
@@ -401,6 +402,8 @@ class Parser:
             return self.parse_while()
         if first == TokenType.FOR:
             return self.parse_for()
+        if first == TokenType.THREAD:
+            return self.parse_thread()
         if first == TokenType.STRUCT:
             return self.parse_struct()
         if first == TokenType.CLASS:
@@ -1584,6 +1587,57 @@ class Parser:
 
         return WhileStmt(condition, body)
 
+    def parse_thread(self):
+        """Parse ``thread <name>() on <condition>:`` followed by a block of
+        statements that run on a new OS thread if the condition is true."""
+        tokens = self.current_line
+
+        if (
+            len(tokens) < 6
+            or tokens[1].type != TokenType.IDENT
+            or tokens[2].type != TokenType.LPAREN
+            or tokens[3].type != TokenType.RPAREN
+            or tokens[4].type != TokenType.ON
+        ):
+            self.give_error(
+                "Expected 'thread <name>() on <condition>:'"
+            )
+
+        name = tokens[1].value
+
+        cond_tokens = tokens[5:]
+
+        if cond_tokens[-1].type != TokenType.COLON:
+            self.give_error(
+                "Expected ':' after 'thread' condition"
+            )
+
+        cond_tokens = cond_tokens[:-1]
+
+        condition = self.parse_expr(cond_tokens)
+
+        cond_type = self.detect_expr_type(condition)
+        if cond_type != "Bool":
+            self.give_error(
+                f"Thread condition must be Bool, got {cond_type}"
+            )
+
+        parent_indent = self.current_indent
+
+        saved_loop_depth = self._loop_depth
+        self._loop_depth = 0
+        body = self.parse_block(parent_indent)
+        self._loop_depth = saved_loop_depth
+
+        if self.current_function is not None:
+            self.pop_scope()
+
+        return ThreadNode(
+            name=name,
+            condition=condition,
+            body=body,
+        )
+
     def parse_for(self):
         tokens = self.current_line
         parent_indent = self.current_indent
@@ -1911,6 +1965,7 @@ class Parser:
         self.qfunc[func_name] = func_name_q
         self.func_sigs[func_name_q] = (params, return_type)
 
+        self.current_function = func_name_q
         self._in_function = True
         self.push_scope()
         for pname, ptype, _ in params:
@@ -1920,6 +1975,7 @@ class Parser:
         func_body = self.parse_block(parent_indent)
         self.pop_scope()
         self._in_function = False
+        self.current_function = None
         self.return_type = None
 
         if return_type != "NoneType" and not self.all_paths_return(func_body):

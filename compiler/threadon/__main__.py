@@ -105,10 +105,17 @@ def build_harness(llvm, entry="main"):
             f"cannot use '{entry}' as the entry point"
         )
 
+    join = (
+        "  call void @__threadon_thread_join_all()\n"
+        if "@__threadon_thread_join_all" in llvm
+        else ""
+    )
+
     if rtype == "void":
         return (
             f"define i32 @main() {{\n"
             f"  call void @{entry}()\n"
+            + join
             + "  ret i32 0\n"
             + "}\n"
         )
@@ -117,6 +124,7 @@ def build_harness(llvm, entry="main"):
         return (
             f"define i32 @main() {{\n"
             f"  %r = call i32 @{entry}()\n"
+            + join
             + "  ret i32 %r\n"
             + "}\n"
         )
@@ -124,6 +132,7 @@ def build_harness(llvm, entry="main"):
     return (
         f"define i32 @main() {{\n"
         f"  %r = call {rtype} @{entry}()\n"
+        + join
         + "  ret i32 0\n"
         + "}\n"
     )

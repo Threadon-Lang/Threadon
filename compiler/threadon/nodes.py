@@ -89,6 +89,11 @@ class WhileStmt:
     body: list
     step: list | None = None
 @dataclass
+class ThreadNode(Node):
+    name: str
+    condition: any
+    body: list
+@dataclass
 class Assign:
     name: str
     expr: list[Expr]

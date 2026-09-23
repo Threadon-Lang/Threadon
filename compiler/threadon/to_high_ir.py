@@ -32,6 +32,7 @@ from .nodes import (
     RefExpr,
     ReturnStmt,
     StructInitExpr,
+    ThreadNode,
     UnaryExpr,
     VarDecl,
     VarExpr,
@@ -499,6 +500,8 @@ class SSABuilder:
 
         self._if_seq = 0
 
+        self._thr_seq = 0
+
         self._render_funcs = {}
         self._render_seq = 0
 
@@ -713,6 +716,10 @@ class SSABuilder:
                 for method in node.methods:
                     self._register_func(method)
 
+        self.module_threads = [
+            node for node in ast if type(node).__name__ == "ThreadNode"
+        ]
+
         for qname, (params, return_type) in (native_sigs or {}).items():
             self.func_returns[qname] = return_type
             self.func_params[qname] = params
@@ -724,6 +731,9 @@ class SSABuilder:
             elif type(node).__name__ == "ClassDef":
                 for method in node.methods:
                     self.emit_function(method)
+
+        if self.module_threads:
+            self.emit_module_threads()
 
         return self.module
 
@@ -937,6 +947,35 @@ class SSABuilder:
         self.current_func = None
         self.current_block = None
 
+    def emit_module_threads(self):
+        """Emit a function that runs all module-level thread spawns."""
+        f = IRFunction("__threadon_module_threads", [], "NoneType")
+        self.module.add_func(f)
+
+        self.current_func = f
+        self.temp_counter = 0
+        self._if_seq = 0
+        self.aliases = {}
+        self.ptr_vars = {}
+        self.ref_vars = set()
+        self.var_types = {}
+        self.loop_stack = []
+
+        entry = IRBlock("entry")
+        f.add_block(entry)
+        self.current_block = entry
+        self.push_env()
+
+        for node in self.module_threads:
+            self.emit_thread(node)
+
+        self.pop_env()
+
+        if self.current_block.terminator is None:
+            self.current_block.set_terminator(IRInstr("ret_void", []))
+
+        self.current_func = None
+        self.current_block = None
 
     def emit_stmt(self, node):
         if self.current_block.terminator is not None:
@@ -972,6 +1011,9 @@ class SSABuilder:
         elif isinstance(node, WhileStmt):
             self.emit_while(node)
 
+        elif isinstance(node, ThreadNode):
+            self.emit_thread(node)
+
         elif isinstance(node, ExprStmt):
             self.emit_expr_stmt(node.expr)
 
@@ -986,10 +1028,281 @@ class SSABuilder:
         )
 
     def emit_expr_stmt(self, expr):
+        if (
+            isinstance(expr, CallExpr)
+            and expr.func_name == "thread_exit"
+        ):
+            self.current_block.set_terminator(
+                IRInstr("ret_void", [])
+            )
+            return
         if self._is_list_mutator(expr):
             new_val = self.emit_expr(expr)
             return self.assign_into(expr.obj, new_val)
         return self.emit_expr(expr)
+
+    def _walk_stmt_reads(self, stmt, reads, defs):
+        t = type(stmt).__name__
+
+        if t == "VarDecl":
+            if stmt.name not in defs:
+                defs.add(stmt.name)
+            if stmt.expr is not None:
+                self._walk_expr_reads(stmt.expr, reads, defs)
+
+        elif t == "Assign":
+            reads.add(stmt.name)
+            self._walk_expr_reads(stmt.expr, reads, defs)
+
+        elif t == "FieldAssign":
+            reads.add(stmt.name)
+            self._walk_expr_reads(stmt.expr, reads, defs)
+
+        elif t == "AttrDecl":
+            if stmt.expr is not None:
+                self._walk_expr_reads(stmt.expr, reads, defs)
+
+        elif t == "IndexAssign":
+            self._walk_expr_reads(stmt.target, reads, defs)
+            self._walk_expr_reads(stmt.index, reads, defs)
+            self._walk_expr_reads(stmt.value, reads, defs)
+
+        elif t == "ExprStmt":
+            self._walk_expr_reads(stmt.expr, reads, defs)
+
+        elif t == "ReturnStmt":
+            if stmt.value is not None:
+                self._walk_expr_reads(stmt.value, reads, defs)
+
+        elif t == "IfStmt":
+            self._walk_expr_reads(stmt.condition, reads, defs)
+            for s in stmt.body:
+                self._walk_stmt_reads(s, reads, defs)
+            for cond, body in stmt.elif_blocks:
+                self._walk_expr_reads(cond, reads, defs)
+                for s in body:
+                    self._walk_stmt_reads(s, reads, defs)
+            if stmt.else_body is not None:
+                for s in stmt.else_body:
+                    self._walk_stmt_reads(s, reads, defs)
+
+        elif t == "WhileStmt":
+            self._walk_expr_reads(stmt.condition, reads, defs)
+            for s in stmt.body:
+                self._walk_stmt_reads(s, reads, defs)
+
+        elif t == "ThreadNode":
+            self._walk_expr_reads(stmt.condition, reads, defs)
+            for s in stmt.body:
+                self._walk_stmt_reads(s, reads, defs)
+
+    def _walk_expr_reads(self, expr, reads, defs):
+        if expr is None:
+            return
+        t = type(expr).__name__
+
+        if t == "VarExpr":
+            reads.add(expr.name)
+
+        elif t in ("BinaryExpr", "CastExpr"):
+            if hasattr(expr, "left"):
+                self._walk_expr_reads(expr.left, reads, defs)
+            if hasattr(expr, "right"):
+                self._walk_expr_reads(expr.right, reads, defs)
+            inner = getattr(expr, "expr", None)
+            if inner is not None:
+                self._walk_expr_reads(inner, reads, defs)
+
+        elif t == "UnaryExpr":
+            self._walk_expr_reads(expr.expr, reads, defs)
+
+        elif t == "RefExpr":
+            self._walk_expr_reads(expr.inner, reads, defs)
+
+        elif t == "CallExpr":
+            for a in expr.args:
+                self._walk_expr_reads(a, reads, defs)
+
+        elif t == "InterpolatedStringExpr":
+            for kind, part in expr.parts:
+                if kind == "expr":
+                    self._walk_expr_reads(part, reads, defs)
+
+        elif t == "FieldAccessExpr":
+            self._walk_expr_reads(expr.obj, reads, defs)
+
+        elif t == "IndexExpr":
+            self._walk_expr_reads(expr.obj, reads, defs)
+            self._walk_expr_reads(expr.index, reads, defs)
+
+        elif t == "ListLiteralExpr":
+            for e in expr.elements:
+                self._walk_expr_reads(e, reads, defs)
+
+        elif t == "DictLiteralExpr":
+            for k in expr.keys:
+                self._walk_expr_reads(k, reads, defs)
+            for v in expr.values:
+                self._walk_expr_reads(v, reads, defs)
+
+        elif t == "StructInitExpr":
+            for e in expr.fields.values():
+                self._walk_expr_reads(e, reads, defs)
+
+        elif t == "MethodCallExpr":
+            self._walk_expr_reads(expr.obj, reads, defs)
+            for a in expr.args:
+                self._walk_expr_reads(a, reads, defs)
+
+        elif t == "ClassInitExpr":
+            for a in expr.args:
+                self._walk_expr_reads(a, reads, defs)
+
+    def emit_thread(self, node):
+        seq = self._thr_seq
+        self._thr_seq += 1
+
+        parent_func = self.current_func
+        parent_block = self.current_block
+        parent_env = self._effective_env()
+
+        if parent_block.terminator is not None:
+            self.current_block = parent_block
+            return
+
+        reads = set()
+        defs = set()
+        for stmt in node.body:
+            self._walk_stmt_reads(stmt, reads, defs)
+
+        captured = {
+            name: parent_env[name]
+            for name in sorted(
+                reads - defs
+            )
+            if name in parent_env
+        }
+
+        thread_name = node.name
+        body_name = f"__thread_{seq}_{thread_name}"
+
+        saved_temp = self.temp_counter
+        saved_if_seq = self._if_seq
+        saved_aliases = self.aliases
+        saved_ptr_vars = self.ptr_vars
+        saved_ref_vars = self.ref_vars
+        saved_var_types = self.var_types
+        saved_loop_stack = self.loop_stack
+
+        params = [
+            (name, parent_env[name].type, None)
+            for name in sorted(captured)
+        ]
+
+        f = IRFunction(
+            body_name,
+            params,
+            "NoneType",
+        )
+
+        self.module.add_func(f)
+
+        self.current_func = f
+        self.temp_counter = 0
+        self._if_seq = 0
+
+        self.aliases = {}
+        self.ptr_vars = {}
+        self.ref_vars = set()
+        self.var_types = {}
+        self.loop_stack = []
+
+        entry = IRBlock("entry")
+        f.add_block(entry)
+        self.current_block = entry
+
+        self.push_env()
+
+        for pname, ptype, _ in params:
+            val = self.new_temp(ptype)
+
+            self.var_types[pname] = ptype
+
+            self.set_var(pname, val)
+
+            entry.add_instr(
+                IRInstr(
+                    "param",
+                    [pname],
+                    result=val,
+                )
+            )
+
+        self._emit_stmt_list(node.body)
+
+        if self.current_block.terminator is None:
+            self.current_block.set_terminator(
+                IRInstr("ret_void", [])
+            )
+
+        self.pop_env()
+
+        self.temp_counter = saved_temp
+        self._if_seq = saved_if_seq
+        self.aliases = saved_aliases
+        self.ptr_vars = saved_ptr_vars
+        self.ref_vars = saved_ref_vars
+        self.var_types = saved_var_types
+        self.loop_stack = saved_loop_stack
+
+        self.current_func = parent_func
+        self.current_block = parent_block
+
+        spawn_block = IRBlock(
+            f"thread{seq}_spawn"
+        )
+        after_block = IRBlock(
+            f"thread{seq}_after"
+        )
+
+        parent_func.add_block(spawn_block)
+        parent_func.add_block(after_block)
+
+        cond_val = self.emit_expr(node.condition)
+
+        if parent_block.terminator is None:
+            parent_block.set_terminator(
+                IRInstr(
+                    "cond_br",
+                    [
+                        cond_val,
+                        spawn_block.label,
+                        after_block.label,
+                    ],
+                )
+            )
+
+        arg_vals = [
+            self.get_var(name)
+            for name in sorted(captured)
+        ]
+
+        self.current_block = spawn_block
+
+        spawn_block.add_instr(
+            IRInstr(
+                "thread_spawn",
+                [str(seq), thread_name, body_name]
+                + arg_vals,
+                result=None,
+            )
+        )
+
+        spawn_block.set_terminator(
+            IRInstr("br", [after_block.label])
+        )
+
+        self.current_block = after_block
 
     def emit_var_decl(self, node):
         self.var_types[node.name] = node.var_type

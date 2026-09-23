@@ -1,0 +1,12 @@
+thread Worker1() on True:
+    print("Thread 1: Hello from module-level worker 1")
+
+thread Worker2() on True:
+    print("Thread 2: Hello from module-level worker 2")
+
+thread Worker3() on False:
+    print("Thread 3: This should not appear")
+
+def main() -> Int32
+    print("Main: All module threads spawned")
+    return 0

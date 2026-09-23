@@ -55,11 +55,13 @@ class LLVMIRCompiler:
         self.current_func = None
         self.union_types = {}
         self._union_seq = 0
+        self._closure_types = {}
 
     def compile(self, module, native_exports=None):
         self.module = module 
         self.native_symbols = {}
         self.func_name_set = {f.name for f in module.funcs}
+        self.has_module_threads = "__threadon_module_threads" in self.func_name_set
         for exp in (native_exports or []):
             qname = f"{exp['module']}.{exp['name']}"
             self.native_symbols[qname] = (exp["name"], exp["ret"], exp["args"])
@@ -74,6 +76,32 @@ class LLVMIRCompiler:
             for block in func.blocks
             for instr in block.instructions
         )
+
+        self.thread_spawns = []
+        self.threads_used = False
+        for func in module.funcs:
+            for block in func.blocks:
+                for instr in block.instructions:
+                    if instr.op == "thread_spawn":
+                        self.threads_used = True
+                        self.thread_spawns.append(
+                            {
+                                "seq": str(instr.args[0]),
+                                "name": str(instr.args[1]),
+                                "body": str(instr.args[2]),
+                                "vals": [
+                                    self.to_llvm_type(
+                                        v.type
+                                    )
+                                    for v in instr.args[3:]
+                                ],
+                            }
+                        )
+
+        for spawn in self.thread_spawns:
+            if spawn["vals"]:
+                closure_name = f"%__thread_closure_{spawn['seq']}"
+                self._closure_types[closure_name] = spawn["vals"]
 
         self.out.append('; ModuleID = "main"')
         self.out.append('source_filename = "main"')
@@ -95,8 +123,27 @@ class LLVMIRCompiler:
         if self.union_types:
             self.out.append("")
 
+        if self.threads_used:
+            for spawn in self.thread_spawns:
+                if spawn["vals"]:
+                    closure_name = f"%__thread_closure_{spawn['seq']}"
+                    closure_def = f"{closure_name} = type {{ {', '.join(spawn['vals']) } }}"
+                    self.out.append(closure_def)
+            self.out.append(
+                "@__threadon_thread_handles = internal global [1024 x i64] zeroinitializer"
+            )
+            self.out.append(
+                "@__threadon_thread_count = internal global i64 0"
+            )
+            self.out.append("")
+
         for func in module.funcs:
             self.emit_function(func)
+
+        if self.threads_used:
+            self.used_c_runtime.add("malloc")
+            self.used_c_runtime.add("free")
+            self._emit_threading_runtime()
 
         self._emit_native_declares()
 
@@ -220,7 +267,15 @@ class LLVMIRCompiler:
                 self.out.append("declare i64 @strlen(i8*)")
             if "malloc" in self.used_c_runtime:
                 self.out.append("declare i8* @malloc(i64)")
+            if "free" in self.used_c_runtime:
+                self.out.append("declare void @free(i8*)")
+            if self.threads_used:
+                self.out.append("declare i32 @pthread_create(i64*, i8*, i8* (i8*)*, i8*)")
+                self.out.append("declare i32 @pthread_join(i64, i8**)")
             self.out.append("")
+
+        if self.threads_used:
+            self._wrap_main_with_thread_join()
 
         return "\n".join(self.out)
 
@@ -329,6 +384,82 @@ class LLVMIRCompiler:
         self.out.append("}")
         self.out.append("")
         
+    def _emit_threading_runtime(self):
+        self.out.append("define internal void @__threadon_thread_register(i64 %tid) {")
+        self.out.append("  %old = atomicrmw add i64* @__threadon_thread_count, i64 1 seq_cst")
+        self.out.append("  %idx = getelementptr inbounds [1024 x i64], [1024 x i64]* @__threadon_thread_handles, i64 0, i64 %old")
+        self.out.append("  store i64 %tid, i64* %idx")
+        self.out.append("  ret void")
+        self.out.append("}")
+
+        self.out.append("define internal void @__threadon_thread_join_all() {")
+        self.out.append("tj_entry:")
+        self.out.append("  %nh = load i64, i64* @__threadon_thread_count")
+        self.out.append("  br label %jt_loop")
+        self.out.append("jt_loop:")
+        self.out.append("  %jt_i = phi i64 [ 0, %tj_entry ], [ %jt_next, %jt_body ]")
+        self.out.append("  %jt_done = icmp ult i64 %jt_i, %nh")
+        self.out.append("  br i1 %jt_done, label %jt_body, label %jt_end")
+        self.out.append("jt_body:")
+        self.out.append("  %jt_ptr = getelementptr inbounds [1024 x i64], [1024 x i64]* @__threadon_thread_handles, i64 0, i64 %jt_i")
+        self.out.append("  %jt_h = load i64, i64* %jt_ptr")
+        self.out.append("  call i32 @pthread_join(i64 %jt_h, i8* null)")
+        self.out.append("  %jt_next = add i64 %jt_i, 1")
+        self.out.append("  br label %jt_loop")
+        self.out.append("jt_end:")
+        self.out.append("  ret void")
+        self.out.append("}")
+        self.out.append("")
+
+        for spawn in self.thread_spawns:
+            self._emit_thread_trampoline(spawn["seq"], spawn["name"], spawn["body"], spawn["vals"])
+        self.out.append("")
+
+    def _emit_thread_trampoline(self, seq, name, body, capt_types):
+        if capt_types:
+            closure = f"%__thread_closure_{seq}"
+        else:
+            closure = None
+        self.out.append(f"define internal i8* @__thread_tramp_{seq}(i8* %_cr) {{")
+        if capt_types:
+            self.out.append(f"  %_cl = bitcast i8* %_cr to {closure}*")
+        arg_bits = []
+        for i, t in enumerate(capt_types):
+            self.out.append(f"  %_cp{i} = getelementptr inbounds {closure}, {closure}* %_cl, i64 0, i32 {i}")
+            self.out.append(f"  %_cv{i} = load {t}, {t}* %_cp{i}")
+            arg_bits.append(f"{t} %_cv{i}")
+        arg_str = ", ".join(arg_bits)
+        if arg_str:
+            arg_str = " " + arg_str
+        self.out.append(f"  call void @{body}({arg_str})")
+        if capt_types:
+            self.out.append("  call void @free(i8* %_cr)")
+        self.out.append("  ret i8* null")
+        self.out.append("}")
+        self.out.append("")
+
+    def _wrap_main_with_thread_join(self):
+        joined = "\n".join(self.out)
+        replaced = re.sub(
+            r"(define\s+i32\s+@main\([^)]*\)\s*\{)",
+            r"define i32 @__threadon_real_main(){",
+            joined,
+            count=1,
+        )
+        self.out = []
+        self.out.extend(replaced.split("\n"))
+        if replaced == joined:
+            return
+        self.out.append("")
+        self.out.append("define i32 @main() {")
+        if getattr(self, 'has_module_threads', False):
+            self.out.append("  call void @__threadon_module_threads()")
+        self.out.append("  %_r = call i32 @__threadon_real_main()")
+        self.out.append("  call void @__threadon_thread_join_all()")
+        self.out.append("  ret i32 %_r")
+        self.out.append("}")
+        self.out.append("")
+
     def _emit_native_declares(self):
         if not self.native_symbols:
             return
@@ -1506,6 +1637,9 @@ class LLVMIRCompiler:
         if op == "tailcall":
             return self._emit_tailcall(res, instr)
 
+        if op == "thread_spawn":
+            return self._emit_thread_spawn(instr)
+
         if op == "struct_init":
             return self._emit_struct_init(res, instr)
 
@@ -2468,6 +2602,58 @@ class LLVMIRCompiler:
         args_str = ", ".join(arg_strs)
         ret_type = self.to_llvm_type(instr.result.type)
         return f"{res} = tail call {ret_type} @{fname}({args_str})"
+
+    def _emit_thread_spawn(self, instr):
+        seq = str(instr.args[0])
+        body = str(instr.args[2])
+        vals = instr.args[3:]
+        capt_types = [
+            self.to_llvm_type(v.type)
+            for v in vals
+        ]
+        closure = f"%__thread_closure_{seq}" if capt_types else None
+
+        out = []
+
+        if closure is not None:
+            bytes = self._llvm_sizeof(closure)
+            cl_fl = self._fresh_reg("cl")
+            out.append(f"{cl_fl} = call i8* @malloc(i64 {bytes})")
+            cl_ll = self._fresh_reg("cll")
+            out.append(
+                f"{cl_ll} = bitcast i8* {cl_fl} to {closure}*"
+            )
+            for i, (val, t) in enumerate(zip(vals, capt_types)):
+                f = self._fresh_reg("cf")
+                out.append(
+                    f"{f} = getelementptr inbounds {closure}, {closure}* {cl_ll}, i64 0, i32 {i}"
+                )
+                out.append(
+                    f"  store {t} {self.operand(val)}, {t}* {f}"
+                )
+            closure_arg = cl_fl
+        else:
+            closure_arg = "null"
+
+        tid = self._fresh_reg("tid")
+        out.append(f"{tid} = alloca i64")
+        rc = self._fresh_reg("rc")
+        out.append(
+            f"{rc} = call i32 @pthread_create(i64* {tid}, i8* null, i8* (i8*)* @__thread_tramp_{seq}, i8* {closure_arg})"
+        )
+        ok = self._fresh_reg("ok")
+        out.append(f"{ok} = icmp eq i32 {rc}, 0")
+        out.append(f"br i1 {ok}, label %con{seq}_reg, label %con{seq}_skip")
+        out.append(f"con{seq}_reg:")
+        tv = self._fresh_reg("tv")
+        out.append(f"{tv} = load i64, i64* {tid}")
+        out.append(f"call void @__threadon_thread_register(i64 {tv})")
+        out.append(f"br label %con{seq}_done")
+        out.append(f"con{seq}_skip:")
+        out.append(f"br label %con{seq}_done")
+        out.append(f"con{seq}_done:")
+        return out
+
     def _emit_list_str_helper(self, elem_t):
         elem_llvm = self.to_llvm_type(elem_t)
         list_llvm = f"{{ i64, {elem_llvm}* }}"
@@ -3014,6 +3200,19 @@ class LLVMIRCompiler:
             max_align = 1
             for field in self._split_llvm_fields(inner):
                 fs, fa = self._size_and_align(field)
+                size = (size + fa - 1) // fa * fa
+                size += fs
+                max_align = max(max_align, fa)
+            size = (size + max_align - 1) // max_align * max_align
+            return (size, max_align)
+        if llvm_type.startswith("%__thread_closure_"):
+            fields = self._closure_types.get(llvm_type)
+            if fields is None:
+                raise Exception(f"Unknown closure type '{llvm_type}'")
+            size = 0
+            max_align = 1
+            for ftype in fields:
+                fs, fa = self._size_and_align(ftype)
                 size = (size + fa - 1) // fa * fa
                 size += fs
                 max_align = max(max_align, fa)

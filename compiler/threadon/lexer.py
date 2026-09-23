@@ -32,6 +32,8 @@ class TokenType(Enum):
     STRUCT = auto()
     TRUE = auto()
     FALSE = auto()
+    THREAD = auto()
+    ON = auto()
 
     COLON = auto()
     COMMA = auto()
@@ -104,6 +106,8 @@ KEYWORDS = {
     "struct": TokenType.STRUCT,
     "True": TokenType.TRUE,
     "False": TokenType.FALSE,
+    "thread": TokenType.THREAD,
+    "on": TokenType.ON,
     "import": TokenType.IMPORT,
     "from": TokenType.FROM,
     "lazyimport": TokenType.LAZYIMPORT,

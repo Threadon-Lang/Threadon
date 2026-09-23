@@ -173,6 +173,12 @@ class UnreachableChecker:
 
             return merge_block
 
+        if t == "ThreadNode":
+            current_block["stmts"].append((stmt, True))
+            for s in stmt.body:
+                self.process_stmt(s, current_block, blocks)
+            return current_block
+
         current_block["stmts"].append((stmt, True))
         return current_block
     def compute_reachable(self, blocks):
@@ -222,6 +228,9 @@ class ShadowChecker:
             elif t == "WhileStmt":
                 self.visit_block(stmt.body, local.copy())
 
+            elif t == "ThreadNode":
+                self.visit_block(stmt.body, local.copy())
+
             elif t == "FunctionDef":
                 func_scope = {pname: True for pname, _, _ in stmt.params}
                 self.visit_block(stmt.body, func_scope)
@@ -266,6 +275,12 @@ class DuplicateChecker:
 
         if t == "WhileStmt":
             return self.visit_while(node, scope)
+
+        if t == "ThreadNode":
+            thread_scope = scope.copy()
+            for stmt in node.body:
+                self.visit(stmt, thread_scope)
+            return None
 
         if t == "ReturnStmt":
             return None
@@ -432,6 +447,11 @@ class UnusedVariableChecker:
             for s in stmt.body:
                 self.visit_stmt(s, declared, used)
 
+        elif t == "ThreadNode":
+            self.visit_expr(stmt.condition, used)
+            for s in stmt.body:
+                self.visit_stmt(s, declared, used)
+
     def visit_expr(self, expr, used):
         t = type(expr).__name__
 
@@ -542,6 +562,9 @@ class DeadStoreChecker:
                 self._pre_scan(stmt.body)
                 if stmt.step:
                     self._pre_scan(stmt.step)
+            elif t == "ThreadNode":
+                self._walk_reads(stmt.condition)
+                self._pre_scan(stmt.body)
 
     def _block(self, stmts):
         for stmt in stmts:
@@ -582,6 +605,10 @@ class DeadStoreChecker:
                 self._branch(stmt.body)
                 if stmt.step:
                     self._branch(stmt.step)
+                self.track = {}
+            elif t == "ThreadNode":
+                self._walk_reads(stmt.condition)
+                self._branch(stmt.body)
                 self.track = {}
 
     def _walk_reads(self, expr):
@@ -670,6 +697,9 @@ class MissingReturnChecker:
                 if then_ret and all(elif_rets) and else_ret:
                     return True
 
+            if t == "ThreadNode":
+                continue
+
         return False
 class AliasChecker:
     def __init__(self):
@@ -714,6 +744,10 @@ class AliasChecker:
                     self.visit_stmt(s, declared)
 
         elif t == "WhileStmt":
+            for s in stmt.body:
+                self.visit_stmt(s, declared)
+
+        elif t == "ThreadNode":
             for s in stmt.body:
                 self.visit_stmt(s, declared)
 
