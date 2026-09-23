@@ -804,6 +804,43 @@ def test_class_derived_own_fields_inlined():
     assert result.stdout == "7\n10\n"
 
 
+ZERO_FIELDS_SOURCE = """
+class Base:
+    x: Int32
+    def __init__(self: Base, x: Int32):
+        self.x = x
+
+class Sub(Base):
+    y: Int32
+
+struct Pair:
+    a: Int8
+    b: Float64
+    c: Bool
+
+def main() -> Int32
+    s: Sub = Sub(2)
+    print(s.y)
+    u: Sub
+    print(u.x + u.y)
+    p: Pair = Pair(a=7)
+    print(p.a)
+    print(p.b)
+    print(p.c)
+    t: Pair
+    print(t.a)
+    print(t.b)
+    print(t.c)
+    return 0
+"""
+
+
+def test_unset_fields_default_to_zero():
+    result = compile_stdlib_run(ZERO_FIELDS_SOURCE)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "0\n0\n7\n0.000000\nFalse\n0\n0.000000\nFalse\n"
+
+
 CLASS_COUNTER_SOURCE = """
 class Counter:
     def __init__(self: Counter, start: Int32 = 5):

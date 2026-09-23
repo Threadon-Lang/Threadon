@@ -1626,9 +1626,19 @@ class LLVMIRCompiler:
             self.string_globals[content] = f"@.str.{len(self.string_globals)}"
         return self.string_globals[content]
 
+    def _zero_struct_lines(self, res, llvm_type):
+        ptr = f"{res}_ptr"
+        return [
+            f"{ptr} = alloca {llvm_type}",
+            f"store {llvm_type} zeroinitializer, {llvm_type}* {ptr}",
+            f"{res} = load {llvm_type}, {llvm_type}* {ptr}",
+        ]
+
     def _emit_undef(self, res, rtype):
+        if rtype.startswith("%struct") and rtype.endswith("*"):
+            return f"{res} = bitcast i8* null to {rtype}"
         if rtype.startswith("%struct"):
-            return f"{res} = select i1 false, {rtype} undef, {rtype} undef"
+            return self._zero_struct_lines(res, rtype)
         if rtype.startswith("%union"):
             return f"{res} = select i1 false, {rtype} undef, {rtype} undef"
         if rtype.startswith("{"):
@@ -2733,7 +2743,7 @@ class LLVMIRCompiler:
                 field_updates.append((idx, self.to_llvm_type(ftype), zv))
 
         if not field_updates:
-            return f"{res} = select i1 false, {llvm_type} undef, {llvm_type} undef"
+            return self._zero_struct_lines(res, llvm_type)
 
         field_updates.sort(key=lambda x: x[0])
 
