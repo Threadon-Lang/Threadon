@@ -444,6 +444,7 @@ class IRModule:
         self.types = {}
         self.funcs = []
         self.class_bases = {}
+        self.module_vars = []  # (name, var_type, init_value_or_None)
 
     def add_type(self, name, fields):
         self.types[name] = {
@@ -684,6 +685,13 @@ class SSABuilder:
         for type_name, fields in (native_types or []):
             self.module.add_type(type_name, fields)
 
+        # First pass: register module-level variable declarations
+        for node in ast:
+            if type(node).__name__ == "VarDecl":
+                self._register_module_var(node)
+
+        self.module_var_names = {name for name, _, _ in self.module.module_vars}
+
         for node in ast:
             if type(node).__name__ == "StructDef":
                 fields = [
@@ -736,6 +744,36 @@ class SSABuilder:
             self.emit_module_threads()
 
         return self.module
+
+    def _register_module_var(self, node):
+        # node is VarDecl at module level
+        name = node.name
+        var_type = node.var_type
+        init_val = None
+        if node.expr is not None:
+            from .nodes import LiteralExpr
+            from .lexer import TokenType
+            if isinstance(node.expr, LiteralExpr):
+                token = node.expr.value
+                if token.type == TokenType.NUMBER:
+                    init_val = int(token.value)
+                elif token.type == TokenType.TRUE:
+                    init_val = True
+                elif token.type == TokenType.FALSE:
+                    init_val = False
+                elif token.type == TokenType.STRING:
+                    init_val = token.value
+                else:
+                    init_val = token.value
+            else:
+                pass
+        self.module.module_vars.append((name, var_type, init_val))
+
+    def _type_of_module_var(self, name):
+        for n, t, _ in self.module.module_vars:
+            if n == name:
+                return t
+        return "Int32"
 
     def _register_func(self, func_ast):
         self.func_returns[func_ast.name] = func_ast.return_type
@@ -1404,6 +1442,17 @@ class SSABuilder:
 
     def emit_assign(self, node):
         rhs = self.emit_expr(node.expr)
+
+        if hasattr(self, 'module_var_names') and node.name in self.module_var_names:
+            # module-level variable: atomic store
+            self.current_block.add_instr(
+                IRInstr(
+                    "global_store",
+                    [node.name, rhs],
+                    result=None,
+                )
+            )
+            return
 
         var_type = self.var_types.get(node.name)
         if (
@@ -3029,9 +3078,17 @@ class SSABuilder:
             return self.emit_interpolated_string(expr)
 
         if isinstance(expr, VarExpr):
-            return self.get_var(
-                expr.name
-            )
+            if hasattr(self, 'module_var_names') and expr.name in self.module_var_names:
+                v = self.new_temp(self._type_of_module_var(expr.name))
+                self.current_block.add_instr(
+                    IRInstr(
+                        "global_load",
+                        [expr.name],
+                        result=v,
+                    )
+                )
+                return v
+            return self.get_var(expr.name)
 
         if isinstance(expr, RefExpr):
             src = self.emit_expr(

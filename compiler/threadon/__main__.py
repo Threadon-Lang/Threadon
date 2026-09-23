@@ -174,6 +174,12 @@ def run_llvm(llvm, capture=False, loads=None, library_dirs=None):
         for so in (loads or []):
             cmd.append("-load")
             cmd.append(str(so))
+        # automatically load libatomic for __atomic_* symbols
+        import ctypes.util
+        libatomic = ctypes.util.find_library("atomic")
+        if libatomic:
+            cmd.append("-load")
+            cmd.append(libatomic)
         cmd.append(path)
         return subprocess.run(cmd, env=env, **kwargs)
     finally:

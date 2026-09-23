@@ -56,6 +56,7 @@ class LLVMIRCompiler:
         self.union_types = {}
         self._union_seq = 0
         self._closure_types = {}
+        self.module_globals = set()
 
     def compile(self, module, native_exports=None):
         self.module = module 
@@ -121,6 +122,18 @@ class LLVMIRCompiler:
             )
             self.out.append(f"%{uname} = type {{ i8, {member_types} }}")
         if self.union_types:
+            self.out.append("")
+
+        # Emit module-level variable globals
+        for name, var_type, init_val in getattr(module, 'module_vars', []):
+            llvm_type = self.to_llvm_type(var_type)
+            if init_val is not None:
+                const = self._const_literal(init_val, var_type)
+                self.out.append(f"@{name} = global {llvm_type} {const}, align 4")
+            else:
+                self.out.append(f"@{name} = global {llvm_type} zeroinitializer, align 4")
+            self.module_globals.add(name)
+        if getattr(module, 'module_vars', []):
             self.out.append("")
 
         if self.threads_used:
@@ -454,6 +467,7 @@ class LLVMIRCompiler:
         self.out.append("define i32 @main() {")
         if getattr(self, 'has_module_threads', False):
             self.out.append("  call void @__threadon_module_threads()")
+            self.out.append("  call void @__threadon_thread_join_all()")
         self.out.append("  %_r = call i32 @__threadon_real_main()")
         self.out.append("  call void @__threadon_thread_join_all()")
         self.out.append("  ret i32 %_r")
@@ -1580,6 +1594,16 @@ class LLVMIRCompiler:
         if op == "const":
             val = instr.args[0]
             return self._emit_const(res, rtype, val)
+        if op == "global_load":
+            name = instr.args[0]
+            llvm_type = self.to_llvm_type(instr.result.type)
+            return f"{res} = load atomic {llvm_type}, {llvm_type}* @{name} seq_cst, align 4"
+        if op == "global_store":
+            name = instr.args[0]
+            val = instr.args[1]
+            llvm_type = self.to_llvm_type(val.type)
+            val_op = self.operand(val)
+            return f"store atomic {llvm_type} {val_op}, {llvm_type}* @{name} seq_cst, align 4"
         if op == "cast":
             return self._emit_cast(res, rtype, instr.args[0], instr.args[1])
         if op == "phi":
@@ -2479,6 +2503,21 @@ class LLVMIRCompiler:
         self.out.append("")
         self.out.append(f"@__threadon_input_buf = private global [{buf_size} x i8] zeroinitializer, align 8")
         self.out.append("")
+
+    def _const_literal(self, value, var_type):
+        """Return LLVM constant representation for a literal value."""
+        if var_type == "Bool":
+            return "true" if value else "false"
+        if var_type in ("Int8","Int16","Int32","Int64","UInt8","UInt16","UInt32","UInt64"):
+            return str(value)
+        if var_type in ("Float32","Float64"):
+            s = str(value)
+            if "." not in s:
+                s += ".0"
+            return s
+        if var_type == "String":
+            raise NotImplementedError("String globals not yet supported")
+        return "zeroinitializer"
 
     def _emit_bigint_helpers(self):
         kinds = set(self.used_bigint_helpers)

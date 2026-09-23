@@ -914,16 +914,6 @@ return 5
     )
 
 
-def test_top_level_var_decl_fails():
-    parse_fail("x: Int32")
-
-
-def test_top_level_var_decl_after_func_fails():
-    parse_fail("""
-def f() -> Int32
-    return 0
-x: Int32
-""")
 
 
 def test_var_inside_func_ok():

@@ -3054,8 +3054,11 @@ class Parser:
 
         return ContinueStmt()
     def parse_variable_decl(self, allow_union=True):
-        if not self._in_function and not self._in_struct:
-            self.give_error("Variable declaration at top level is not allowed; declare variables inside a function instead")
+        # Allow at module level (outside functions/structs/classes)
+        if self._in_function or self._in_struct or self._in_class:
+            # inside function/struct/class: normal local variable
+            pass
+        # else module-level variable, allowed
         
         tokens = self.current_line
 
@@ -3443,9 +3446,20 @@ class Parser:
         if var_type != rhs_type:
             if not self._check_assign(rhs, rhs_type, var_type,
                                       f"Variable '{name}'"):
-                self.give_error(
-                    f"Variable '{name}' expects type {var_type}, got {rhs_type}"
-                )
+                # try to adapt literal constants (e.g. 1 -> Int32)
+                if (
+                    self._is_const_int_expr(rhs) and var_type in self._INT_TYPES
+                ) or (
+                    self._is_const_float_expr(rhs) and var_type in self._FLOAT_TYPES
+                ):
+                    self._set_expr_type(rhs, var_type)
+                    self._check_literal_range(rhs, var_type)
+                elif self._try_adapt_literal(rhs, rhs_type, var_type):
+                    pass
+                else:
+                    self.give_error(
+                        f"Variable '{name}' expects type {var_type}, got {rhs_type}"
+                    )
 
         full_expr = BinaryExpr(VarExpr(name), op, rhs)
 

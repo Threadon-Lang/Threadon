@@ -307,7 +307,7 @@ class DuplicateChecker:
         scope[var.name] = True
 
     def visit_assign(self, node, scope):
-        if node.name not in scope:
+        if node.name not in scope and node.name not in getattr(self, 'global_vars', {}):
             self.error(f"Variable '{node.name}' assigned before declaration")
 
     def visit_if(self, node, parent_scope):
@@ -364,7 +364,8 @@ class UnusedVariableChecker:
             t = type(node).__name__
 
             if t == "FunctionDef":
-                self.check_function(node)
+                # will be processed later
+                pass
             elif t == "ClassDef":
                 for method in node.methods:
                     self.check_function(method)
@@ -376,6 +377,17 @@ class UnusedVariableChecker:
                 self.visit_expr(node.expr, global_used)
                 global_decl.add(node.name)
                 global_used.add(node.name)
+            elif t == "ThreadNode":
+                # module-level thread body may use globals
+                for stmt in node.body:
+                    self.visit_stmt(stmt, global_decl, global_used)
+
+        self._global_decl = global_decl
+        self._global_used = global_used
+
+        for node in ast:
+            if type(node).__name__ == "FunctionDef":
+                self.check_function(node)
 
         for var in global_decl:
             if var not in global_used:
@@ -457,6 +469,8 @@ class UnusedVariableChecker:
 
         if t == "VarExpr":
             used.add(expr.name)
+            if hasattr(self, '_global_decl') and expr.name in self._global_decl:
+                self._global_used.add(expr.name)
         elif t == "CastExpr":
             self.visit_expr(expr.expr, used)
         elif t == "BinaryExpr":

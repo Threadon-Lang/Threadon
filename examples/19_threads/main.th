@@ -1,12 +1,14 @@
-thread Worker1() on True:
-    print("Thread 1: Hello from module-level worker 1")
+counter: Int8 = 0
 
-thread Worker2() on True:
-    print("Thread 2: Hello from module-level worker 2")
+thread IncrementA() on True:
+    for _ in range(0,100):
+        counter += 1
 
-thread Worker3() on False:
-    print("Thread 3: This should not appear")
+
+thread IncrementB() on True:
+    for _ in range(0,600):
+        counter += 1
 
 def main() -> Int32
-    print("Main: All module threads spawned")
+    print("final counter =", counter)
     return 0
