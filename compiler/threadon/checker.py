@@ -437,6 +437,8 @@ class UnusedVariableChecker:
 
         if t == "VarExpr":
             used.add(expr.name)
+        elif t == "CastExpr":
+            self.visit_expr(expr.expr, used)
         elif t == "BinaryExpr":
             self.visit_expr(expr.left, used)
             self.visit_expr(expr.right, used)
@@ -588,6 +590,8 @@ class DeadStoreChecker:
         if t == "VarExpr":
             self.reads.add(expr.name)
             self.track.pop(expr.name, None)
+        elif t == "CastExpr":
+            self._walk_reads(expr.expr)
         elif t == "BinaryExpr":
             self._walk_reads(expr.left)
             self._walk_reads(expr.right)

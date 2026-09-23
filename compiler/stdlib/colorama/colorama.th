@@ -1,27 +1,64 @@
-struct Fore:
-    BLACK: String
-    RED: String
-    GREEN: String
-    YELLOW: String
-    BLUE: String
-    MAGENTA: String
-    CYAN: String
-    WHITE: String
-    RESET: String
+def _ansi(code: Int32) -> String
+    return chr(27) + "[" + String(code) + "m"
 
-struct Back:
-    BLACK: String
-    RED: String
-    GREEN: String
-    YELLOW: String
-    BLUE: String
-    MAGENTA: String
-    CYAN: String
-    WHITE: String
-    RESET: String
+def _code(name: String) -> Int32
+    if name == "black":
+        return 30
+    elif name == "red":
+        return 31
+    elif name == "green":
+        return 32
+    elif name == "yellow":
+        return 33
+    elif name == "blue":
+        return 34
+    elif name == "magenta":
+        return 35
+    elif name == "cyan":
+        return 36
+    elif name == "white":
+        return 37
+    elif name == "lightblack":
+        return 90
+    elif name == "lightred":
+        return 91
+    elif name == "lightgreen":
+        return 92
+    elif name == "lightyellow":
+        return 93
+    elif name == "lightblue":
+        return 94
+    elif name == "lightmagenta":
+        return 95
+    elif name == "lightcyan":
+        return 96
+    elif name == "lightwhite":
+        return 97
+    return -1
 
-struct Style:
-    BRIGHT: String
-    DIM: String
-    NORMAL: String
-    RESET_ALL: String
+def fore(name: String) -> String
+    c: Int32 = _code(name)
+    if c < 0:
+        return ""
+    return _ansi(c)
+
+def back(name: String) -> String
+    c: Int32 = _code(name)
+    if c < 0:
+        return ""
+    return _ansi(c + 10)
+
+def style(name: String) -> String
+    if name == "bright":
+        return _ansi(1)
+    elif name == "dim":
+        return _ansi(2)
+    elif name == "normal":
+        return _ansi(22)
+    return _ansi(0)
+
+def reset() -> String
+    return _ansi(39) + _ansi(49)
+
+def reset_all() -> String
+    return _ansi(0)

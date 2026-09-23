@@ -1,0 +1,9 @@
+import colorama
+
+def main() -> Int32:
+    print(colorama.fore("red") + "red text" + colorama.reset())
+    print(colorama.fore("green") + colorama.style("bright") + "bright green" + colorama.reset_all())
+    print(colorama.back("blue") + "blue background" + colorama.reset())
+    print(colorama.fore("lightmagenta") + colorama.style("dim") + "dimmer magenta" + colorama.reset_all())
+    print(colorama.fore("yellow") + "yellow text" + colorama.reset_all())
+    return 0

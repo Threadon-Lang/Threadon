@@ -3,7 +3,7 @@ BUILTIN_SIGS = {
     "input": ([("prompt", "String")], "String"),
     "len": ([("coll", "poly")], "Int64"),
     "dict_key": ([("dict", "poly"), ("index", "Int64")], "poly"),
-
+    "chr": ([("code", "Int32")], "String"),
 }
 
 

@@ -1835,6 +1835,8 @@ class LLVMIRCompiler:
             return self._emit_len(res, args[0])
         if fname == "dict_key":
             return self._emit_dict_key(res, args)
+        if fname == "chr":
+            return self._emit_chr(res, args[0])
 
         return f"; unknown builtin {fname}"
 
@@ -1842,6 +1844,20 @@ class LLVMIRCompiler:
         obj_llvm = self.to_llvm_type(obj.type)
         obj_op = self.operand(obj)
         return [f"{res} = extractvalue {obj_llvm} {obj_op}, 0"]
+
+    def _emit_chr(self, res, code):
+        self.used_c_runtime.add("malloc")
+        code_llvm = self.to_llvm_type(code.type)
+        cv = self.operand(code)
+        b = f"{res}_b"
+        t = f"{res}_t"
+        return [
+            f"{res} = call i8* @malloc(i64 2)",
+            f"{b} = trunc {code_llvm} {cv} to i8",
+            f"store i8 {b}, i8* {res}",
+            f"{t} = getelementptr i8, i8* {res}, i64 1",
+            f"store i8 0, i8* {t}",
+        ]
 
     def _emit_dict_key(self, res, args):
         obj, idx = args
