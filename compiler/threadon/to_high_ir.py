@@ -973,7 +973,23 @@ class SSABuilder:
             self.emit_while(node)
 
         elif isinstance(node, ExprStmt):
-            self.emit_expr(node.expr)
+            self.emit_expr_stmt(node.expr)
+
+    def _is_list_mutator(self, expr):
+        if not isinstance(expr, MethodCallExpr):
+            return False
+        obj_type = getattr(expr, "obj_type", None)
+        return (
+            isinstance(obj_type, str)
+            and obj_type.startswith("List[")
+            and expr.method in ("append", "pop", "insert", "remove")
+        )
+
+    def emit_expr_stmt(self, expr):
+        if self._is_list_mutator(expr):
+            new_val = self.emit_expr(expr)
+            return self.assign_into(expr.obj, new_val)
+        return self.emit_expr(expr)
 
     def emit_var_decl(self, node):
         self.var_types[node.name] = node.var_type
@@ -2125,6 +2141,13 @@ class SSABuilder:
                 out,
             )
 
+        elif t == "ExprStmt":
+            if self._is_list_mutator(stmt.expr):
+                self._collect_target_names(
+                    stmt.expr.obj,
+                    out,
+                )
+
         elif t == "VarDecl":
             out.add(stmt.name)
 
@@ -2466,6 +2489,7 @@ class SSABuilder:
 
     def _emit_method_call(self, expr):
         obj_val = self.emit_expr(expr.obj)
+        is_mutator = self._is_list_mutator(expr)
         owner = expr.owner or expr.obj_type
         obj_type = expr.obj_type
 
@@ -2505,32 +2529,38 @@ class SSABuilder:
             for a in expr.args
         ]
 
-        args = self._fill_default_args(
-            expr.func_name,
-            args,
-            self_slots=True,
-        )
+        if is_mutator:
+            params = None
+            ret_type = expr.ret_type or "Unknown"
+        else:
+            args = self._fill_default_args(
+                expr.func_name,
+                args,
+                self_slots=True,
+            )
 
-        params = self.func_params.get(
-            expr.func_name
-        )
-        if params is not None:
-            args = [
-                self._wrap_union(a, params[i + 1][1])
-                for i, a in enumerate(args)
-            ]
+            params = self.func_params.get(
+                expr.func_name
+            )
+            if params is not None:
+                args = [
+                    self._wrap_union(a, params[i + 1][1])
+                    for i, a in enumerate(args)
+                ]
 
-        ret_type = self.func_returns.get(
-            expr.func_name,
-            expr.ret_type or "Unknown",
-        )
-
+            ret_type = self.func_returns.get(
+                expr.func_name,
+                expr.ret_type or "Unknown",
+            )
+        call_name = expr.func_name
+        if is_mutator:
+            call_name = f"list.{expr.func_name}"
         v = self.new_temp(ret_type)
 
         self.current_block.add_instr(
             IRInstr(
                 "call",
-                [expr.func_name] + [self_val] + args,
+                [call_name] + [self_val] + args,
                 result=v,
             )
         )

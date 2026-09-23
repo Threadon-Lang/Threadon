@@ -98,7 +98,8 @@ def run() -> Int32
 """
     )
     assert "%struct.Point = type { i32, i32 }" in llvm
-    assert re.search(r"insertvalue %struct\.Point undef", llvm)
+    assert re.search(r"zeroinitializer", llvm)
+    assert re.search(r"insertvalue %struct\.Point", llvm)
     assert re.search(r"extractvalue %struct\.Point", llvm)
 
 

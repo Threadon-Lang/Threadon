@@ -446,6 +446,11 @@ class Parser:
         ):
             return self.parse_assign()
 
+        if first == TokenType.IDENT and self._is_method_call_stmt():
+            expr = self.parse_expr(self.current_line)
+            self.detect_expr_type(expr)
+            return ExprStmt(expr)
+
         if first == TokenType.IDENT and len(self.current_line) > 2 and self.current_line[1].type == TokenType.LBRACKET:
             return self.parse_index_assign()
 
@@ -2749,6 +2754,18 @@ class Parser:
             obj_type = self.detect_expr_type(expr.obj)
             expr.obj_type = obj_type
 
+            if (
+                isinstance(obj_type, str)
+                and obj_type.startswith("List[")
+                and expr.method in ("append", "pop", "insert", "remove")
+            ):
+                self._check_list_mutator(
+                    expr,
+                    obj_type,
+                    obj_type[5:-1],
+                )
+                return obj_type
+
             if obj_type not in self.class_defs:
                 self.give_error(
                     f"'{obj_type}' is not a class, "
@@ -3047,6 +3064,56 @@ class Parser:
 
     _INT_TYPES = ALL_INT_TYPES
     _FLOAT_TYPES = FLOAT_TYPES
+
+    def _check_list_mutator(self, expr, list_type, elem_type):
+        """Validate and annotate a call to a ``List`` mutator method
+        ``append``/``pop``/``insert``/``remove`` (``xs.append(...)``)."""
+        method = expr.method
+
+        if method == "pop":
+            if len(expr.args) != 0:
+                self.give_error(
+                    f"Method 'pop' expects 0 arguments, got {len(expr.args)}"
+                )
+        elif method in ("append", "remove"):
+            if len(expr.args) != 1:
+                self.give_error(
+                    f"Method '{method}' expects 1 argument, got {len(expr.args)}"
+                )
+            arg_type = self.detect_expr_type(expr.args[0])
+            if arg_type != elem_type:
+                if not self._check_assign(
+                    expr.args[0], arg_type, elem_type, "Argument"
+                ):
+                    if not self._try_adapt_literal(
+                        expr.args[0], arg_type, elem_type
+                    ):
+                        self.give_error(
+                            f"Method '{method}' expects type {elem_type}, got {arg_type}"
+                        )
+        else:
+            if len(expr.args) != 2:
+                self.give_error(
+                    f"Method 'insert' expects 2 arguments, got {len(expr.args)}"
+                )
+            index_type = self.detect_expr_type(expr.args[0])
+            if index_type not in ALL_INT_TYPES:
+                self.give_error(
+                    f"Method 'insert' index must be an integer, got {index_type}"
+                )
+            arg_type = self.detect_expr_type(expr.args[1])
+            if arg_type != elem_type:
+                if not self._check_assign(
+                    expr.args[1], arg_type, elem_type, "Argument"
+                ):
+                    if not self._try_adapt_literal(
+                        expr.args[1], arg_type, elem_type
+                    ):
+                        self.give_error(
+                            f"Method 'insert' expects type {elem_type}, got {arg_type}"
+                        )
+        expr.func_name = method
+        expr.ret_type = list_type
 
     def _check_assign(self, expr, value_type, target_type, what):
         """Strict compile-time check when assigning ``value_type`` to a
@@ -3397,6 +3464,25 @@ class Parser:
         self.modified_stack[-1].add(name)
 
         return Assign(name, rhs)
+
+    def _is_method_call_stmt(self):
+        tokens = self.current_line
+        depth = 0
+        for k in range(1, len(tokens)):
+            tok = tokens[k]
+            if tok.type in (TokenType.LPAREN, TokenType.LBRACKET):
+                depth += 1
+            elif tok.type in (TokenType.RPAREN, TokenType.RBRACKET):
+                depth -= 1
+            elif (
+                depth == 0
+                and tok.type == TokenType.DOT
+                and k + 2 < len(tokens)
+                and tokens[k + 1].type == TokenType.IDENT
+                and tokens[k + 2].type == TokenType.LPAREN
+            ):
+                return True
+        return False
 
     def parse_index_assign(self):
         tokens = self.current_line

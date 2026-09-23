@@ -541,6 +541,396 @@ def main() -> Int32
     assert result.stdout == "[]\n[1, 2]\n"
 
 
+def test_list_append_pop():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3]
+    xs.append(4)
+    print(xs)
+    xs.append(5)
+    print(xs)
+    xs.pop()
+    print(xs)
+    while len(xs) > 0:
+        xs.pop()
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3, 4]\n[1, 2, 3, 4, 5]\n[1, 2, 3, 4]\n[]\n"
+
+
+def test_list_insert():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3]
+    xs.insert(0, 9)
+    print(xs)
+    xs.insert(1, 7)
+    print(xs)
+    xs.insert(100, 5)
+    print(xs)
+    xs.insert(-1, 6)
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "[9, 1, 2, 3]\n[9, 7, 1, 2, 3]\n[9, 7, 1, 2, 3, 5]\n"
+        "[9, 7, 1, 2, 3, 6, 5]\n"
+    )
+
+
+def test_list_remove():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3, 2]
+    xs.remove(2)
+    print(xs)
+    xs.remove(1)
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 3, 2]\n[3, 2]\n"
+
+
+def test_list_remove_missing_non_debug_noop():
+    llvm = compile_source(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3]
+    xs.remove(99)
+    print(xs)
+    return 0
+""",
+        importer=Importer(),
+        debug_mode=False,
+    )
+    result = run_llvm(llvm)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3]\n"
+
+
+def test_list_remove_missing_debug_errors():
+    llvm = compile_source(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3]
+    xs.remove(99)
+    return 0
+""",
+        importer=Importer(),
+        debug_mode=True,
+    )
+    result = run_llvm(llvm)
+    assert result.returncode != 0
+    assert "List.remove: element not found" in result.stderr
+
+
+def test_list_pop_empty_debug_errors():
+    llvm = compile_source(
+        """
+def main() -> Int32
+    xs: List[Int32] = []
+    xs.pop()
+    return 0
+""",
+        importer=Importer(),
+        debug_mode=True,
+    )
+    result = run_llvm(llvm)
+    assert result.returncode != 0
+    assert "pop on empty list" in result.stderr
+
+
+def test_list_mutator_float_string():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    fs: List[Float32] = [1.5, 2.5]
+    fs.append(3.5)
+    print(fs)
+    fs.remove(2.5)
+    print(fs)
+    fs.insert(0, 0.5)
+    print(fs)
+    ss: List[String] = ["a", "b"]
+    ss.append("c")
+    print(ss)
+    ss.remove("b")
+    print(ss)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "[1.500000, 2.500000, 3.500000]\n[1.500000, 3.500000]\n"
+        "[0.500000, 1.500000, 3.500000]\n[a, b, c]\n[a, c]\n"
+    )
+
+
+def test_list_mutator_in_struct():
+    result = compile_stdlib_run(
+        """
+struct Bag:
+    items: List[Int32]
+
+def main() -> Int32
+    b: Bag = Bag(items=[1, 2, 3])
+    b.items.append(4)
+    print(b.items)
+    b.items.insert(0, 9)
+    print(b.items)
+    b.items.pop()
+    print(b.items)
+    b.items.remove(2)
+    print(b.items)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3, 4]\n[9, 1, 2, 3, 4]\n[9, 1, 2, 3]\n[9, 1, 3]\n"
+
+
+def test_list_mutator_on_nested_index():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    grid: List[List[Int32]] = [[1, 2], [3, 4]]
+    grid[0].append(9)
+    print(grid)
+    grid[1].insert(0, 8)
+    print(grid)
+    grid[1].remove(8)
+    print(grid)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[[1, 2, 9], [3, 4]]\n[[1, 2, 9], [8, 3, 4]]\n[[1, 2, 9], [3, 4]]\n"
+
+
+def test_list_mutator_in_control_flow():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    flag: Bool = True
+    xs: List[Int32] = [1, 2, 3]
+    if flag:
+        xs.append(4)
+    else:
+        xs.pop()
+    print(xs)
+    xb: List[Int32] = [1, 2, 3]
+    if not flag:
+        xb.append(4)
+    else:
+        xb.pop()
+    print(xb)
+    ys: List[Int32] = []
+    n: Int32 = 0
+    while n < 3:
+        ys.append(n)
+        n += 1
+    print(ys)
+    while len(ys) > 0:
+        ys.pop()
+    print(ys)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3, 4]\n[1, 2]\n[0, 1, 2]\n[]\n"
+
+
+def test_list_mutator_shares_no_buffer_on_append():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    a: List[Int32] = [1, 2, 3]
+    b: List[Int32] = a
+    b.append(9)
+    print(a)
+    print(b)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3]\n[1, 2, 3, 9]\n"
+
+
+def test_list_mutator_remove_shares_no_buffer():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    a: List[Int32] = [1, 2, 3]
+    b: List[Int32] = a
+    b.remove(2)
+    print(a)
+    print(b)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3]\n[1, 3]\n"
+
+
+def test_user_function_named_append_not_eaten_by_mutator():
+    """A user `def append` returning a List must be called, not inlined
+    as the list mutator (same-name collision)."""
+    result = compile_stdlib_run(
+        """
+def append(xs: List[Int32], v: Int32) -> List[Int32]
+    return xs
+
+def main() -> Int32
+    ys: List[Int32] = [1, 2]
+    ys = append(ys, 9)
+    print(ys)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2]\n"
+
+
+def test_mutator_statement_inside_same_named_function():
+    result = compile_stdlib_run(
+        """
+def append(xs: List[Int32], v: Int32) -> List[Int32]
+    xs.append(v)
+    return xs
+
+def main() -> Int32
+    ys: List[Int32] = [1, 2]
+    ys = append(ys, 9)
+    print(ys)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 9]\n"
+
+
+def test_list_mutator_with_256bit_elements_and_index():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[UInt256] = [1, 2, 3]
+    xs.append(4)
+    xs.pop()
+    xs.insert(0, 9)
+    xs.remove(2)
+    i: Int256 = 2
+    xs[i] = 7
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[9, 1, 7]\n"
+
+
+def test_list_print_256bit_elements():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int256] = [1, 2, 3]
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2, 3]\n"
+
+
+def test_list_mutator_literal_adapt_float_string():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int8] = []
+    xs.append(1)
+    xs.append(2)
+    print(xs)
+    xs.insert(0, 9)
+    print(xs)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[1, 2]\n[9, 1, 2]\n"
+
+
+def test_list_mutator_arg_type_errors():
+    for source, needle in [
+        (
+            "def main() -> Int32\n"
+            "    xs: List[Int32] = [1]\n"
+            "    xs.foo()\n"
+            "    return 0\n",
+            "is not a class",
+        ),
+        (
+            "def main() -> Int32\n"
+            "    xs: List[Int32] = [1]\n"
+            "    xs.append()\n"
+            "    return 0\n",
+            "expects 1 argument",
+        ),
+        (
+            "def main() -> Int32\n"
+            "    xs: List[Int32] = [1]\n"
+            "    xs.append(1, 2)\n"
+            "    return 0\n",
+            "expects 1 argument",
+        ),
+        (
+            "def main() -> Int32\n"
+            "    xs: List[Int32] = [1]\n"
+            "    xs.append(3.0)\n"
+            "    return 0\n",
+            "expects type Int32",
+        ),
+        (
+            "def main() -> Int32\n"
+            "    xs: List[Int32] = [1]\n"
+            "    xs.pop(1)\n"
+            "    return 0\n",
+            "expects 0 arguments",
+        ),
+        (
+            "def main() -> Int32\n"
+            "    xs: List[Int32] = [1]\n"
+            "    xs.insert(-0.5, 1)\n"
+            "    return 0\n",
+            "index must be an integer",
+        ),
+    ]:
+        _expect_compile_error(source, needle)
+
+
+def _expect_compile_error(source, needle):
+    import io
+    import contextlib
+
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(buf):
+            if isinstance(compile_source(source, importer=Importer(), debug_mode=True), str):
+                pytest.fail(f"expected compile error containing {needle!r}")
+    except (SystemExit, RuntimeError) as e:
+        if isinstance(e, RuntimeError):
+            buf.write(str(e))
+    assert needle in buf.getvalue(), buf.getvalue()
+
+
 def test_list_type_adapts_literals():
     result = compile_stdlib_run(
         """
