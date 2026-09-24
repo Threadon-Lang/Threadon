@@ -477,7 +477,6 @@ class LLVMIRCompiler:
         self.out.append("define i32 @main() {")
         if getattr(self, 'has_module_threads', False):
             self.out.append("  call void @__threadon_module_threads()")
-            self.out.append("  call void @__threadon_thread_join_all()")
         self.out.append("  %_r = call i32 @__threadon_real_main()")
         self.out.append("  call void @__threadon_thread_join_all()")
         self.out.append("  ret i32 %_r")
