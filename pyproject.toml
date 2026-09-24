@@ -25,5 +25,6 @@ threadon = [
     "../stdlib/*.th",
     "../stdlib/**/*.th",
     "../stdlib/**/manifest",
+    "../stdlib/**/*.cpp",
     "*.cpp"
 ]
