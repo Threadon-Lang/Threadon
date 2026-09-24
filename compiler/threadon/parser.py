@@ -3627,7 +3627,10 @@ class Parser:
         value = self.parse_expr(tokens[assign_idx + 1:])
 
         target_type = self.detect_expr_type(target)
+        base_type = self.detect_expr_type(target.obj)
         value_type = self.detect_expr_type(value)
+        if base_type == "String":
+            self.give_error("Cannot assign to a character of a String")
         if not self._is_valid_type(target_type):
             self.give_error(f"Unknown type '{target_type}'")
         if value_type != target_type:
@@ -3665,7 +3668,10 @@ class Parser:
         value = self.parse_expr(tokens[assign_idx + 1:])
 
         target_type = self.detect_expr_type(target)
+        base_type = self.detect_expr_type(target.obj)
         value_type = self.detect_expr_type(value)
+        if base_type == "String":
+            self.give_error("Cannot assign to a character of a String")
         if not self._is_valid_type(target_type):
             self.give_error(f"Unknown type '{target_type}'")
         if value_type != target_type:

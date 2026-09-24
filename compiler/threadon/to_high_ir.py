@@ -687,9 +687,24 @@ class SSABuilder:
             self.module.add_type(type_name, fields)
 
         # First pass: register module-level variable declarations
+        allowed_top = {
+            "VarDecl",
+            "FunctionDef",
+            "ClassDef",
+            "StructDef",
+            "ThreadNode",
+            "ImportStmt",
+        }
         for node in ast:
-            if type(node).__name__ == "VarDecl":
+            tn = type(node).__name__
+            if tn == "VarDecl":
                 self._register_module_var(node)
+            elif tn not in allowed_top:
+                print(
+                    "Error: Statements are not allowed at module level"
+                    " (only variable declarations, functions, structs, classes, and threads)"
+                )
+                raise SystemExit
 
         self.module_var_names = {name for name, _, _ in self.module.module_vars}
 

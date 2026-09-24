@@ -1686,6 +1686,22 @@ def main() -> Int32
     assert "main done" in out
 
 
+def test_module_level_statement_error():
+    # standalone statements at module level are rejected (silently ignored before)
+    from compiler.threadon.compiler import compile_source
+    with pytest.raises(RuntimeError) as e:
+        compile_source(
+            """
+x: Int32 = 42
+x = 99
+def main() -> Int32
+    return 0
+""",
+            importer=Importer(),
+        )
+    assert "Statements are not allowed at module level" in str(e.value)
+
+
 def test_module_variable_read_write():
     result = compile_stdlib_run(
         """

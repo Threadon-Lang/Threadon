@@ -1838,3 +1838,23 @@ def f() -> Int32
     assert type(func.body[0].expr.obj).__name__ == "ListLiteralExpr"
     assert type(func.body[1].expr).__name__ == "SliceExpr"
     assert type(func.body[1].expr.obj).__name__ == "ListLiteralExpr"
+
+
+def test_string_index_assign_rejected():
+    for code in (
+        """
+def f() -> Int32
+    s: String = "hi"
+    s[0] = "H"
+    return 0
+""",
+        """
+struct P:
+    s: String
+def f() -> Int32
+    p: P = P(s="hi")
+    p.s[0] = "H"
+    return 0
+""",
+    ):
+        parse_fail(code)
