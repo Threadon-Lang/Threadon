@@ -31,6 +31,7 @@ from .nodes import (
     MethodCallExpr,
     RefExpr,
     ReturnStmt,
+    SliceExpr,
     StructInitExpr,
     ThreadNode,
     UnaryExpr,
@@ -832,6 +833,13 @@ class SSABuilder:
                 walk_expr(expr.obj)
                 walk_expr(expr.index)
 
+            elif t == "SliceExpr":
+                walk_expr(expr.obj)
+                if expr.start is not None:
+                    walk_expr(expr.start)
+                if expr.end is not None:
+                    walk_expr(expr.end)
+
         def walk_stmt(stmt):
             t = type(stmt).__name__
 
@@ -1172,6 +1180,13 @@ class SSABuilder:
         elif t == "IndexExpr":
             self._walk_expr_reads(expr.obj, reads, defs)
             self._walk_expr_reads(expr.index, reads, defs)
+
+        elif t == "SliceExpr":
+            self._walk_expr_reads(expr.obj, reads, defs)
+            if expr.start is not None:
+                self._walk_expr_reads(expr.start, reads, defs)
+            if expr.end is not None:
+                self._walk_expr_reads(expr.end, reads, defs)
 
         elif t == "ListLiteralExpr":
             for e in expr.elements:
@@ -3448,11 +3463,81 @@ class SSABuilder:
                 )
                 return v
 
+            if (
+                isinstance(obj_type, str)
+                and obj_type == "String"
+            ):
+                v = self.new_temp("String")
+                self.current_block.add_instr(
+                    IRInstr(
+                        "string_get",
+                        [obj, idx],
+                        result=v,
+                    )
+                )
+                return v
+
             v = self.new_temp("Unknown")
             self.current_block.add_instr(
                 IRInstr(
                     "list_get",
                     [obj, idx],
+                    result=v,
+                )
+            )
+            return v
+
+        if isinstance(expr, SliceExpr):
+            obj = self.emit_expr(
+                expr.obj
+            )
+
+            start = None
+            end = None
+            if expr.start is not None:
+                start = self.emit_expr(
+                    expr.start
+                )
+            if expr.end is not None:
+                end = self.emit_expr(
+                    expr.end
+                )
+
+            obj_type = obj.type
+
+            if (
+                isinstance(obj_type, str)
+                and obj_type.startswith("List[")
+            ):
+                v = self.new_temp(obj_type)
+                self.current_block.add_instr(
+                    IRInstr(
+                        "list_slice",
+                        [obj, start, end],
+                        result=v,
+                    )
+                )
+                return v
+
+            if (
+                isinstance(obj_type, str)
+                and obj_type == "String"
+            ):
+                v = self.new_temp("String")
+                self.current_block.add_instr(
+                    IRInstr(
+                        "string_slice",
+                        [obj, start, end],
+                        result=v,
+                    )
+                )
+                return v
+
+            v = self.new_temp("Unknown")
+            self.current_block.add_instr(
+                IRInstr(
+                    "list_slice",
+                    [obj, start, end],
                     result=v,
                 )
             )

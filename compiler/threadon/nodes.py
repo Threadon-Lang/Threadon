@@ -170,6 +170,12 @@ class IndexExpr(Expr):
     index: Expr
 
 @dataclass
+class SliceExpr(Expr):
+    obj: Expr
+    start: Expr | None
+    end: Expr | None
+
+@dataclass
 class ImportStmt(Node):
     module: str
     names: list

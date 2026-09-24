@@ -1792,3 +1792,158 @@ def main() -> Int32
     out = set(result.stdout.strip().splitlines())
     assert "should not appear" not in out
     assert "main done" in out
+
+
+def test_string_indexing():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    s: String = "hello"
+    print(s[0])
+    print(s[1])
+    print(s[4])
+    i: Int32 = 2
+    print(s[i])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "h\ne\no\nl\n"
+
+
+def test_string_index_out_of_bounds_errors():
+    for src in (
+        """
+def main() -> Int32
+    s: String = "hi"
+    print(s[5])
+    return 0
+""",
+        """
+def main() -> Int32
+    s: String = "hi"
+    print(s[-1])
+    return 0
+""",
+    ):
+        result = compile_stdlib_run(src)
+        assert result.returncode != 0
+        assert "String index out of bounds" in result.stderr
+
+
+def test_string_slicing():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    s: String = "hello"
+    print(s[1:4])
+    print(s[:2])
+    print(s[2:])
+    print(s[:])
+    print(s[0:0])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ell\nhe\nllo\nhello\n\n"
+
+
+def test_string_slice_negative_and_clamped():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    s: String = "hello"
+    print(s[-3:-1])
+    print(s[-100:100])
+    print(s[3:1])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ll\nhello\n\n"
+
+
+def test_list_slicing():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3, 4, 5]
+    print(xs[1:3])
+    print(xs[:2])
+    print(xs[2:])
+    print(xs[:])
+    print(xs[1:1])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[2, 3]\n[1, 2]\n[3, 4, 5]\n[1, 2, 3, 4, 5]\n[]\n"
+
+
+def test_list_slice_negative_and_clamped():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3, 4, 5]
+    print(xs[-3:-1])
+    print(xs[-100:100])
+    print(xs[3:1])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[3, 4]\n[1, 2, 3, 4, 5]\n[]\n"
+
+
+def test_inline_list_literal_indexing():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    print([10, 20, 30][1])
+    print([10, 20, 30][2])
+    print([10, 20, 30][0:2])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "20\n30\n[10, 20]\n"
+
+
+def test_sliced_list_iterator():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Int32] = [1, 2, 3, 4]
+    for y in xs[1:3]:
+        print(y)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2\n3\n"
+
+
+def test_string_comparison_by_content():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    s: String = "hello"
+    print(s[1:4] == "ell")
+    print("ell" == s[1:4])
+    print(s[1:4] != "xyz")
+    print(s[:] == "hello")
+    print(s[0:5] == "hello")
+    print("hello" == "hello")
+    print("abc" == "xyz")
+    print("aaa" < "bbb")
+    print("bbb" > "aaa")
+    print("a" <= "a")
+    print("b" >= "a")
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        result.stdout
+        == "True\nTrue\nTrue\nTrue\nTrue\nTrue\nFalse\nTrue\nTrue\nTrue\nTrue\n"
+    )

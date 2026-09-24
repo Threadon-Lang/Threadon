@@ -1714,6 +1714,15 @@ class LLVMIRCompiler:
         if op == "dict_set":
             return self._emit_dict_set(res, instr)
 
+        if op == "string_get":
+            return self._emit_string_get(res, instr)
+
+        if op == "string_slice":
+            return self._emit_string_slice(res, instr)
+
+        if op == "list_slice":
+            return self._emit_list_slice(res, instr)
+
         if op == "select":
             return self._emit_select(res, instr)
         if op == "alloca":
@@ -1953,6 +1962,20 @@ class LLVMIRCompiler:
         l = self.operand(left)
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
+        if ltype == "i8*" and left.type == "String" and right.type == "String":
+            self.used_c_runtime.add("strcmp")
+            seq = f"{res}_seq"
+            lines = [f"{seq} = call i32 @strcmp(i8* {l}, i8* {r})"]
+            pred_map = {
+                "cmp_lt": "slt",
+                "cmp_gt": "sgt",
+                "cmp_le": "sle",
+                "cmp_ge": "sge",
+                "cmp_eq": "eq",
+                "cmp_ne": "ne",
+            }
+            lines.append(f"{res} = icmp {pred_map[op]} i32 {seq}, 0")
+            return lines
         is_float = ltype in FLOAT_LLVM_TYPES
         unsigned = self._is_unsigned(left.type)
 
@@ -3398,6 +3421,174 @@ class LLVMIRCompiler:
         v0 = f"{res}_v0"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {lenv}, 0")
         lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {data}, 1")
+        return lines
+
+    def _emit_slice_bound_lines(self, res, tag, lines, idx, len_reg):
+        if idx is None:
+            bound = None
+            return bound
+        idx64 = self._emit_idx64_lines(res, tag, idx, lines)
+
+        neg = f"{res}_{tag}_neg"
+        adj = f"{res}_{tag}_adj"
+        pick = f"{res}_{tag}_pick"
+        hi = f"{res}_{tag}_hi"
+        cl_hi = f"{res}_{tag}_clhi"
+        lo = f"{res}_{tag}_lo"
+        cl_lo = f"{res}_{tag}_cllo"
+        lines.append(f"{neg} = icmp slt i64 {idx64}, 0")
+        lines.append(f"{adj} = add i64 {idx64}, {len_reg}")
+        lines.append(f"{pick} = select i1 {neg}, i64 {adj}, i64 {idx64}")
+        lines.append(f"{hi} = icmp sgt i64 {pick}, {len_reg}")
+        lines.append(f"{cl_hi} = select i1 {hi}, i64 {len_reg}, i64 {pick}")
+        lines.append(f"{lo} = icmp slt i64 {cl_hi}, 0")
+        lines.append(f"{cl_lo} = select i1 {lo}, i64 0, i64 {cl_hi}")
+        return cl_lo
+
+    def _emit_string_get(self, res, instr):
+        obj = instr.args[0]
+        idx = instr.args[1]
+        obj_op = self.operand(obj)
+        lines = []
+        idx64 = self._emit_idx64_lines(res, "gi", idx, lines)
+
+        if self.debug_mode:
+            self.used_c_runtime.add("exit")
+            self.used_c_runtime.add("strlen")
+            len_reg = f"{res}_len"
+            lines.append(f"{len_reg} = call i64 @strlen(i8* {obj_op})")
+            neg = f"{res}_neg"
+            oob = f"{res}_oobc"
+            bad = f"{res.lstrip('%')}_oob"
+            ok = f"{res.lstrip('%')}_ok"
+            msg = "Error: String index out of bounds\n"
+            msg_global = self._string_global(msg)
+            msg_size = len(msg.encode("utf-8")) + 1
+            ctx = self._string_global(f"String index on {obj.type}")
+            lines.append(f"{neg} = icmp slt i64 {idx64}, 0")
+            lines.append(f"br i1 {neg}, label %{bad}, label %{ok}")
+            lines.append(f"{ok}:")
+            lines.append(f"{oob} = icmp uge i64 {idx64}, {len_reg}")
+            lines.append(f"br i1 {oob}, label %{bad}, label %{res.lstrip('%')}_get")
+            lines.append(f"{bad}:")
+            lines.append(
+                f"  %{res.lstrip('%')}_emsg = getelementptr inbounds "
+                f"[{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0"
+            )
+            lines.append(
+                f"  call void @__threadon_debug_error(i8* %{res.lstrip('%')}_emsg, i8* {ctx})"
+            )
+            lines.append("  unreachable")
+            lines.append(f"{res.lstrip('%')}_get:")
+
+        self.used_c_runtime.add("malloc")
+        buf = f"{res}_buf"
+        lines.append(f"{buf} = call i8* @malloc(i64 2)")
+        gep = f"{res}_gep"
+        lines.append(f"{gep} = getelementptr i8, i8* {obj_op}, i64 {idx64}")
+        byte = f"{res}_byte"
+        lines.append(f"{byte} = load i8, i8* {gep}")
+        lines.append(f"store i8 {byte}, i8* {buf}")
+        tail = f"{res}_tail"
+        lines.append(f"{tail} = getelementptr i8, i8* {buf}, i64 1")
+        lines.append(f"store i8 0, i8* {tail}")
+        lines.append(f"{res} = getelementptr i8, i8* {buf}, i64 0")
+        return lines
+
+    def _emit_string_slice(self, res, instr):
+        obj = instr.args[0]
+        start = instr.args[1]
+        end = instr.args[2]
+        obj_op = self.operand(obj)
+        self.used_c_runtime.add("strlen")
+        self.used_c_runtime.add("malloc")
+        self.used_intrinsics.add("llvm.memcpy.p0i8.p0i8.i64")
+        lines = []
+        len_reg = f"{res}_len"
+        lines.append(f"{len_reg} = call i64 @strlen(i8* {obj_op})")
+
+        s_reg = self._emit_slice_bound_lines(res, "ss", lines, start, len_reg)
+        if s_reg is None:
+            s_zero = f"{res}_szero"
+            lines.append(f"{s_zero} = add i64 0, 0")
+            s_reg = s_zero
+        e_reg = self._emit_slice_bound_lines(res, "se", lines, end, len_reg)
+        if e_reg is None:
+            e_reg = len_reg
+
+        swc = f"{res}_swc"
+        lines.append(f"{swc} = icmp sgt i64 {s_reg}, {e_reg}")
+        diff = f"{res}_diff"
+        lines.append(f"{diff} = sub i64 {e_reg}, {s_reg}")
+        cnt = f"{res}_cnt"
+        lines.append(f"{cnt} = select i1 {swc}, i64 0, i64 {diff}")
+
+        total = f"{res}_tot"
+        lines.append(f"{total} = add i64 {cnt}, 1")
+        buf = f"{res}_buf"
+        lines.append(f"{buf} = call i8* @malloc(i64 {total})")
+        srcp = f"{res}_srcp"
+        lines.append(f"{srcp} = getelementptr i8, i8* {obj_op}, i64 {s_reg}")
+        lines.append(
+            f"call void @llvm.memcpy.p0i8.p0i8.i64(i8* {buf}, i8* {srcp}, i64 {cnt}, i1 false)"
+        )
+        tail = f"{res}_tail"
+        lines.append(f"{tail} = getelementptr i8, i8* {buf}, i64 {cnt}")
+        lines.append(f"store i8 0, i8* {tail}")
+        lines.append(f"{res} = getelementptr i8, i8* {buf}, i64 0")
+        return lines
+
+    def _emit_list_slice(self, res, instr):
+        obj = instr.args[0]
+        start = instr.args[1]
+        end = instr.args[2]
+        obj_type = obj.type
+        elem_type = obj_type[5:-1]
+        elem_llvm = self.to_llvm_type(elem_type)
+        llvm_type = self.to_llvm_type(obj_type)
+        obj_op = self.operand(obj)
+        self.used_c_runtime.add("malloc")
+        lines = []
+        len_reg = f"{res}_len"
+        lines.append(f"{len_reg} = extractvalue {llvm_type} {obj_op}, 0")
+        data = f"{res}_data"
+        lines.append(f"{data} = extractvalue {llvm_type} {obj_op}, 1")
+
+        s_reg = self._emit_slice_bound_lines(res, "ls", lines, start, len_reg)
+        if s_reg is None:
+            s_zero = f"{res}_szero"
+            lines.append(f"{s_zero} = add i64 0, 0")
+            s_reg = s_zero
+        e_reg = self._emit_slice_bound_lines(res, "le", lines, end, len_reg)
+        if e_reg is None:
+            e_reg = len_reg
+
+        swc = f"{res}_swc"
+        lines.append(f"{swc} = icmp sgt i64 {s_reg}, {e_reg}")
+        diff = f"{res}_diff"
+        lines.append(f"{diff} = sub i64 {e_reg}, {s_reg}")
+        cnt = f"{res}_cnt"
+        lines.append(f"{cnt} = select i1 {swc}, i64 0, i64 {diff}")
+
+        size = self._llvm_sizeof(elem_llvm)
+        total = f"{res}_tot"
+        lines.append(f"{total} = mul i64 {cnt}, {size}")
+        raw = f"{res}_raw"
+        lines.append(f"{raw} = call i8* @malloc(i64 {total})")
+        ndata = f"{res}_ndata"
+        lines.append(f"{ndata} = bitcast i8* {raw} to {elem_llvm}*")
+        srcp = f"{res}_srcp"
+        lines.append(
+            f"{srcp} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {s_reg}"
+        )
+        pred = self._current_label()
+        copy_lines, _ = self._emit_copy_range_lines(
+            res, "sl", pred, srcp, ndata, cnt, elem_llvm
+        )
+        lines.extend(copy_lines)
+        v0 = f"{res}_v0"
+        lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {cnt}, 0")
+        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {ndata}, 1")
         return lines
 
     def _emit_idx64_lines(self, res, tag, idx, lines):

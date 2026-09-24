@@ -496,6 +496,12 @@ class UnusedVariableChecker:
         elif t == "IndexExpr":
             self.visit_expr(expr.obj, used)
             self.visit_expr(expr.index, used)
+        elif t == "SliceExpr":
+            self.visit_expr(expr.obj, used)
+            if expr.start is not None:
+                self.visit_expr(expr.start, used)
+            if expr.end is not None:
+                self.visit_expr(expr.end, used)
         elif t == "ListLiteralExpr":
             for e in expr.elements:
                 self.visit_expr(e, used)
@@ -656,6 +662,12 @@ class DeadStoreChecker:
         elif t == "IndexExpr":
             self._walk_reads(expr.obj)
             self._walk_reads(expr.index)
+        elif t == "SliceExpr":
+            self._walk_reads(expr.obj)
+            if expr.start is not None:
+                self._walk_reads(expr.start)
+            if expr.end is not None:
+                self._walk_reads(expr.end)
         elif t == "ListLiteralExpr":
             for e in expr.elements:
                 self._walk_reads(e)

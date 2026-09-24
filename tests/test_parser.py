@@ -1796,3 +1796,45 @@ def run() -> Int32
     inner = outer.body[0]
     assert type(inner.body[0]).__name__ == "BreakStmt"
     assert type(outer.body[1]).__name__ == "ContinueStmt"
+
+
+def test_slice_expr_forms():
+    ast = parse_ok(
+        """
+def f(s: String, xs: List[Int32]) -> Int32
+    a: String = s[1:3]
+    b: String = s[:2]
+    c: String = s[2:]
+    d: String = s[:]
+    e: List[Int32] = xs[0:1]
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    exprs = [stmt.expr for stmt in func.body[:5]]
+    for e, start, end in zip(
+        exprs,
+        [True, None, True, None, True],
+        [True, True, None, None, True],
+    ):
+        assert type(e).__name__ == "SliceExpr"
+        assert (e.start is not None) == (start is not None)
+        assert (e.end is not None) == (end is not None)
+    assert exprs[0].start.value.value == "1"
+    assert exprs[0].end.value.value == "3"
+
+
+def test_inline_list_literal_indexes_and_slices():
+    ast = parse_ok(
+        """
+def f() -> Int32
+    a: Int32 = [1, 2, 3][1]
+    b: List[Int32] = [1, 2, 3][1:2]
+    return 0
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    assert type(func.body[0].expr).__name__ == "IndexExpr"
+    assert type(func.body[0].expr.obj).__name__ == "ListLiteralExpr"
+    assert type(func.body[1].expr).__name__ == "SliceExpr"
+    assert type(func.body[1].expr.obj).__name__ == "ListLiteralExpr"

@@ -79,6 +79,11 @@ def print_expr(expr):
     if t == "IndexExpr":
         return f"{print_expr(expr.obj)}[{print_expr(expr.index)}]"
 
+    if t == "SliceExpr":
+        start = print_expr(expr.start) if expr.start is not None else ""
+        end = print_expr(expr.end) if expr.end is not None else ""
+        return f"{print_expr(expr.obj)}[{start}:{end}]"
+
     return "<unknown expr>"
 def print_ast(ast, indent=0):
     pad = "    " * indent
@@ -2226,7 +2231,7 @@ class Parser:
 
         def parse_list_literal(ts):
             if not ts or ts[0].type != TokenType.LBRACKET:
-                return None
+                return None, ts
 
             depth = 0
             end = None
@@ -2240,12 +2245,10 @@ class Parser:
                         break
             if end is None:
                 self.give_error("Unmatched '[' in list literal")
-            if end != len(ts) - 1:
-                self.give_error("Unexpected tokens after list literal")
 
             inner = ts[1:end]
             if not inner:
-                return ListLiteralExpr([])
+                return ListLiteralExpr([]), ts[end + 1:]
 
             elements = []
             current = []
@@ -2265,11 +2268,11 @@ class Parser:
 
             if current:
                 elements.append(self.parse_expr(current))
-            return ListLiteralExpr(elements)
+            return ListLiteralExpr(elements), ts[end + 1:]
 
         def parse_dict_literal(ts):
             if not ts or ts[0].type != TokenType.LBRACE:
-                return None
+                return None, ts
 
             depth = 0
             end = None
@@ -2283,12 +2286,10 @@ class Parser:
                         break
             if end is None:
                 self.give_error("Unmatched '{' in dict literal")
-            if end != len(ts) - 1:
-                self.give_error("Unexpected tokens after dict literal")
 
             inner = ts[1:end]
             if not inner:
-                return DictLiteralExpr([], [])
+                return DictLiteralExpr([], []), ts[end + 1:]
 
             pair_tokens_list = []
             current_pair = []
@@ -2328,16 +2329,18 @@ class Parser:
                 keys.append(self.parse_expr(key_tokens))
                 values.append(self.parse_expr(val_tokens))
 
-            return DictLiteralExpr(keys, values)
+            return DictLiteralExpr(keys, values), ts[end + 1:]
 
         def index_postfix(ts):
             lit = parse_list_literal(ts)
-            if lit is not None:
-                return lit
+            if lit[0] is not None:
+                base, rest = lit
+                return apply_postfix(base, rest)
 
             lit = parse_dict_literal(ts)
-            if lit is not None:
-                return lit
+            if lit[0] is not None:
+                base, rest = lit
+                return apply_postfix(base, rest)
 
             if ts and ts[0].type == TokenType.IDENT and ts[0].value in self.module_aliases:
                 return factor(ts)
@@ -2365,7 +2368,9 @@ class Parser:
 
             base = factor(ts[:split])
             rest = ts[split:]
+            return apply_postfix(base, rest)
 
+        def apply_postfix(base, rest):
             while True:
                 if not rest:
                     break
@@ -2419,6 +2424,25 @@ class Parser:
                     index_tokens = rest[1:end]
                     if not index_tokens:
                         self.give_error("Empty index expression")
+                    colon_idx = None
+                    depth = 0
+                    for ci, tok in enumerate(index_tokens):
+                        if tok.type in (TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE):
+                            depth += 1
+                        elif tok.type in (TokenType.RPAREN, TokenType.RBRACKET, TokenType.RBRACE):
+                            depth -= 1
+                        elif tok.type == TokenType.COLON and depth == 0:
+                            if colon_idx is not None:
+                                self.give_error("Slice step is not supported")
+                            colon_idx = ci
+                    if colon_idx is not None:
+                        start_tokens = index_tokens[:colon_idx]
+                        end_tokens = index_tokens[colon_idx + 1:]
+                        start = self.parse_expr(start_tokens) if start_tokens else None
+                        end_expr = self.parse_expr(end_tokens) if end_tokens else None
+                        base = SliceExpr(base, start, end_expr)
+                        rest = rest[end + 1:]
+                        continue
                     index = self.parse_expr(index_tokens)
                     base = IndexExpr(base, index)
                     rest = rest[end + 1:]
@@ -2580,7 +2604,26 @@ class Parser:
                         f"Dict index must be {key_expected}, got {index_type}"
                     )
                 return val_type
+            if isinstance(obj_type, str) and obj_type == "String":
+                if index_type not in ALL_INT_TYPES:
+                    self.give_error(f"String index must be an integer, got {index_type}")
+                return "String"
             self.give_error(f"'{obj_type}' is not indexable")
+        if t == "SliceExpr":
+            obj_type = self.detect_expr_type(expr.obj)
+            if expr.start is not None:
+                start_type = self.detect_expr_type(expr.start)
+                if start_type not in ALL_INT_TYPES:
+                    self.give_error(f"Slice start must be an integer, got {start_type}")
+            if expr.end is not None:
+                end_type = self.detect_expr_type(expr.end)
+                if end_type not in ALL_INT_TYPES:
+                    self.give_error(f"Slice end must be an integer, got {end_type}")
+            if isinstance(obj_type, str) and obj_type.startswith("List["):
+                return obj_type
+            if isinstance(obj_type, str) and obj_type == "String":
+                return "String"
+            self.give_error(f"'{obj_type}' is not sliceable")
         if t == "FieldAccessExpr":
             obj_type = self.detect_expr_type(expr.obj)
 
