@@ -126,12 +126,22 @@ class LLVMIRCompiler:
 
         # Emit module-level variable globals
         for name, var_type, init_val in getattr(module, 'module_vars', []):
-            llvm_type = self.to_llvm_type(var_type)
-            if init_val is not None:
-                const = self._const_literal(init_val, var_type)
-                self.out.append(f"@{name} = global {llvm_type} {const}, align 4")
+            # For Bool, store as i8 (atomic requires byte-sized)
+            if var_type == "Bool":
+                llvm_type = "i8"
+                align = "1"
+                if init_val is not None:
+                    const = "1" if init_val else "0"
+                else:
+                    const = "0"
             else:
-                self.out.append(f"@{name} = global {llvm_type} zeroinitializer, align 4")
+                llvm_type = self.to_llvm_type(var_type)
+                align = "4"
+                if init_val is not None:
+                    const = self._const_literal(init_val, var_type)
+                else:
+                    const = "zeroinitializer"
+            self.out.append(f"@{name} = global {llvm_type} {const}, align {align}")
             self.module_globals.add(name)
         if getattr(module, 'module_vars', []):
             self.out.append("")
@@ -1597,12 +1607,25 @@ class LLVMIRCompiler:
         if op == "global_load":
             name = instr.args[0]
             llvm_type = self.to_llvm_type(instr.result.type)
+            if llvm_type == "i1":
+                # atomic i1 not allowed; load i8 then trunc
+                tmp = self._fresh_reg("gload")
+                out = []
+                out.append(f"{tmp} = load atomic i8, i8* @{name} seq_cst, align 1")
+                out.append(f"{res} = trunc i8 {tmp} to i1")
+                return out
             return f"{res} = load atomic {llvm_type}, {llvm_type}* @{name} seq_cst, align 4"
         if op == "global_store":
             name = instr.args[0]
             val = instr.args[1]
             llvm_type = self.to_llvm_type(val.type)
             val_op = self.operand(val)
+            if llvm_type == "i1":
+                tmp = self._fresh_reg("gstore")
+                out = []
+                out.append(f"{tmp} = zext i1 {val_op} to i8")
+                out.append(f"store atomic i8 {tmp}, i8* @{name} seq_cst, align 1")
+                return out
             return f"store atomic {llvm_type} {val_op}, {llvm_type}* @{name} seq_cst, align 4"
         if op == "cast":
             return self._emit_cast(res, rtype, instr.args[0], instr.args[1])

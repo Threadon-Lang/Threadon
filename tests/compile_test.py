@@ -1684,3 +1684,111 @@ def main() -> Int32
     assert "module thread 1" in out
     assert "module thread 2" in out
     assert "main done" in out
+
+
+def test_module_variable_read_write():
+    result = compile_stdlib_run(
+        """
+x: Int32 = 5
+def main() -> Int32
+    print("x =", x)
+    x = 42
+    print("x now =", x)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout.strip().splitlines()
+    assert "x = 5" in out
+    assert "x now = 42" in out
+
+
+def test_module_variable_atomic_race():
+    # Two threads increment a shared global many times; final value is non‑deterministic
+    result = compile_stdlib_run(
+        """
+counter: Int32 = 0
+
+thread IncA() on True:
+    for _ in range(0, 50):
+        counter += 1
+
+thread IncB() on True:
+    for _ in range(0, 50):
+        counter += 1
+
+def main() -> Int32
+    print("counter =", counter)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    # just ensure it runs and prints something; value will vary
+    assert "counter =" in result.stdout
+
+
+def test_thread_inside_function_error():
+    # threads are only allowed at module level
+    from compiler.threadon.importer import Importer
+    from compiler.threadon.checker import CombinedChecker
+    from compiler.threadon.to_high_ir import SSABuilder
+    import io
+    from contextlib import redirect_stdout
+
+    src = """
+def foo() -> NoneType
+    thread Bad() on True:
+        print("oops")
+    return
+def main() -> Int32
+    return 0
+"""
+    importer = Importer()
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            ast = importer.load_main(src)
+            # should raise during parsing
+        assert False, "expected error"
+    except SystemExit:
+        pass
+    err = buf.getvalue()
+    assert "only allowed at module level" in err
+
+
+def test_thread_exit_in_module_thread():
+    result = compile_stdlib_run(
+        """
+thread ExitDemo() on True:
+    print("before exit")
+    thread_exit()
+    print("after exit - never")
+
+def main() -> Int32
+    print("main continues")
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = set(result.stdout.strip().splitlines())
+    assert "before exit" in out
+    assert "after exit - never" not in out
+    assert "main continues" in out
+
+
+def test_thread_condition_false_module():
+    result = compile_stdlib_run(
+        """
+flag: Bool = False
+thread Cond() on flag:
+    print("should not appear")
+
+def main() -> Int32
+    print("main done")
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    out = set(result.stdout.strip().splitlines())
+    assert "should not appear" not in out
+    assert "main done" in out
