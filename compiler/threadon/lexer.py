@@ -34,6 +34,7 @@ class TokenType(Enum):
     FALSE = auto()
     THREAD = auto()
     ON = auto()
+    COMPTIME = auto()
 
     COLON = auto()
     COMMA = auto()
@@ -108,6 +109,7 @@ KEYWORDS = {
     "False": TokenType.FALSE,
     "thread": TokenType.THREAD,
     "on": TokenType.ON,
+    "comptime": TokenType.COMPTIME,
     "import": TokenType.IMPORT,
     "from": TokenType.FROM,
     "lazyimport": TokenType.LAZYIMPORT,

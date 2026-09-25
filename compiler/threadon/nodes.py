@@ -181,6 +181,14 @@ class ImportStmt(Node):
     names: list
     lazy: bool = False
     is_from: bool = True
+
+@dataclass
+class ComptimeStmt(Node):
+    name: str
+    var_type: str
+    body: list
+    return_value: Expr | None = None
+
 class CastExpr:
     def __init__(self, target_type, expr):
         self.target_type = target_type

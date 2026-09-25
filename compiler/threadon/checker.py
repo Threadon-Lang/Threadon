@@ -231,6 +231,9 @@ class ShadowChecker:
             elif t == "ThreadNode":
                 self.visit_block(stmt.body, local.copy())
 
+            elif t == "ComptimeStmt":
+                self.visit_block(stmt.body, local.copy())
+
             elif t == "FunctionDef":
                 func_scope = {pname: True for pname, _, _ in stmt.params}
                 self.visit_block(stmt.body, func_scope)
@@ -280,6 +283,12 @@ class DuplicateChecker:
             thread_scope = scope.copy()
             for stmt in node.body:
                 self.visit(stmt, thread_scope)
+            return None
+
+        if t == "ComptimeStmt":
+            ct_scope = scope.copy()
+            for stmt in node.body:
+                self.visit(stmt, ct_scope)
             return None
 
         if t == "ReturnStmt":
@@ -381,6 +390,13 @@ class UnusedVariableChecker:
                 # module-level thread body may use globals
                 for stmt in node.body:
                     self.visit_stmt(stmt, global_decl, global_used)
+            elif t == "ComptimeStmt":
+                # comptime variables are compile-time constants
+                global_decl.add(node.name)
+                for stmt in node.body:
+                    self.visit_stmt(stmt, global_decl, global_used)
+                if node.return_value:
+                    self.visit_expr(node.return_value, global_used)
 
         self._global_decl = global_decl
         self._global_used = global_used
@@ -585,6 +601,8 @@ class DeadStoreChecker:
             elif t == "ThreadNode":
                 self._walk_reads(stmt.condition)
                 self._pre_scan(stmt.body)
+            elif t == "ComptimeStmt":
+                self._pre_scan(stmt.body)
 
     def _block(self, stmts):
         for stmt in stmts:
@@ -628,6 +646,9 @@ class DeadStoreChecker:
                 self.track = {}
             elif t == "ThreadNode":
                 self._walk_reads(stmt.condition)
+                self._branch(stmt.body)
+                self.track = {}
+            elif t == "ComptimeStmt":
                 self._branch(stmt.body)
                 self.track = {}
 

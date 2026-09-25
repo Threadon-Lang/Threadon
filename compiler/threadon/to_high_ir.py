@@ -8,6 +8,7 @@ from .builtins import (
     union_members,
     union_str,
 )
+from .comptime_eval import eval_comptime
 from .nodes import (
     Assign,
     AttrDecl,
@@ -16,6 +17,7 @@ from .nodes import (
     CallExpr,
     CastExpr,
     ClassInitExpr,
+    ComptimeStmt,
     ContinueStmt,
     DictLiteralExpr,
     Expr,
@@ -695,11 +697,14 @@ class SSABuilder:
             "StructDef",
             "ThreadNode",
             "ImportStmt",
+            "ComptimeStmt",
         }
         for node in ast:
             tn = type(node).__name__
             if tn == "VarDecl":
                 self._register_module_var(node)
+            elif tn == "ComptimeStmt":
+                self._eval_comptime(node)
             elif tn not in allowed_top:
                 print(
                     "Error: Statements are not allowed at module level"
@@ -788,6 +793,22 @@ class SSABuilder:
             else:
                 pass
         self.module.module_vars.append((name, var_type, init_val))
+
+    def _eval_comptime(self, node: ComptimeStmt):
+        """Evaluate comptime statement at compile time and register as module variable."""
+        try:
+            value = eval_comptime(
+                node,
+                self.module.types,
+                self.func_returns,
+                self.module.class_bases,
+            )
+        except Exception as e:
+            print(f"Error evaluating comptime '{node.name}': {e}")
+            raise SystemExit(1)
+
+        # Register as module variable with the computed value
+        self.module.module_vars.append((node.name, node.var_type, value))
 
     def _type_of_module_var(self, name):
         for n, t, _ in self.module.module_vars:
@@ -1078,6 +1099,10 @@ class SSABuilder:
 
         elif isinstance(node, ThreadNode):
             self.emit_thread(node)
+
+        elif isinstance(node, ComptimeStmt):
+            # Comptime statements are already evaluated at compile time
+            pass
 
         elif isinstance(node, ExprStmt):
             self.emit_expr_stmt(node.expr)

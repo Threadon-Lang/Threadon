@@ -212,6 +212,7 @@ class Parser:
         self._in_struct = False
         self._in_class = False
         self._in_function = False
+        self._in_comptime = False
         self.return_type = None
         self.current_function = None
 
@@ -414,6 +415,8 @@ class Parser:
             return self.parse_for()
         if first == TokenType.THREAD:
             return self.parse_thread()
+        if first == TokenType.COMPTIME:
+            return self.parse_comptime()
         if first == TokenType.STRUCT:
             return self.parse_struct()
         if first == TokenType.CLASS:
@@ -1657,6 +1660,92 @@ class Parser:
             condition=condition,
             body=body,
         )
+
+    def parse_comptime(self):
+        """Parse comptime statement:
+        - comptime NAME: TYPE = EXPR
+        - comptime NAME: TYPE:
+            body...
+            return EXPR
+        """
+        if self.current_function is not None:
+            self.give_error("comptime statements are only allowed at module level, not inside functions")
+
+        tokens = self.current_line
+
+        if len(tokens) < 4:
+            self.give_error("Invalid comptime statement")
+
+        if tokens[1].type != TokenType.IDENT:
+            self.give_error("Expected variable name after 'comptime'")
+
+        name = tokens[1].value
+
+        if len(tokens) < 3 or tokens[2].type != TokenType.COLON:
+            self.give_error("Expected ':' after variable name in comptime")
+
+        var_type = None
+        i = 3
+        if i < len(tokens) and (tokens[i].type == TokenType.TYPE or (tokens[i].type == TokenType.IDENT and tokens[i].value in self.struct_defs or tokens[i].value in self.class_defs)):
+            var_type = self.resolve_type(tokens[i].value) if tokens[i].type == TokenType.IDENT else tokens[i].value
+            i += 1
+
+        if i < len(tokens) and tokens[i].type == TokenType.ASSIGN:
+            expr = self.parse_expr(tokens[i+1:])
+            # Evaluate comptime at parse time and register variable for type checking
+            from .comptime_eval import eval_comptime
+            try:
+                value = eval_comptime(
+                    ComptimeStmt(name, var_type or "Int32", [], expr),
+                    self.struct_defs,
+                    self.func_sigs,
+                    self.class_defs,
+                )
+            except Exception as e:
+                self.give_error(f"Error evaluating comptime '{name}': {e}")
+
+            # Register in module-level scope for type checking
+            self.declare_var(name, var_type or "Int32")
+
+            return ComptimeStmt(name, var_type or "Int32", [], expr)
+
+        if i < len(tokens) and tokens[i].type != TokenType.COLON:
+            self.give_error("Expected ':' or '=' in comptime statement")
+
+        if var_type is None:
+            self.give_error("comptime block requires explicit type annotation")
+
+        parent_indent = self.current_indent
+        self.push_scope()
+        prev_in_comptime = self._in_comptime
+        self._in_comptime = True
+        body = self.parse_block(parent_indent)
+        self._in_comptime = prev_in_comptime
+        self.pop_scope()
+
+        return_value = None
+        if body:
+            last_stmt = body[-1]
+            if type(last_stmt).__name__ == "ReturnStmt" and last_stmt.value is not None:
+                return_value = last_stmt.value
+                body = body[:-1]
+
+        # Evaluate comptime at parse time and register variable for type checking
+        from .comptime_eval import eval_comptime
+        try:
+            value = eval_comptime(
+                ComptimeStmt(name, var_type, body, return_value),
+                self.struct_defs,
+                self.func_sigs,
+                self.class_defs,
+            )
+        except Exception as e:
+            self.give_error(f"Error evaluating comptime '{name}': {e}")
+
+        # Register in module-level scope for type checking
+        self.declare_var(name, var_type)
+
+        return ComptimeStmt(name, var_type, body, return_value)
 
     def parse_for(self):
         tokens = self.current_line
@@ -3066,6 +3155,11 @@ class Parser:
                         f"Inconsistent return types in method: "
                         f"expected {self._inferred_ret}, got {detected}"
                     )
+                return ReturnStmt(detected, expr)
+            if self._in_comptime:
+                tokens = self.current_line
+                expr = self.parse_expr(tokens[1:])
+                detected = self.detect_expr_type(expr)
                 return ReturnStmt(detected, expr)
             self.give_error("Return outside function")
 
