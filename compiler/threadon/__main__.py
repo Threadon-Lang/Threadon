@@ -11,6 +11,9 @@ Examples::
     python3 -m threadon -o out.ll examples/02_structs/main.th
     python3 -m threadon --exe hello examples/01_hello/main.th
     python3 -m threadon --run -I ./lib examples/app/main.th
+    python3 -m threadon --run-tests                       # run every test.th suite
+    python3 -m threadon --run-tests path/to/test.th       # or a specific suite
+    python3 -m threadon --run-tests -k test_addition      # or only matching tests
 """
 
 import argparse
@@ -27,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from .compiler import compile_file
 from .importer import Importer
+from .test_harness import find_test_functions
 
 def _python_includes():
     """Include flags needed when compiling a Python-bridge module."""
@@ -301,17 +305,206 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
             raise SystemExit(f"error: {linker} failed:\n{result.stderr}")
 
 
+_PROJECT_MARKERS = (
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "MANIFEST.in",
+    ".git",
+    ".hg",
+)
+
+_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "__pycache__",
+    "build",
+    "dist",
+    "target",
+}
+
+
+def _is_skipped_dir(path, root):
+    """Skip matches inside heavy/vendored directories during discovery."""
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    return any(part in _SKIP_DIRS for part in rel.parts[:-1])
+
+
+def project_root(start):
+    """Nearest ancestor of ``start`` that looks like a project (or ``start``).
+
+    Never climbs into the home directory, so an accidental ``~/.git`` cannot
+    cause a scan of the whole home tree.
+    """
+    start = Path(start).resolve()
+    home = str(Path.home())
+    for cand in [start, *start.parents]:
+        if cand == cand.parent:
+            break
+        if str(cand) == home:
+            break
+        if any((cand / m).exists() for m in _PROJECT_MARKERS):
+            return cand
+    return start
+
+
+def discover_test_files(targets, cwd, include_paths):
+    """Locate every ``test.th`` suite to run.
+
+    With explicit ``targets`` (files or directories) only those are used.
+    Otherwise the project root above ``cwd`` (the nearest ancestor holding a
+    pyproject.toml/setup.py/.git/... marker), the ``-I`` include dirs and the
+    stdlib are scanned for ``test.th`` files -- never just the compiler
+    directory, no matter where the command was invoked from.
+    """
+    importer = Importer()
+    for inc in include_paths:
+        importer.add_search_path(inc)
+
+    files = {}
+
+    def add(path):
+        path = Path(path)
+        if path.is_file():
+            files.setdefault(str(path.resolve()), path)
+        elif path.is_dir():
+            for sub in sorted(path.rglob("test.th")):
+                if _is_skipped_dir(sub, path):
+                    continue
+                if sub.is_file():
+                    files.setdefault(str(sub.resolve()), sub)
+
+    if targets:
+        for t in targets:
+            add(t)
+    else:
+        add(project_root(cwd))
+        for search in importer.search_paths:
+            add(search)
+    return list(files.values())
+
+
+def run_one_test_file(path, include_paths, inline_threshold, debug_mode, flag_inf, test_filter=None):
+    """Compile and run a single ``test.th``.
+
+    Returns ``(returncode, stdout, stderr)`` on success, or
+    ``(None, "", error_text)`` if it could not be compiled.
+    """
+    if test_filter:
+        try:
+            names = find_test_functions(path.read_text(errors="replace"))
+        except OSError:
+            names = []
+        if not any(test_filter in n for n in names):
+            return 0, "", f"(no tests match '{test_filter}')"
+    importer = Importer()
+    importer.add_search_path(path.parent)
+    for inc in include_paths:
+        importer.add_search_path(inc)
+    try:
+        llvm = compile_file(
+            path,
+            importer=importer,
+            inline_threshold=inline_threshold,
+            debug_mode=debug_mode,
+            flag_inf=flag_inf,
+            test_filter=test_filter,
+        )
+    except BaseException as e:
+        return None, "", f"{type(e).__name__}: {e}"
+    final = dedupe_decls(
+        patch_llvm(llvm) + "\n" + build_harness(llvm, "main") + "\n"
+    )
+    mods = native_modules(importer)
+    try:
+        if mods:
+            with tempfile.TemporaryDirectory() as td:
+                libs = build_native_shared_libs(mods, output_dir=td)
+                result = run_llvm(
+                    final, capture=True, loads=libs,
+                    library_dirs=native_library_dirs(mods),
+                )
+        else:
+            result = run_llvm(final, capture=True)
+    except SystemExit as e:
+        return None, "", f"SystemExit: {e}"
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_test_suite(targets, include_paths, cwd, inline_threshold, debug_mode, flag_inf, test_filter=None):
+    """Run every discovered test suite, pytest-style, and return the exit code."""
+    files = discover_test_files(targets, cwd, include_paths)
+    if not files:
+        print("no test.th files found", flush=True)
+        return 1
+
+    n_files = 0
+    n_skipped = 0
+    n_failed = 0
+    for path in files:
+        n_files += 1
+        print(f"===== {path} =====", flush=True)
+        rc, stdout, stderr = run_one_test_file(
+            path, include_paths, inline_threshold, debug_mode, flag_inf,
+            test_filter=test_filter,
+        )
+        if stderr.startswith("(no tests match"):
+            n_skipped += 1
+            print(stderr, flush=True)
+            continue
+        if rc is None:
+            print(f"COLLECTION ERROR: {path}", flush=True)
+            if stderr:
+                print(stderr, flush=True)
+            n_failed += 1
+            continue
+        if stdout:
+            sys.stdout.write(stdout)
+            sys.stdout.flush()
+        if stderr:
+            sys.stderr.write(stderr)
+        if rc != 0:
+            n_failed += 1
+    print(flush=True)
+    print(f"{n_files} test file(s), {n_failed} failed", flush=True)
+    if test_filter and n_files == n_skipped:
+        print(f"note: no test_* function matched '{test_filter}'", flush=True)
+    return 1 if n_failed else 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="threadon",
         description="Compile a Threadon (.th) file (with its imports) to LLVM IR.",
     )
-    parser.add_argument("file", metavar="FILE.th", help="the Threadon source file")
+    parser.add_argument("file", metavar="FILE.th", nargs="*", help="the Threadon source file (or one or more test files/dirs with --run-tests)")
     parser.add_argument(
         "-o", "--output", metavar="FILE", help="write LLVM IR to FILE (default: stdout)"
     )
     parser.add_argument(
         "--run", action="store_true", help="execute the module with lli after compiling"
+    )
+    parser.add_argument(
+        "--run-tests",
+        action="store_true",
+        help="build and run every test.th suite (project root, -I paths and "
+        "stdlib; optionally a specific FILE or DIR)",
+    )
+    parser.add_argument(
+        "-k",
+        "--test-name",
+        metavar="PATTERN",
+        help="with --run-tests/--run on a test.th: only run test_* functions "
+        "whose name contains PATTERN",
     )
     parser.add_argument(
         "--exe",
@@ -350,7 +543,20 @@ def main(argv=None):
     
     args = parser.parse_args(argv)
 
-    path = Path(args.file)
+    if args.run_tests:
+        targets = [Path(f) for f in args.file]
+        return run_test_suite(
+            targets, args.include, Path.cwd(),
+            args.inline_threshold, args.debug, args.flag_inf,
+            test_filter=args.test_name,
+        )
+
+    if not args.file:
+        parser.error("FILE.th is required (or use --run-tests)")
+    if len(args.file) > 1:
+        parser.error("only one FILE.th may be compiled (use --run-tests for multiple)")
+
+    path = Path(args.file[0])
     if not path.is_file():
         parser.error(f"file not found: {path}")
 
@@ -365,6 +571,7 @@ def main(argv=None):
         inline_threshold=args.inline_threshold,
         debug_mode=args.debug,
         flag_inf=args.flag_inf,
+        test_filter=args.test_name,
     )
 
     if args.output:

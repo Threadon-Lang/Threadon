@@ -1024,6 +1024,34 @@ def g() -> Int32
     )
 
 
+@pytest.mark.parametrize(
+    "line,needle,marker",
+    [
+        ("    x: Float64 = 1e-", "Invalid number literal", "1"),
+        ("    a: Int32 = @", "Unrecognized token", "@"),
+        ('    s: String = f"unterminated', "Unterminated string literal", "f"),
+    ],
+)
+def test_lexical_error_reports_correct_line(capsys, line, needle, marker):
+    code = (
+        "def main() -> Int32\n"
+        '    print("ok")\n'
+        + line
+        + "\n"
+        + "    return 0\n"
+    )
+    with pytest.raises(SystemExit):
+        Parser().parse(code)
+    out = capsys.readouterr().out
+    assert f"at line 3" in out
+    assert f"Lexical error: {needle}" in out
+    shown = out.splitlines()
+    src_line = "  " + line
+    assert src_line in shown
+    caret = shown[shown.index(src_line) + 1]
+    assert caret == "  " + " " * line.index(marker) + "^"
+
+
 def test_division_by_zero_fails():
     parse_fail(
         """

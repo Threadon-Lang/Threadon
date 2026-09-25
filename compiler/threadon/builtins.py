@@ -196,9 +196,11 @@ def builtin_return_type(func_name, arg_types, aggregate_types=None):
 
     if func_name == "len":
         for arg_type in arg_types:
+            if arg_type == "String":
+                continue
             if not (is_list_type(arg_type) or is_dict_type(arg_type)):
                 raise ValueError(
-                    f"Function 'len' expects a List or Dict, got {arg_type}"
+                    f"Function 'len' expects a String, List or Dict, got {arg_type}"
                 )
         return "Int64"
 

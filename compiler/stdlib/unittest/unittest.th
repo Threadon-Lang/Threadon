@@ -1,0 +1,129 @@
+# Threadon unittest library (pytest-style, but small)
+#
+# Every Threadon module ships a file named `test.th` that imports this module
+# and defines one `test_*` function per test:
+#
+#   import unittest
+#
+#   def test_addition() -> Bool:
+#       return unittest.assert_true(1 + 1 == 2)
+#
+# A test function returns Bool: True means it passed. The usual idiom is to
+# `return unittest.assert_true(<condition>)` (or chain them with `and`).
+#
+# The compiler builds a `main` for the `test.th` file automatically: it runs
+# every module-level `def test_*()` function (in source order, optionally
+# preceded by a `setup()` and followed by a `teardown()`), prints one
+# [PASS]/[FAIL] line per test, prints a summary and returns the number of
+# failed tests as the process exit code. So `test.th` never defines `main`
+# itself.
+#
+# Run a single suite (or just the tests matching a name) with:
+#   python3 -m threadon --run path/to/test.th
+#   python3 -m threadon --run-tests -k test_addition
+# and discover/run every suite with:
+#   python3 -m threadon --run-tests
+#
+# Assertion helpers return Bool. They are Int32-specific because the language
+# has no overloading or generics; for other types write
+# `unittest.assert_true(a == b)`.
+
+def assert_true(cond: Bool, msg: String = "assertion failed") -> Bool
+    if cond:
+        return True
+    print("    FAIL", msg)
+    return False
+
+def assert_false(cond: Bool, msg: String = "assertion failed") -> Bool
+    if not cond:
+        return True
+    print("    FAIL", msg)
+    return False
+
+def fail(msg: String = "test failed") -> Bool
+    print("    FAIL", msg)
+    return False
+
+def assert_eq(actual: Int32, expected: Int32, msg: String = "assert_eq") -> Bool
+    if actual == expected:
+        return True
+    print("    FAIL", msg, ": expected", expected, "got", actual)
+    return False
+
+def assert_ne(actual: Int32, expected: Int32, msg: String = "assert_ne") -> Bool
+    if actual != expected:
+        return True
+    print("    FAIL", msg, ": got", actual)
+    return False
+
+def assert_lt(actual: Int32, other: Int32, msg: String = "assert_lt") -> Bool
+    if actual < other:
+        return True
+    print("    FAIL", msg, ": expected", actual, "<", other)
+    return False
+
+def assert_le(actual: Int32, other: Int32, msg: String = "assert_le") -> Bool
+    if actual <= other:
+        return True
+    print("    FAIL", msg, ": expected", actual, "<=", other)
+    return False
+
+def assert_gt(actual: Int32, other: Int32, msg: String = "assert_gt") -> Bool
+    if actual > other:
+        return True
+    print("    FAIL", msg, ": expected", actual, ">", other)
+    return False
+
+def assert_ge(actual: Int32, other: Int32, msg: String = "assert_ge") -> Bool
+    if actual >= other:
+        return True
+    print("    FAIL", msg, ": expected", actual, ">=", other)
+    return False
+
+def assert_approx(actual: Float64, expected: Float64, eps: Float64 = 0.000001) -> Bool
+    d: Float64 = actual - expected
+    if d < 0.0:
+        d = -d
+    if d <= eps:
+        return True
+    print("    FAIL assert_approx:", "expected", expected, "got", actual)
+    return False
+
+def assert_contains(haystack: String, needle: String) -> Bool
+    hl: Int64 = len(haystack)
+    nl: Int64 = len(needle)
+    if nl == 0:
+        return True
+    i: Int64 = 0
+    while i + nl <= hl:
+        if haystack[i:i + nl] == needle:
+            return True
+        i = i + 1
+    print("    FAIL assert_contains:", "missing", needle, "in", haystack)
+    return False
+
+def assert_starts_with(s: String, prefix: String) -> Bool
+    hl: Int64 = len(s)
+    pl: Int64 = len(prefix)
+    if pl == 0:
+        return True
+    if hl < pl:
+        print("    FAIL assert_starts_with:", s, "!~", prefix)
+        return False
+    if s[0:pl] == prefix:
+        return True
+    print("    FAIL assert_starts_with:", s, "!~", prefix)
+    return False
+
+def assert_ends_with(s: String, suffix: String) -> Bool
+    hl: Int64 = len(s)
+    sl: Int64 = len(suffix)
+    if sl == 0:
+        return True
+    if hl < sl:
+        print("    FAIL assert_ends_with:", s, "!~", suffix)
+        return False
+    if s[hl - sl:hl] == suffix:
+        return True
+    print("    FAIL assert_ends_with:", s, "!~", suffix)
+    return False

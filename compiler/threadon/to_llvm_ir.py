@@ -1791,7 +1791,7 @@ class LLVMIRCompiler:
             if rtype == "half":
                 fval = struct.unpack('<f', struct.pack('<f', fval))[0]
                 return f"{res} = fadd half 0.0, 0x{self._f64_hex(fval)}"
-            return f"{res} = fadd {rtype} 0.0, {fval}"
+            return f"{res} = fadd {rtype} 0.0, 0x{self._f64_hex(fval)}"
         if isinstance(val, int) or (isinstance(val, str) and '.' not in val):
             v = int(val)
             width = int(rtype[1:])
@@ -1801,7 +1801,7 @@ class LLVMIRCompiler:
             return f"{res} = add {rtype} 0, {v}"
         if isinstance(val, str):
             if '.' in val:
-                return f"{res} = fadd {rtype} 0.0, {val}"
+                return f"{res} = fadd {rtype} 0.0, 0x{self._f64_hex(float(val))}"
             return f"{res} = add {rtype} 0, {val}"
         return f"{res} = add {rtype} 0, 0"
     def _emit_string_const(self, res, val):
@@ -2056,7 +2056,12 @@ class LLVMIRCompiler:
         return f"; unknown builtin {fname}"
 
     def _emit_len(self, res, obj):
-        obj_llvm = self.to_llvm_type(obj.type)
+        obj_type = obj.type
+        if obj_type == "String":
+            self.used_c_runtime.add("strlen")
+            obj_op = self.operand(obj)
+            return [f"{res} = call i64 @strlen(i8* {obj_op})"]
+        obj_llvm = self.to_llvm_type(obj_type)
         obj_op = self.operand(obj)
         return [f"{res} = extractvalue {obj_llvm} {obj_op}, 0"]
 

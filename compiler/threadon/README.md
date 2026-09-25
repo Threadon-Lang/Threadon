@@ -27,6 +27,58 @@ It needs a libtorch installation (e.g. the one shipped with PyTorch). The
 include/lib paths in `stdlib/torch/manifest` use `$TORCH_ROOT`; if not set, the
 torch install of the running Python is detected automatically.
 
+## Unittests
+
+Threadon has a pytest-like `unittest` standard-library module. Every module in
+the standard library ships a `test.th` suite that uses it:
+
+```threadon
+import unittest
+
+def setup() -> Bool:
+    # optional: called once before the suite
+    return True
+
+def test_addition() -> Bool:
+    return unittest.assert_true(1 + 1 == 2)
+
+def test_subtraction() -> Bool:
+    return unittest.assert_eq(5 - 3, 2)
+
+def teardown() -> Bool:
+    # optional: called once after the suite
+    return True
+```
+
+A test function returns `Bool` — `True` means it passed — so the idiom is
+`return unittest.assert_true(<condition>)`. Assertion helpers (all return
+`Bool`, and are Int32-specific because the language has no overloading):
+`assert_true`, `assert_false`, `fail`, `assert_eq`, `assert_ne`,
+`assert_lt`, `assert_le`, `assert_gt`, `assert_ge`, `assert_approx`
+(Float64), `assert_contains`, `assert_starts_with`, `assert_ends_with`
+(String). For other types write `unittest.assert_true(a == b)`. See
+`stdlib/unittest/unittest.th`.
+
+The compiler automatically adds a `main` to any file named `test.th`: it runs
+every module-level `def test_*()` function in source order (between the
+optional `setup()` and `teardown()`), prints a `[PASS]`/`[FAIL]` line per test
+plus a summary, and returns the number of failed tests as the exit code. So
+`test.th` never defines `main` itself.
+
+Run a single suite with `python3 -m threadon --run path/to/test.th`, only the
+tests matching a name with `-k`:
+
+```
+python3 -m threadon --run-tests
+python3 -m threadon --run-tests -k test_addition
+```
+
+`--run-tests` discovers every `test.th` under the project root (the nearest
+ancestor with a `pyproject.toml`/`setup.py`/`.git`/... marker), the `-I`
+include paths and the stdlib — from anywhere below the project, not just the
+compiler directory. `pip install .` also compiles and runs the bundled
+`stdlib` suites as a self-test (disable with `THREADON_SKIP_INSTALL_TESTS=1`).
+
 ## TODO's
 
 ### adding libraries:

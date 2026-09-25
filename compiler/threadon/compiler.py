@@ -6,6 +6,7 @@ from pathlib import Path
 from .checker import CombinedChecker
 from .importer import Importer
 from .optimalise_ir import IROptimizer
+from .test_harness import generate_test_harness
 from .to_high_ir import SSABuilder
 from .to_llvm_ir import LLVMIRCompiler
 
@@ -58,13 +59,16 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
     )
 
 
-def compile_file(path, importer=None, inline_threshold=0, debug_mode=False, flag_inf=False):
+def compile_file(path, importer=None, inline_threshold=0, debug_mode=False, flag_inf=False, test_filter=None):
     """Compile a Threadon file (plus its imports) to LLVM IR."""
     path = Path(path)
     importer = importer or Importer()
     importer.add_search_path(path.parent)
+    source = path.read_text()
+    if path.name == "test.th":
+        source = generate_test_harness(source, test_filter=test_filter)
     return compile_source(
-        path.read_text(),
+        source,
         importer=importer,
         inline_threshold=inline_threshold,
         debug_mode=debug_mode,
