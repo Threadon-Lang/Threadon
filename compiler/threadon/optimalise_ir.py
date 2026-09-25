@@ -91,7 +91,7 @@ class IROptimizer:
             return val
         if isinstance(val, str):
             try:
-                if '.' in val and not val.startswith('"'):
+                if ('e' in val or 'E' in val or '.' in val) and not val.startswith('"'):
                     return float(val)
                 return int(val)
             except ValueError:

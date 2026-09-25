@@ -141,6 +141,11 @@ def run_llvm(llvm, input=None, loads=None):
         for so in (loads or []):
             cmd.append("-load")
             cmd.append(str(so))
+        import ctypes.util
+        libatomic = ctypes.util.find_library("atomic")
+        if libatomic:
+            cmd.append("-load")
+            cmd.append(libatomic)
         cmd.append(path)
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=60, input=input
@@ -444,6 +449,48 @@ def main() -> Int32
     result = run_llvm(compile_source(source, importer=Importer(), debug_mode=True))
     assert result.returncode == 0, result.stderr
     assert result.stdout == "inf\n"
+
+
+def test_signed_exponent_float_literals():
+    source = """
+def main() -> Int32
+    a: Float64 = 1e-3
+    b: Float32 = 1.5e-2
+    c: Float64 = 2.5e3
+    d: Float64 = 1e+2
+    print(a, b, c, d)
+    print(2e2, 1.23e1, 1e-1)
+    return 0
+"""
+    result = run_llvm(compile_source(source, importer=Importer(), debug_mode=True))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "0.001000 0.015000 2500.000000 100.000000\n200.000000 12.300000 0.100000\n"
+
+
+def test_module_level_float_exponent_literal():
+    source = """
+rate: Float64 = 1e-3
+def main() -> Int32
+    print(rate)
+    return 0
+"""
+    result = run_llvm(compile_source(source, importer=Importer(), debug_mode=True))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "0.001000\n"
+
+
+def test_exponent_float_constant_folding():
+    source = """
+def main() -> Int32
+    x: Float64 = 1e-3 + 2.0e-3
+    y: Float64 = 1e-3 * 4.0
+    z: Float64 = 1e-3 / 2.0e-3
+    print(x, y, z)
+    return 0
+"""
+    result = run_llvm(compile_source(source, importer=Importer(), debug_mode=True))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "0.003000 0.004000 0.500000\n"
 
 
 def test_none_type_variables():
@@ -1103,6 +1150,9 @@ if __name__ == "__main__":
     test_float_inf_constant_allowed_without_flag()
     test_float_inf_runtime_errors_with_flag()
     test_float_div_zero_not_folded()
+    test_signed_exponent_float_literals()
+    test_module_level_float_exponent_literal()
+    test_exponent_float_constant_folding()
     test_none_type_variables()
     test_print_none_type()
     test_list_literal_get_set_print()

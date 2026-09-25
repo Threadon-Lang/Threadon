@@ -646,6 +646,32 @@ def f(a: Float32, b: Float32, c: Float32) -> Float32
     )
 
 
+def test_exponent_number_literal_is_float():
+    ast = parse_ok(
+        """
+def f(a: Float64 = 1e-3, b: Float64 = 1.5e2, c: Float64 = 2e+3) -> Float64
+    return a + b + c
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    for _, _, default in func.params:
+        assert default.type in ("Float32", "Float64")
+
+
+def test_exponent_without_dot_is_float_not_int():
+    ast = parse_ok(
+        """
+def f() -> Float64
+    x: Float64 = 2e2
+    return x
+"""
+    )
+    func = next(n for n in ast if type(n).__name__ == "FunctionDef")
+    stmt = func.body[0]
+    assert stmt.expr.type in ("Float32", "Float64")
+    assert stmt.expr.value.value == "2e2"
+
+
 def test_multiple_calls_parse():
     parse_ok(
         """

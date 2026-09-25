@@ -1,3 +1,5 @@
+import re
+
 from .builtins import (
     ALL_INT_TYPES,
     BUILTIN_SIGS,
@@ -219,7 +221,7 @@ class Parser:
         self.push_scope()
         self._for_seq = 0
         self._loop_depth = 0
-    def give_error(self, msg, line_num=None):
+    def give_error(self, msg, line_num=None, col=None):
         RED = "\033[91m"
         BOLD = "\033[1m"
         RESET = "\033[0m"
@@ -234,7 +236,10 @@ class Parser:
             line = self.original_lines[line_num - 1]
             print(f"  {line}")
 
-            caret_pos = len(line) - len(line.lstrip(" "))
+            if col is not None:
+                caret_pos = max(0, col - 1)
+            else:
+                caret_pos = len(line) - len(line.lstrip(" "))
             print("  " + " " * caret_pos + "^")
 
         raise SystemExit
@@ -922,6 +927,13 @@ class Parser:
         try:
             self.lexed_lines = lex_lines(code)
         except SyntaxError as e:
+            line_num = None
+            col = None
+            m = re.match(r"^(.*) at line (\d+), col (\d+)$", str(e))
+            if m:
+                line_num = int(m.group(2))
+                col = int(m.group(3))
+                self.give_error(f"Lexical error: {m.group(1)}", line_num=line_num, col=col)
             self.give_error(f"Lexical error: {e}")
 
         if not self.module_name:
@@ -2218,7 +2230,7 @@ class Parser:
                 if tok.type in (TokenType.FSTRING, TokenType.TSTRING):
                     return self.parse_interpolated_string(tok)
                 if tok.type == TokenType.NUMBER:
-                    lit_type = "Float32" if "." in tok.value else "Int32"
+                    lit_type = "Float32" if ("." in tok.value or "e" in tok.value or "E" in tok.value) else "Int32"
                     return LiteralExpr(tok, lit_type)
                 if tok.type in (TokenType.TRUE, TokenType.FALSE):
                     return LiteralExpr(tok, "Bool")

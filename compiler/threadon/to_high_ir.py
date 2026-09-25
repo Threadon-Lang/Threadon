@@ -2,6 +2,7 @@ from collections import defaultdict
 
 from .builtins import (
     BUILTIN_SIGS,
+    FLOAT_TYPES,
     common_numeric_type,
     is_union_type,
     union_members,
@@ -772,7 +773,10 @@ class SSABuilder:
             if isinstance(node.expr, LiteralExpr):
                 token = node.expr.value
                 if token.type == TokenType.NUMBER:
-                    init_val = int(token.value)
+                    if var_type in FLOAT_TYPES or "e" in token.value or "." in token.value:
+                        init_val = float(token.value)
+                    else:
+                        init_val = int(token.value)
                 elif token.type == TokenType.TRUE:
                     init_val = True
                 elif token.type == TokenType.FALSE:

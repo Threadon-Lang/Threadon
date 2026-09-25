@@ -214,6 +214,30 @@ def test_float_with_exponent():
     assert tokens[0].value == "1.23e10"
 
 
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("1e-3", "1e-3"),
+        ("1e+3", "1e+3"),
+        ("1E-5", "1E-5"),
+        ("1.5e-2", "1.5e-2"),
+        ("2.5e+2", "2.5e+2"),
+        ("4e-9", "4e-9"),
+    ],
+)
+def test_float_with_signed_exponent(source, expected):
+    tokens = lex(source)
+    assert tokens[0].type == TokenType.NUMBER
+    assert tokens[0].value == expected
+    assert tokens[1].type == TokenType.EOF
+
+
+@pytest.mark.parametrize("bad", ["1e-", "1e+", "1.5e-", "2e+-3"])
+def test_invalid_signed_exponent_literal(bad):
+    with pytest.raises(SyntaxError):
+        lex(bad)
+
+
 def test_number_with_multiple_underscores():
     tokens = lex("1_000_000")
     assert tokens[0].type == TokenType.NUMBER

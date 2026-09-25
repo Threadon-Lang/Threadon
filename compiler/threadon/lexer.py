@@ -331,6 +331,10 @@ class Lexer:
                 result += ch
                 self.advance()
 
+                if self.current_char is not None and self.current_char in "+-":
+                    result += self.current_char
+                    self.advance()
+
                 if self.current_char is None or not self.current_char.isdigit():
                     raise SyntaxError(f"Invalid number literal at line {start_line}, col {start_col}")
 
@@ -544,7 +548,9 @@ class Lexer:
                 self.advance()
                 return Token(TokenType.PIPE, "|")
 
-            raise SyntaxError(f"Unrecognized token: {self.current_char}")
+            raise SyntaxError(
+                f"Unrecognized token: {self.current_char} at line {self.line}, col {self.col}"
+            )
 
         return Token(TokenType.EOF, None)
 
