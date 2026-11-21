@@ -1,0 +1,8 @@
+flag: Bool = False
+thread Conditional() on flag:
+    print("will run")
+
+def main() -> Int32
+    flag = True
+    print("no thread was spawned")
+    return 0

@@ -1770,27 +1770,33 @@ def main() -> Int32
 
 
 def test_module_variable_atomic_race():
-    # Two threads increment a shared global many times; final value is non‑deterministic
-    result = compile_stdlib_run(
-        """
+    # Two threads increment a shared global many times.  Each increment must
+    # be an atomic read-modify-write, otherwise updates are lost.
+    source = """
 counter: Int32 = 0
+finished: Int32 = 0
 
 thread IncA() on True:
     for _ in range(0, 50):
         counter += 1
+    finished += 1
 
 thread IncB() on True:
     for _ in range(0, 50):
         counter += 1
+    finished += 1
 
 def main() -> Int32
+    while finished < 2:
+        counter = counter + 0
     print("counter =", counter)
     return 0
 """
-    )
+    llvm = compile_source(source, importer=Importer())
+    assert "atomicrmw add i32* @counter" in llvm
+    result = run_llvm(llvm)
     assert result.returncode == 0, result.stderr
-    # just ensure it runs and prints something; value will vary
-    assert "counter =" in result.stdout
+    assert "counter = 100" in result.stdout
 
 
 def test_thread_inside_function_error():

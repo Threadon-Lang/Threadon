@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from .builtins import (
+    ALL_INT_TYPES,
     BUILTIN_SIGS,
     FLOAT_TYPES,
     common_numeric_type,
@@ -1499,7 +1500,68 @@ class SSABuilder:
                 rhs,
             )
 
+    # Operations that LLVM's ``atomicrmw`` supports on integer globals.
+    _ATOMIC_RMW_OPS = {
+        "+": "add",
+        "-": "sub",
+        "&": "and",
+        "|": "or",
+        "^": "xor",
+    }
+
+    def _emit_global_rmw(self, node):
+        """Emit a compound assignment to a module global as one atomic update.
+
+        ``counter += 1`` is parsed as
+        ``Assign(counter, BinaryExpr(VarExpr(counter), '+', 1))``.  Lowering it
+        to an atomic *load*, an ``add`` and an atomic *store* lets two threads
+        read the same old value and lose one of the increments.  ``atomicrmw``
+        performs the whole read-modify-write indivisibly instead.
+
+        Returns True if an atomic RMW was emitted.
+        """
+        if (
+            not hasattr(self, 'module_var_names')
+            or node.name not in self.module_var_names
+        ):
+            return False
+
+        expr = node.expr
+        if not isinstance(expr, BinaryExpr):
+            return False
+        rmw_op = self._ATOMIC_RMW_OPS.get(expr.op)
+        if rmw_op is None:
+            return False
+        if not isinstance(expr.left, VarExpr) or expr.left.name != node.name:
+            return False
+
+        var_type = self._type_of_module_var(node.name)
+        # atomicrmw is only available for integer types up to 64 bits.
+        if var_type not in ALL_INT_TYPES or var_type in ("Int256", "UInt256"):
+            return False
+
+        rhs = self.emit_expr(expr.right)
+        if rhs.type != var_type:
+            # Keep LLVM's atomic operands the same width as the global.
+            cast = self.new_temp(var_type)
+            self.current_block.add_instr(
+                IRInstr("cast", [rhs, var_type], result=cast)
+            )
+            rhs = cast
+
+        self.current_block.add_instr(
+            IRInstr(
+                "global_rmw",
+                [node.name, rmw_op, rhs],
+                result=None,
+            )
+        )
+        return True
+
     def emit_assign(self, node):
+        if self._emit_global_rmw(node):
+            return
+
         rhs = self.emit_expr(node.expr)
 
         if hasattr(self, 'module_var_names') and node.name in self.module_var_names:

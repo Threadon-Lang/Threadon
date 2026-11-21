@@ -1626,6 +1626,18 @@ class LLVMIRCompiler:
                 out.append(f"store atomic i8 {tmp}, i8* @{name} seq_cst, align 1")
                 return out
             return f"store atomic {llvm_type} {val_op}, {llvm_type}* @{name} seq_cst, align 4"
+        if op == "global_rmw":
+            name = instr.args[0]
+            rmw_op = instr.args[1]
+            rhs = instr.args[2]
+            llvm_type = self.to_llvm_type(rhs.type)
+            val_op = self.operand(rhs)
+            # The result is the old value; the assignment itself has no value.
+            old = self._fresh_reg("grmw")
+            return (
+                f"{old} = atomicrmw {rmw_op} {llvm_type}* @{name}, "
+                f"{llvm_type} {val_op} seq_cst"
+            )
         if op == "cast":
             return self._emit_cast(res, rtype, instr.args[0], instr.args[1])
         if op == "phi":
