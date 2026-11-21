@@ -1,0 +1,16 @@
+# Count primes below 20000 by trial division.
+# Same algorithm and constants as primes.cpp / primes.py.
+def main() -> Int32
+    limit: Int64 = 20000
+    count: Int64 = 0
+    for n in range(2, limit):
+        prime: Bool = True
+        d: Int64 = 2
+        while d * d <= n and prime:
+            if n % d == 0:
+                prime = False
+            d += 1
+        if prime:
+            count += 1
+    print(count)
+    return 0

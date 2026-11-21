@@ -1,0 +1,22 @@
+# Mandelbrot escape-time checksum.
+# Same algorithm and constants as mandelbrot.cpp / mandelbrot.py.
+def main() -> Int32
+    width: Int64 = 256
+    height: Int64 = 256
+    max_iter: Int32 = 255
+    checksum: Int32 = 0
+    for py in range(0, height):
+        ci: Float64 = -1.0 + Float64(py) * 2.0 / Float64(height)
+        for px in range(0, width):
+            cr: Float64 = -2.0 + Float64(px) * 3.0 / Float64(width)
+            zr: Float64 = 0.0
+            zi: Float64 = 0.0
+            n: Int32 = 0
+            while n < max_iter and zr * zr + zi * zi <= 4.0:
+                tmp: Float64 = zr * zr - zi * zi + cr
+                zi = 2.0 * zr * zi + ci
+                zr = tmp
+                n += 1
+            checksum += n
+    print(checksum)
+    return 0
