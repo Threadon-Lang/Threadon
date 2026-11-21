@@ -322,3 +322,24 @@ class TestParserImportNode:
         imp = Importer()
         with pytest.raises(SystemExit):
             self.parse(imp, "from no.module import x\n")
+
+
+def test_expand_native_flags_skips_torch_for_regular_modules(monkeypatch):
+    from compiler.threadon import importer as importer_module
+
+    called = []
+    monkeypatch.setattr(
+        importer_module,
+        "default_torch_root",
+        lambda: called.append(True) or "/unused",
+    )
+
+    class Module:
+        flags = ["-std=c++17"]
+        links = ["m"]
+
+    assert importer_module.expand_native_flags(Module()) == (
+        ["-std=c++17"],
+        ["m"],
+    )
+    assert called == []

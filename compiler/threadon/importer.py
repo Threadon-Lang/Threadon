@@ -376,7 +376,15 @@ def default_torch_root():
 
 
 def expand_native_flags(module):
-    os.environ.setdefault("TORCH_ROOT", default_torch_root())
+    # Only modules that actually reference $TORCH_ROOT need torch installed.
+    # Importing torch costs ~2s, so don't do it for every native module (e.g.
+    # the `time` stdlib module). Note that
+    # `os.environ.setdefault("TORCH_ROOT", default_torch_root())` would still
+    # evaluate default_torch_root() even when TORCH_ROOT is already set.
+    raw_flags = " ".join((module.flags or []) + (module.links or []))
+    if "$TORCH_ROOT" in raw_flags or "${TORCH_ROOT}" in raw_flags:
+        if "TORCH_ROOT" not in os.environ:
+            os.environ["TORCH_ROOT"] = default_torch_root()
     flags = [os.path.expandvars(f) for f in (module.flags or [])]
     links = [os.path.expandvars(l) for l in (module.links or [])]
     return flags, links
