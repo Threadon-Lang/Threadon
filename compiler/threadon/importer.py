@@ -291,6 +291,7 @@ class Module:
         self.source = source
         self.ast = ast
         self.func_sigs = {}
+        self.func_var_sigs = {}
         self.struct_defs = {}
         self.class_defs = {}
         self.class_ast = {}
@@ -1093,6 +1094,7 @@ class Importer:
 
         module = Module(name, source, ast)
         module.func_sigs = parser.func_sigs
+        module.func_var_sigs = parser.func_var_sigs
         module.struct_defs = parser.struct_defs
         module.class_defs = parser.class_defs
         module.class_ast = parser.class_ast

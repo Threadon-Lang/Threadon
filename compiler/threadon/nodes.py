@@ -16,6 +16,8 @@ class FunctionDef(Node):
     return_type: str
     body: list[list]
     pure: bool = False
+    var_arg: tuple | None = None
+    kw_arg: tuple | None = None
 
     def __repr__(self):
         return (
@@ -65,6 +67,9 @@ class VarExpr(Expr):
 class CallExpr(Expr):
     func_name: str
     args: list
+    star_args: list | None = None
+    star_kwargs: list | None = None
+    kwargs: list | None = None
 
 @dataclass
 class ExprStmt(Node):
@@ -139,12 +144,18 @@ class MethodCallExpr(Expr):
     func_name: str | None = None
     ret_type: str | None = None
     obj_type: str | None = None
+    star_args: list | None = None
+    star_kwargs: list | None = None
+    kwargs: list | None = None
 
 @dataclass
 class ClassInitExpr(Expr):
     class_name: str
     args: list
     init_name: str | None = None
+    star_args: list | None = None
+    star_kwargs: list | None = None
+    kwargs: list | None = None
 
 @dataclass
 class AttrDecl(Node):

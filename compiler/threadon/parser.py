@@ -191,6 +191,7 @@ class Parser:
         self.indent_stack = [0]
         self.struct_defs = {}
         self.func_sigs = {}
+        self.func_var_sigs = {}
         self.aliases = {}
         self.qfunc = {}
         self.qstruct = {}
@@ -511,6 +512,7 @@ class Parser:
         self.class_method_map[qmember] = mod.class_method_map[qmember]
         for method_name, func_name in mod.class_method_map[qmember].items():
             self.func_sigs[func_name] = mod.func_sigs[func_name]
+            self.func_var_sigs[func_name] = mod.func_var_sigs.get(func_name, (None, None))
         base = mod.class_ast[qmember].base
         if base is not None:
             self._copy_class_recursive(base, mod)
@@ -521,6 +523,7 @@ class Parser:
         if name in mod.func_exports:
             self.func_import_aliases[bound] = qmember
             self.func_sigs[qmember] = mod.func_sigs[qmember]
+            self.func_var_sigs[qmember] = mod.func_var_sigs.get(qmember, (None, None))
         elif name in mod.struct_exports:
             self.struct_import_aliases[bound] = qmember
             self.struct_defs[qmember] = mod.struct_defs[qmember]
@@ -553,7 +556,13 @@ class Parser:
             self.bind_import(mod, module_path, name, bound)
 
     def _split_call_args(self, ts, start):
-        args = []
+        """Split a call's tokens into positional, *args, **kwargs and keyword parts."""
+        positional = []
+        star_args = []
+        star_kwargs = []
+        kwargs = []
+        segments = []
+
         depth = 0
         current = []
         j = start
@@ -571,14 +580,30 @@ class Parser:
                 depth -= 1
                 current.append(tok)
             elif tok.type == TokenType.COMMA and depth == 0:
-                args.append(self.parse_expr(current))
+                if current:
+                    segments.append(current)
                 current = []
             else:
                 current.append(tok)
             j += 1
         if current:
-            args.append(self.parse_expr(current))
-        return args
+            segments.append(current)
+
+        for segment in segments:
+            if len(segment) >= 2 and segment[0].type == TokenType.POWER:
+                star_kwargs.append(self.parse_expr(segment[1:]))
+            elif len(segment) >= 2 and segment[0].type == TokenType.MUL:
+                star_args.append(self.parse_expr(segment[1:]))
+            elif (
+                len(segment) >= 3
+                and segment[0].type == TokenType.IDENT
+                and segment[1].type == TokenType.ASSIGN
+            ):
+                kwargs.append((segment[0].value, self.parse_expr(segment[2:])))
+            else:
+                positional.append(self.parse_expr(segment))
+
+        return positional, star_args, star_kwargs, kwargs
 
     def parse_import(self):
         tokens = self.current_line
@@ -671,6 +696,7 @@ class Parser:
             if member in mod.func_exports:
                 self.func_import_aliases[name] = qmember
                 self.func_sigs[qmember] = mod.func_sigs[qmember]
+                self.func_var_sigs[qmember] = mod.func_var_sigs.get(qmember, (None, None))
                 del self.lazy_imports[name]
                 return qmember
             if member in mod.struct_exports:
@@ -891,6 +917,7 @@ class Parser:
 
         if member in mod.func_exports:
             self.func_sigs[qmember] = mod.func_sigs[qmember]
+            self.func_var_sigs[qmember] = mod.func_var_sigs.get(qmember, (None, None))
             return qmember, "func"
         if member in mod.struct_exports:
             self.struct_defs[qmember] = mod.struct_defs[qmember]
@@ -958,6 +985,7 @@ class Parser:
             qname = f"std.{name}"
             self.func_import_aliases[name] = qname
             self.func_sigs[qname] = mod.func_sigs[qname]
+            self.func_var_sigs[qname] = mod.func_var_sigs.get(qname, (None, None))
         for name in sorted(mod.struct_exports):
             qname = f"std.{name}"
             self.struct_import_aliases[name] = qname
@@ -1189,16 +1217,39 @@ class Parser:
         is_init = method_name == "__init__"
 
         params = []
+        var_arg = None
+        kw_arg = None
+        seen_variadic = False
+        seen_kw = False
         i = 3
         seen_self = False
 
         while i < len(tokens) and tokens[i].type != TokenType.RPAREN:
-            if tokens[i].type != TokenType.IDENT:
+            kind = "fixed"
+            if tokens[i].type == TokenType.MUL:
+                kind = "var"
+                i += 1
+            elif tokens[i].type == TokenType.POWER:
+                kind = "kw"
+                i += 1
+
+            if kind == "fixed" and seen_variadic:
+                self.give_error("Variadic parameters must come last, *args before **kwargs")
+            if kind == "var" and seen_variadic:
+                self.give_error("Variadic parameters must come last, *args before **kwargs")
+            if kind == "kw" and seen_kw:
+                self.give_error("Variadic parameters must come last, *args before **kwargs")
+            if kind != "fixed":
+                seen_variadic = True
+            if kind == "kw":
+                seen_kw = True
+
+            if i >= len(tokens) or tokens[i].type != TokenType.IDENT:
                 self.give_error("Expected parameter name")
             param_name = tokens[i].value
             i += 1
 
-            if not seen_self and param_name == "self":
+            if not seen_self and kind == "fixed" and param_name == "self":
                 seen_self = True
                 if i < len(tokens) and tokens[i].type == TokenType.COLON:
                     i += 1
@@ -1221,6 +1272,8 @@ class Parser:
 
             default = None
             if i < len(tokens) and tokens[i].type == TokenType.ASSIGN:
+                if kind != "fixed":
+                    self.give_error(f"Variadic parameter '{param_name}' cannot have a default value")
                 i += 1
                 default_tokens = []
                 depth = 0
@@ -1241,7 +1294,14 @@ class Parser:
                     self.give_error("Expected default value after '='")
                 default = self.parse_expr(default_tokens)
 
-            params.append((param_name, param_type, default))
+            if kind == "fixed":
+                params.append((param_name, param_type, default))
+            else:
+                spec = self._make_variadic_spec(kind, param_name, param_type)
+                if kind == "var":
+                    var_arg = spec
+                else:
+                    kw_arg = spec
 
             if i < len(tokens) and tokens[i].type == TokenType.COMMA:
                 i += 1
@@ -1269,6 +1329,10 @@ class Parser:
             (pname, self.resolve_type(ptype), pdefault)
             for pname, ptype, pdefault in params
         ]
+        if var_arg is not None:
+            var_arg = (var_arg[0], self.resolve_type(var_arg[1]), var_arg[2])
+        if kw_arg is not None:
+            kw_arg = (kw_arg[0], self.resolve_type(kw_arg[1]), kw_arg[2])
         if return_type is not None:
             return_type = self.resolve_type(return_type)
 
@@ -1283,6 +1347,7 @@ class Parser:
             )
 
         self._validate_params_defaults(params, func_name)
+        self._append_variadic_params(params, var_arg, kw_arg)
 
         if is_init:
             return_type = self.current_class
@@ -1291,6 +1356,7 @@ class Parser:
 
         if return_type is not None:
             self.func_sigs[func_name] = (params, return_type)
+        self.func_var_sigs[func_name] = (var_arg, kw_arg)
 
         self.class_method_map.setdefault(self.current_class, {})[method_name] = func_name
 
@@ -1342,7 +1408,8 @@ class Parser:
                     f"Method '__str__' must return a String, got {return_type}"
                 )
 
-        return FunctionDef(func_name, params, return_type, func_body, is_pure)
+        return FunctionDef(func_name, params, return_type, func_body, is_pure,
+                           var_arg, kw_arg)
 
     def _validate_params_defaults(self, params, func_name):
         seen_default = False
@@ -1451,10 +1518,9 @@ class Parser:
         return None
 
     def parse_class_init(self, class_name, tokens):
-        args = []
-        if tokens:
-            args = self._split_call_args(tokens, 0)
-        return ClassInitExpr(class_name, args)
+        args, star_args, star_kwargs, kwargs = self._split_call_args(tokens, 0)
+        return ClassInitExpr(class_name, args, star_args=star_args,
+                             star_kwargs=star_kwargs, kwargs=kwargs)
 
     def parse_if(self):
         tokens = self.current_line
@@ -1929,7 +1995,9 @@ class Parser:
         if len(ts) < 3 or ts[-1].type != TokenType.RPAREN:
             self.give_error("Unmatched '(' in range() call")
 
-        args = self._split_call_args(ts, 2)
+        args, star_args, star_kwargs, kwargs = self._split_call_args(ts, 2)
+        if star_args or star_kwargs or kwargs:
+            self.give_error("range() does not accept keyword or spread arguments")
 
         if len(args) < 1:
             self.give_error("range() expects 1 to 3 arguments")
@@ -1951,6 +2019,24 @@ class Parser:
 
         return CallExpr("std.range", [start, stop, step])
 
+    def _make_variadic_spec(self, kind, name, ptype):
+        if kind == "var":
+            if not is_list_type(ptype):
+                self.give_error("*args parameter must have type List[T]")
+            return (name, ptype, ptype[5:-1])
+        if not is_dict_type(ptype):
+            self.give_error("**kwargs parameter must have type Dict[String, T]")
+        key_type, val_type = dict_kv_types(ptype)
+        if key_type != "String":
+            self.give_error("**kwargs parameter must have type Dict[String, T]")
+        return (name, ptype, val_type)
+
+    def _append_variadic_params(self, params, var_arg, kw_arg):
+        if var_arg is not None:
+            params.append((var_arg[0], var_arg[1], None))
+        if kw_arg is not None:
+            params.append((kw_arg[0], kw_arg[1], None))
+
     def parse_function(self):
         tokens = self.current_line
         is_pure = tokens[0].type == TokenType.PUREDEF
@@ -1962,15 +2048,38 @@ class Parser:
         func_name = tokens[1].value
 
         params = []
+        var_arg = None
+        kw_arg = None
+        seen_variadic = False
+        seen_kw = False
         i = 3
 
         while i < len(tokens) and tokens[i].type != TokenType.RPAREN:
-            if tokens[i].type != TokenType.IDENT:
+            kind = "fixed"
+            if tokens[i].type == TokenType.MUL:
+                kind = "var"
+                i += 1
+            elif tokens[i].type == TokenType.POWER:
+                kind = "kw"
+                i += 1
+
+            if kind == "fixed" and seen_variadic:
+                self.give_error("Variadic parameters must come last, *args before **kwargs")
+            if kind == "var" and seen_variadic:
+                self.give_error("Variadic parameters must come last, *args before **kwargs")
+            if kind == "kw" and seen_kw:
+                self.give_error("Variadic parameters must come last, *args before **kwargs")
+            if kind != "fixed":
+                seen_variadic = True
+            if kind == "kw":
+                seen_kw = True
+
+            if i >= len(tokens) or tokens[i].type != TokenType.IDENT:
                 self.give_error("Expected parameter name")
             param_name = tokens[i].value
             i += 1
 
-            if tokens[i].type != TokenType.COLON:
+            if i >= len(tokens) or tokens[i].type != TokenType.COLON:
                 self.give_error("Expected ':' after parameter name")
             i += 1
 
@@ -1981,6 +2090,8 @@ class Parser:
 
             default = None
             if i < len(tokens) and tokens[i].type == TokenType.ASSIGN:
+                if kind != "fixed":
+                    self.give_error(f"Variadic parameter '{param_name}' cannot have a default value")
                 i += 1
                 default_tokens = []
                 depth = 0
@@ -2001,7 +2112,14 @@ class Parser:
                     self.give_error("Expected default value after '='")
                 default = self.parse_expr(default_tokens)
 
-            params.append((param_name, param_type, default))
+            if kind == "fixed":
+                params.append((param_name, param_type, default))
+            else:
+                spec = self._make_variadic_spec(kind, param_name, param_type)
+                if kind == "var":
+                    var_arg = spec
+                else:
+                    kw_arg = spec
 
             if i < len(tokens) and tokens[i].type == TokenType.COMMA:
                 i += 1
@@ -2025,6 +2143,10 @@ class Parser:
             (pname, self.resolve_type(ptype), pdefault)
             for pname, ptype, pdefault in params
         ]
+        if var_arg is not None:
+            var_arg = (var_arg[0], self.resolve_type(var_arg[1]), var_arg[2])
+        if kw_arg is not None:
+            kw_arg = (kw_arg[0], self.resolve_type(kw_arg[1]), kw_arg[2])
         return_type = self.resolve_type(return_type)
 
         seen_default = False
@@ -2060,8 +2182,11 @@ class Parser:
                         f"type {ptype}, got {default_type}"
                     )
 
+        self._append_variadic_params(params, var_arg, kw_arg)
+
         self.qfunc[func_name] = func_name_q
         self.func_sigs[func_name_q] = (params, return_type)
+        self.func_var_sigs[func_name_q] = (var_arg, kw_arg)
 
         self.current_function = func_name_q
         self._in_function = True
@@ -2079,7 +2204,8 @@ class Parser:
         if return_type != "NoneType" and not self.all_paths_return(func_body):
             self.give_error("Function must return a value on all code paths")
 
-        return FunctionDef(func_name_q, params, return_type, func_body, is_pure)
+        return FunctionDef(func_name_q, params, return_type, func_body, is_pure,
+                           var_arg, kw_arg)
 
     def all_paths_return(self, stmts):
         if not stmts:
@@ -2224,8 +2350,9 @@ class Parser:
             if ts[-1].type != TokenType.RPAREN:
                 self.give_error("Unmatched '(' in call")
 
-            args = self._split_call_args(ts, i + 1)
-            return CallExpr(qname, args)
+            args, star_args, star_kwargs, kwargs = self._split_call_args(ts, i + 1)
+            return CallExpr(qname, args, star_args=star_args,
+                            star_kwargs=star_kwargs, kwargs=kwargs)
 
         def factor(ts):
             qualified = parse_qualified_call(ts)
@@ -2272,8 +2399,9 @@ class Parser:
                 func_name = self.resolve_func_name(ts[0].value)
                 if func_name == "std.range":
                     return self._parse_range_call(ts)
-                args = self._split_call_args(ts, 2)
-                return CallExpr(func_name, args)
+                args, star_args, star_kwargs, kwargs = self._split_call_args(ts, 2)
+                return CallExpr(func_name, args, star_args=star_args,
+                                star_kwargs=star_kwargs, kwargs=kwargs)
 
             if len(ts) == 1:
                 tok = ts[0]
@@ -2457,8 +2585,11 @@ class Parser:
                                 break
                     if end is None:
                         self.give_error("Unmatched '(' in method call")
-                    args = self._split_call_args(rest[3:end], 0)
-                    base = MethodCallExpr(base, rest[1].value, args)
+                    args, star_args, star_kwargs, kwargs = self._split_call_args(rest[3:end], 0)
+                    base = MethodCallExpr(base, rest[1].value, args,
+                                          star_args=star_args,
+                                          star_kwargs=star_kwargs,
+                                          kwargs=kwargs)
                     rest = rest[end + 1:]
                     continue
 
@@ -2583,6 +2714,120 @@ class Parser:
             return not_expr(ts)
 
         return bool_ops(tokens)
+
+    def _coerce_empty_container(self, expr, container_type):
+        name = type(expr).__name__
+        if name == "ListLiteralExpr" and not expr.elements:
+            if getattr(expr, "type", None) in (None, "List[Unknown]"):
+                expr.type = container_type
+        elif name == "DictLiteralExpr" and not expr.keys:
+            if getattr(expr, "type", None) in (None, "Dict[Unknown,Unknown]"):
+                expr.type = container_type
+        return expr
+
+    def _bind_call_arguments(self, qname, label, params, expr):
+        """Normalize a call's args into the fixed positional slots plus containers."""
+        if getattr(expr, "_args_bound", False):
+            return expr.args
+
+        var_spec, kw_spec = self.func_var_sigs.get(qname, (None, None))
+        fixed_count = len(params) - (1 if var_spec else 0) - (1 if kw_spec else 0)
+        fixed = params[:fixed_count]
+
+        positional = list(expr.args or [])
+        star_args = list(expr.star_args or [])
+        star_kwargs = list(expr.star_kwargs or [])
+        kwargs = list(expr.kwargs or [])
+
+        # Plain positional calls keep their defaults in the shared IR lowering
+        # path.  Only variadic calls need parser-side slot normalization.
+        if (var_spec is None and kw_spec is None and not star_args
+                and not star_kwargs and not kwargs):
+            return expr.args
+
+        list_expr = None
+        if len(positional) > fixed_count:
+            if var_spec is None:
+                # Let the existing arity check report its established message.
+                return expr.args
+            extra = positional[fixed_count:]
+            if star_args:
+                self.give_error(
+                    f"{label} cannot mix extra positional arguments with *arguments"
+                )
+            list_expr = ListLiteralExpr(extra)
+            list_expr.type = var_spec[1]
+            positional = positional[:fixed_count]
+
+        slots = [None] * fixed_count
+        for i, arg in enumerate(positional):
+            slots[i] = arg
+
+        if star_args:
+            if var_spec is None:
+                self.give_error(f"{label} does not accept *arguments")
+            if len(star_args) > 1:
+                self.give_error(f"{label} accepts at most one *arguments value")
+            list_expr = self._coerce_empty_container(star_args[0], var_spec[1])
+
+        dict_keys = []
+        dict_values = []
+        seen_kw = set()
+        for key, value in kwargs:
+            if key in [p[0] for p in fixed]:
+                idx = [p[0] for p in fixed].index(key)
+                if slots[idx] is not None:
+                    self.give_error(f"{label} got multiple values for argument '{key}'")
+                slots[idx] = value
+            elif kw_spec is not None:
+                if key in seen_kw:
+                    self.give_error(f"{label} got multiple values for keyword '{key}'")
+                seen_kw.add(key)
+                dict_keys.append(LiteralExpr(Token(TokenType.STRING, key), "String"))
+                dict_values.append(value)
+            else:
+                self.give_error(f"{label} got an unexpected keyword argument '{key}'")
+
+        if star_kwargs:
+            if kw_spec is None:
+                self.give_error(f"{label} does not accept **keyword arguments")
+            if len(star_kwargs) > 1:
+                self.give_error(f"{label} accepts at most one **keyword arguments value")
+            if dict_keys:
+                self.give_error(
+                    f"{label} cannot mix keyword arguments with **keyword arguments"
+                )
+            dict_expr = self._coerce_empty_container(star_kwargs[0], kw_spec[1])
+        elif kw_spec is not None:
+            dict_expr = DictLiteralExpr(dict_keys, dict_values)
+            dict_expr.type = kw_spec[1]
+        else:
+            dict_expr = None
+
+        for i, slot in enumerate(slots):
+            if slot is not None:
+                continue
+            _, _, default = fixed[i]
+            if default is None:
+                # Let the existing arity check report its established message.
+                return expr.args
+            slots[i] = default
+
+        normalized = list(slots)
+        if var_spec is not None:
+            if list_expr is None:
+                list_expr = ListLiteralExpr([])
+                list_expr.type = var_spec[1]
+            normalized.append(list_expr)
+        if dict_expr is not None:
+            normalized.append(dict_expr)
+
+        expr.args = normalized
+        expr.star_args = []
+        expr.star_kwargs = []
+        expr.kwargs = []
+        expr._args_bound = True
+        return expr.args
 
     def detect_expr_type(self, expr):
         t = type(expr).__name__
@@ -2776,6 +3021,10 @@ class Parser:
             func_name = expr.func_name
 
             if func_name in BUILTIN_SIGS:
+                if expr.star_args or expr.star_kwargs or expr.kwargs:
+                    self.give_error(
+                        f"Builtin '{func_name}' does not accept keyword or spread arguments"
+                    )
                 arg_types = [self.detect_expr_type(a) for a in expr.args]
                 try:
                     return builtin_return_type(
@@ -2790,6 +3039,9 @@ class Parser:
                 self.give_error(f"Unknown function '{func_name}'")
 
             params, return_type = self.func_sigs[func_name]
+            self._bind_call_arguments(
+                func_name, f"Function '{func_name}'", params, expr
+            )
 
             required = sum(1 for p in params if p[2] is None)
             if len(expr.args) < required or len(expr.args) > len(params):
@@ -2921,6 +3173,10 @@ class Parser:
                 and obj_type.startswith("List[")
                 and expr.method in ("append", "pop", "insert", "remove")
             ):
+                if expr.star_args or expr.star_kwargs or expr.kwargs:
+                    self.give_error(
+                        f"List method '{expr.method}' does not accept keyword or spread arguments"
+                    )
                 self._check_list_mutator(
                     expr,
                     obj_type,
@@ -2951,6 +3207,9 @@ class Parser:
                 self.give_error(f"Unknown method '{expr.method}'")
 
             params, ret_type = self.func_sigs[func_name]
+            self._bind_call_arguments(
+                func_name, f"Method '{expr.method}'", params[1:], expr
+            )
 
             required = sum(1 for p in params[1:] if p[2] is None)
             if len(expr.args) < required or len(expr.args) > len(params) - 1:
@@ -2991,6 +3250,9 @@ class Parser:
                 func_name = self.class_method_map[owner]["__init__"]
                 expr.init_name = func_name
                 params, _ = self.func_sigs[func_name]
+                self._bind_call_arguments(
+                    func_name, f"Class '{class_name}' '__init__'", params[1:], expr
+                )
                 required = sum(1 for p in params[1:] if p[2] is None)
                 if len(expr.args) < required or len(expr.args) > len(params) - 1:
                     if required == len(params) - 1:
@@ -3017,7 +3279,7 @@ class Parser:
                                     f"'{param_name}' expects type {param_type}, "
                                     f"got {arg_type}"
                                 )
-            elif expr.args:
+            elif expr.args or expr.star_args or expr.star_kwargs or expr.kwargs:
                 self.give_error(
                     f"Class '{class_name}' has no '__init__' taking arguments"
                 )
