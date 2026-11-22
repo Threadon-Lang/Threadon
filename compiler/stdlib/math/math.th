@@ -1,0 +1,163 @@
+# Threadon math library
+#
+# Pure Threadon, no external toolchain. Functions are grouped by the type they
+# work on because Threadon has no overloading: `pow_int` takes Int32,
+# `sqrt_f` takes Float64, and so on. Import what you need:
+#
+#   import math
+#   from math import gcd, is_prime
+#
+# Every function is defined before it is used, following the usual Threadon
+# rule. There are no module-level constants (only literal declarations are
+# allowed at module level), so pi and e are small accessor functions.
+
+# Absolute value for Int32. std.abs is auto-imported into main files only,
+# so modules carry their own copy.
+def iabs(n: Int32) -> Int32
+    if n < 0:
+        return -n
+    return n
+
+# Integer power by repeated squaring. A negative exponent yields 0.
+def pow_int(base: Int32, exp: Int32) -> Int32
+    result: Int32 = 1
+    b: Int32 = base
+    e: Int32 = exp
+    if e < 0:
+        return 0
+    while e > 0:
+        if e % 2 == 1:
+            result = result * b
+        b = b * b
+        e = e // 2
+    return result
+
+# n! as an Int64. n < 2 gives 1.
+def factorial(n: Int32) -> Int64
+    result: Int64 = 1
+    i: Int32 = 2
+    while i <= n:
+        result = result * Int64(i)
+        i += 1
+    return result
+
+# Greatest common divisor, always non-negative. gcd(0, 0) is 0.
+def gcd(a: Int32, b: Int32) -> Int32
+    x: Int32 = iabs(a)
+    y: Int32 = iabs(b)
+    while y != 0:
+        t: Int32 = x % y
+        x = y
+        y = t
+    return x
+
+# Least common multiple, computed in Int64 to reduce the chance of wrapping.
+def lcm(a: Int32, b: Int32) -> Int64
+    if a == 0 or b == 0:
+        return 0
+    d: Int32 = gcd(a, b)
+    return Int64(iabs(a) // d) * Int64(iabs(b))
+
+# -1, 0, or 1 depending on the sign of n.
+def sign(n: Int32) -> Int32
+    if n < 0:
+        return -1
+    if n > 0:
+        return 1
+    return 0
+
+# Trial-division primality test. Fine for modest Int32 values.
+def is_prime(n: Int32) -> Bool
+    if n < 2:
+        return False
+    if n == 2:
+        return True
+    if n % 2 == 0:
+        return False
+    d: Int32 = 3
+    while d * d <= n:
+        if n % d == 0:
+            return False
+        d += 2
+    return True
+
+# Largest divisor of n not greater than its square root (0 for n < 1).
+def integer_sqrt(n: Int32) -> Int32
+    if n < 1:
+        return 0
+    r: Int32 = 1
+    while (r + 1) * (r + 1) <= n:
+        r += 1
+    return r
+
+# Truncate a Float64 towards zero.
+def trunc_f(x: Float64) -> Int64
+    return Int64(x)
+
+# Floor: trunc for positive values, one less for negative non-integers.
+def floor_f(x: Float64) -> Int64
+    whole: Int64 = Int64(x)
+    if x < 0.0:
+        if Float64(whole) != x:
+            return whole - 1
+    return whole
+
+# Ceiling: trunc for negative values, one more for positive non-integers.
+def ceil_f(x: Float64) -> Int64
+    whole: Int64 = Int64(x)
+    if x > 0.0:
+        if Float64(whole) != x:
+            return whole + 1
+    return whole
+
+# Round half up. Negative halves round towards zero (e.g. -1.5 -> -1).
+def round_f(x: Float64) -> Int64
+    return floor_f(x + 0.5)
+
+# Square root by Newton's method with a fixed number of iterations.
+def sqrt_f(x: Float64) -> Float64
+    if x <= 0.0:
+        return 0.0
+    g: Float64 = x
+    if g < 1.0:
+        g = 1.0
+    i: Int32 = 0
+    while i < 24:
+        g = (g + x / g) / 2.0
+        i += 1
+    return g
+
+# Hypotenuse of a right triangle, computed without overflowing on input squares.
+def hypot_f(a: Float64, b: Float64) -> Float64
+    x: Float64 = a
+    y: Float64 = b
+    if x < 0.0:
+        x = -x
+    if y < 0.0:
+        y = -y
+    return sqrt_f(x * x + y * y)
+
+# pi and e as Float64 values.
+def pi() -> Float64
+    return 3.141592653589793
+
+def e() -> Float64
+    return 2.718281828459045
+
+def to_radians(degrees: Float64) -> Float64
+    return degrees * pi() / 180.0
+
+def to_degrees(radians: Float64) -> Float64
+    return radians * 180.0 / pi()
+
+# Restrict a Float64 to [lo, hi].
+def clamp_f(x: Float64, lo: Float64, hi: Float64) -> Float64
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+# Linear interpolation between a and b, with t normally in [0, 1].
+def lerp_f(a: Float64, b: Float64, t: Float64) -> Float64
+    return a + (b - a) * clamp_f(t, 0.0, 1.0)

@@ -1,0 +1,3 @@
+module hash
+lang threadon
+source hash.th

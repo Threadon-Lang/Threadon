@@ -1,0 +1,91 @@
+# Threadon set for Int32 values
+#
+# Like the `containers` module, this uses a functional API: every operation
+# returns a new IntSet. Threadon classes and lists are passed by value, and a
+# method call gets a copy of self, so functions are the reliable way to build
+# an updated value.
+#
+#   s: IntSet = intset.empty_set()
+#   s = intset.add(s, 3)
+#   print(intset.contains(s, 3))   # True
+
+class IntSet:
+    items: List[Int32]
+
+    def __init__(self: IntSet, items: List[Int32])
+        self.items = items
+
+def empty_set() -> IntSet
+    items: List[Int32] = []
+    return IntSet(items)
+
+def to_list(s: IntSet) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(s.items)):
+        out.append(s.items[i])
+        i += 1
+    return out
+
+def size(s: IntSet) -> Int32
+    return Int32(len(s.items))
+
+def contains(s: IntSet, value: Int32) -> Bool
+    i: Int32 = 0
+    while i < Int32(len(s.items)):
+        if s.items[i] == value:
+            return True
+        i += 1
+    return False
+
+# Return a new set with `value` added (unchanged if it was already there).
+def add(s: IntSet, value: Int32) -> IntSet
+    if contains(s, value):
+        return s
+    items: List[Int32] = to_list(s)
+    items.append(value)
+    return IntSet(items)
+
+def from_list(xs: List[Int32]) -> IntSet
+    s: IntSet = empty_set()
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        s = add(s, xs[i])
+        i += 1
+    return s
+
+# Return a new set with `value` removed (unchanged if it was not there).
+def remove(s: IntSet, value: Int32) -> IntSet
+    items: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(s.items)):
+        if s.items[i] != value:
+            items.append(s.items[i])
+        i += 1
+    return IntSet(items)
+
+def union(a: IntSet, b: IntSet) -> IntSet
+    out: IntSet = a
+    i: Int32 = 0
+    while i < Int32(len(b.items)):
+        out = add(out, b.items[i])
+        i += 1
+    return out
+
+def intersection(a: IntSet, b: IntSet) -> IntSet
+    out: IntSet = empty_set()
+    i: Int32 = 0
+    while i < Int32(len(a.items)):
+        if contains(b, a.items[i]):
+            out = add(out, a.items[i])
+        i += 1
+    return out
+
+def difference(a: IntSet, b: IntSet) -> IntSet
+    out: IntSet = empty_set()
+    i: Int32 = 0
+    while i < Int32(len(a.items)):
+        if not contains(b, a.items[i]):
+            out = add(out, a.items[i])
+        i += 1
+    return out

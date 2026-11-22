@@ -1,0 +1,3 @@
+module bitops
+lang threadon
+source bitops.th

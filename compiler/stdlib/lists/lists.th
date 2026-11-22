@@ -1,0 +1,176 @@
+# Threadon list library
+#
+# The language has List[T] with append/pop/insert/remove and indexing, but no
+# sort, search or aggregate helpers. This module fills the gap. Because
+# Threadon has no overloading, each helper is named for its element type:
+# `*_int` works on List[Int32] and `*_str` works on List[String].
+#
+# Lists are passed by value, so every function here builds and returns a new
+# list; none of them can change the caller's list.
+
+def range_list(n: Int32) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < n:
+        out.append(i)
+        i += 1
+    return out
+
+def sum_int(xs: List[Int32]) -> Int64
+    total: Int64 = 0
+    i: Int64 = 0
+    while i < len(xs):
+        total = total + Int64(xs[Int32(i)])
+        i += 1
+    return total
+
+def min_int(xs: List[Int32]) -> Int32
+    if len(xs) == 0:
+        return 0
+    best: Int32 = xs[0]
+    i: Int32 = 1
+    while i < Int32(len(xs)):
+        if xs[i] < best:
+            best = xs[i]
+        i += 1
+    return best
+
+def max_int(xs: List[Int32]) -> Int32
+    if len(xs) == 0:
+        return 0
+    best: Int32 = xs[0]
+    i: Int32 = 1
+    while i < Int32(len(xs)):
+        if xs[i] > best:
+            best = xs[i]
+        i += 1
+    return best
+
+def contains_int(xs: List[Int32], value: Int32) -> Bool
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if xs[i] == value:
+            return True
+        i += 1
+    return False
+
+def index_int(xs: List[Int32], value: Int32) -> Int32
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if xs[i] == value:
+            return i
+        i += 1
+    return -1
+
+def count_int(xs: List[Int32], value: Int32) -> Int32
+    n: Int32 = 0
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if xs[i] == value:
+            n += 1
+        i += 1
+    return n
+
+# A new list holding every item of `xs` followed by every item of `more`.
+def extend_int(xs: List[Int32], more: List[Int32]) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        out.append(xs[i])
+        i += 1
+    i = 0
+    while i < Int32(len(more)):
+        out.append(more[i])
+        i += 1
+    return out
+
+def reverse_int(xs: List[Int32]) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = Int32(len(xs)) - 1
+    while i >= 0:
+        out.append(xs[i])
+        i -= 1
+    return out
+
+# Insertion sort, ascending. Stable, and quick enough for small lists.
+def sort_int(xs: List[Int32]) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        value: Int32 = xs[i]
+        pos: Int32 = Int32(len(out)) - 1
+        while pos >= 0:
+            if out[pos] <= value:
+                break
+            pos -= 1
+        out.insert(pos + 1, value)
+        i += 1
+    return out
+
+# First copy of each value, in its original order.
+def unique_int(xs: List[Int32]) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if not contains_int(out, xs[i]):
+            out.append(xs[i])
+        i += 1
+    return out
+
+def join_int(xs: List[Int32], sep: String) -> String
+    out: String = ""
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if i > 0:
+            out = out + sep
+        out = out + String(xs[i])
+        i += 1
+    return out
+
+def contains_str(xs: List[String], value: String) -> Bool
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if xs[i] == value:
+            return True
+        i += 1
+    return False
+
+def index_str(xs: List[String], value: String) -> Int32
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if xs[i] == value:
+            return i
+        i += 1
+    return -1
+
+def count_str(xs: List[String], value: String) -> Int32
+    n: Int32 = 0
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if xs[i] == value:
+            n += 1
+        i += 1
+    return n
+
+def reverse_str(xs: List[String]) -> List[String]
+    out: List[String] = []
+    i: Int32 = Int32(len(xs)) - 1
+    while i >= 0:
+        out.append(xs[i])
+        i -= 1
+    return out
+
+# Lexicographic ascending sort of a List[String].
+def sort_str(xs: List[String]) -> List[String]
+    out: List[String] = []
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        value: String = xs[i]
+        pos: Int32 = Int32(len(out)) - 1
+        while pos >= 0:
+            if out[pos] <= value:
+                break
+            pos -= 1
+        out.insert(pos + 1, value)
+        i += 1
+    return out

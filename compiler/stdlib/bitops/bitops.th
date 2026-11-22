@@ -1,0 +1,125 @@
+# Threadon bitwise operations
+#
+# Threadon has no &, |, ~, << or >> operators. This module implements the
+# same operations on UInt32 using only division, modulo, multiplication and
+# addition. Each bit is peeled off one at a time, so these functions are
+# correct but slower than a hardware instruction would be.
+#
+# All values are UInt32. Shifts wrap: bits shifted out of the top are lost.
+
+# 2 ** n as a UInt32 (wraps for n >= 32).
+def pow2(n: Int32) -> UInt32
+    p: UInt32 = 1
+    i: Int32 = 0
+    while i < n:
+        p = p * UInt32(2)
+        i += 1
+    return p
+
+# The UInt32 value with every bit set (4294967295).
+def full() -> UInt32
+    return UInt32(0) - UInt32(1)
+
+def band(a: UInt32, b: UInt32) -> UInt32
+    x: UInt32 = a
+    y: UInt32 = b
+    place: UInt32 = 1
+    out: UInt32 = 0
+    i: Int32 = 0
+    while i < 32:
+        xb: UInt32 = x % UInt32(2)
+        yb: UInt32 = y % UInt32(2)
+        if xb == UInt32(1) and yb == UInt32(1):
+            out = out + place
+        x = x / UInt32(2)
+        y = y / UInt32(2)
+        place = place * UInt32(2)
+        i += 1
+    return out
+
+def bor(a: UInt32, b: UInt32) -> UInt32
+    x: UInt32 = a
+    y: UInt32 = b
+    place: UInt32 = 1
+    out: UInt32 = 0
+    i: Int32 = 0
+    while i < 32:
+        xb: UInt32 = x % UInt32(2)
+        yb: UInt32 = y % UInt32(2)
+        if xb == UInt32(1) or yb == UInt32(1):
+            out = out + place
+        x = x / UInt32(2)
+        y = y / UInt32(2)
+        place = place * UInt32(2)
+        i += 1
+    return out
+
+def bxor(a: UInt32, b: UInt32) -> UInt32
+    x: UInt32 = a
+    y: UInt32 = b
+    place: UInt32 = 1
+    out: UInt32 = 0
+    i: Int32 = 0
+    while i < 32:
+        xb: UInt32 = x % UInt32(2)
+        yb: UInt32 = y % UInt32(2)
+        if xb != yb:
+            out = out + place
+        x = x / UInt32(2)
+        y = y / UInt32(2)
+        place = place * UInt32(2)
+        i += 1
+    return out
+
+def bnot(a: UInt32) -> UInt32
+    return full() - a
+
+# Shift left by n bits; bits beyond 31 are discarded.
+def shl(a: UInt32, n: Int32) -> UInt32
+    out: UInt32 = a
+    i: Int32 = 0
+    while i < n:
+        out = out * UInt32(2)
+        i += 1
+    return out
+
+# Shift right by n bits (logical: the top bits become zero).
+def shr(a: UInt32, n: Int32) -> UInt32
+    out: UInt32 = a
+    i: Int32 = 0
+    while i < n:
+        out = out / UInt32(2)
+        i += 1
+    return out
+
+def popcount(a: UInt32) -> Int32
+    x: UInt32 = a
+    n: Int32 = 0
+    while x > UInt32(0):
+        if x % UInt32(2) == UInt32(1):
+            n += 1
+        x = x / UInt32(2)
+    return n
+
+def bit(a: UInt32, n: Int32) -> Bool
+    return (a / pow2(n)) % UInt32(2) == UInt32(1)
+
+def set_bit(a: UInt32, n: Int32) -> UInt32
+    return bor(a, pow2(n))
+
+def clear_bit(a: UInt32, n: Int32) -> UInt32
+    return band(a, bnot(pow2(n)))
+
+def toggle_bit(a: UInt32, n: Int32) -> UInt32
+    return bxor(a, pow2(n))
+
+# Count trailing zero bits (32 for a == 0).
+def trailing_zeros(a: UInt32) -> Int32
+    x: UInt32 = a
+    n: Int32 = 0
+    while n < 32:
+        if x % UInt32(2) == UInt32(1):
+            return n
+        x = x / UInt32(2)
+        n += 1
+    return 32

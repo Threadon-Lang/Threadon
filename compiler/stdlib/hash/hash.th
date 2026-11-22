@@ -1,0 +1,54 @@
+# Threadon hash functions
+#
+# Simple, deterministic hashes for strings, integers and integer lists. They
+# are useful for hash tables, quick comparisons and checksums, but they are
+# NOT cryptographic. Arbitrary collisions can be found by an adversary.
+#
+# All arithmetic uses Int64 with a prime modulus so no overflow occurs.
+# Character codes come from the strings module.
+
+from strings import ord
+
+def char_code(c: String) -> Int64
+    n: Int32 = ord(c)
+    if n < 0:
+        return 0
+    return Int64(n)
+
+# Polynomial rolling hash: h = (h * 31 + code) mod (1e9 + 7).
+def string_hash(s: String) -> Int64
+    h: Int64 = 7
+    i: Int32 = 0
+    while i < Int32(len(s)):
+        h = (h * 31 + char_code(s[i:i + 1])) % 1000000007
+        i += 1
+    return h
+
+# djb2-style hash, also reduced mod (1e9 + 7).
+def djb2(s: String) -> Int64
+    h: Int64 = 5381
+    i: Int32 = 0
+    while i < Int32(len(s)):
+        h = (h * 33 + char_code(s[i:i + 1])) % 1000000007
+        i += 1
+    return h
+
+# Small 16-bit checksum, handy for a compact key or a quick sanity check.
+def checksum16(s: String) -> Int32
+    return Int32(string_hash(s) % 65536)
+
+def hash_int(x: Int32) -> Int64
+    h: Int64 = Int64(x) % 1000000007
+    return (h * 131 + 17) % 1000000007
+
+def hash_pair(a: Int32, b: Int32) -> Int64
+    h: Int64 = hash_int(a)
+    return (h * 31 + hash_int(b)) % 1000000007
+
+def hash_list_int(xs: List[Int32]) -> Int64
+    h: Int64 = 17
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        h = (h * 31 + hash_int(xs[i])) % 1000000007
+        i += 1
+    return h

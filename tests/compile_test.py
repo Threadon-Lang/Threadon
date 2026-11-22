@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import subprocess
 import sys
@@ -132,7 +133,7 @@ def patch_llvm(llvm):
     return llvm + "\n" + HARNESS_MAIN + "\n"
 
 
-def run_llvm(llvm, input=None, loads=None):
+def run_llvm(llvm, input=None, loads=None, env=None):
     with tempfile.NamedTemporaryFile("w", suffix=".ll", delete=False) as f:
         f.write(llvm)
         path = f.name
@@ -147,8 +148,12 @@ def run_llvm(llvm, input=None, loads=None):
             cmd.append("-load")
             cmd.append(libatomic)
         cmd.append(path)
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60, input=input
+            cmd, capture_output=True, text=True, timeout=60, input=input,
+            env=run_env,
         )
     finally:
         Path(path).unlink(missing_ok=True)
@@ -173,9 +178,9 @@ def test_complex_program_inlined():
     assert result.stdout == "-134\n8.000000\n"
 
 
-def compile_stdlib_run(source, inline_threshold=0, input=None):
+def compile_stdlib_run(source, inline_threshold=0, input=None, env=None):
     llvm = compile_source(source, importer=Importer(), inline_threshold=inline_threshold,debug_mode=True)
-    return run_llvm(llvm, input=input)
+    return run_llvm(llvm, input=input, env=env)
 
 
 def test_multi_arg_print():
@@ -2019,3 +2024,108 @@ def main() -> Int32
         result.stdout
         == "True\nTrue\nTrue\nTrue\nTrue\nTrue\nFalse\nTrue\nTrue\nTrue\nTrue\n"
     )
+
+
+def test_gc_alloc_routes_heap_objects():
+    llvm = compile_source(
+        """
+def main() -> Int32
+    s: String = "a" + "b"
+    print(s)
+    return 0
+""",
+        importer=Importer(),
+    )
+    assert "call i8* @__threadon_gc_alloc(" in llvm
+    assert "call void @__threadon_gc_thread_enter(" in llvm
+    assert "call i8* @malloc(" not in llvm
+
+
+def test_gc_runtime_skipped_for_scalar_only_program():
+    llvm = compile_source(
+        """
+def main() -> Int32
+    x: Int32 = 1 + 2
+    print(x)
+    return 0
+""",
+        importer=Importer(),
+    )
+    assert "__threadon_gc_alloc" not in llvm
+    assert "@__threadon_gc_shutdown" not in llvm
+
+
+def test_gc_collects_long_string_chain():
+    # 8000 concatenations allocate a total of ~320 MB. Without collection the
+    # process would need that much live memory just to keep the intermediates.
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    s: String = ""
+    i: Int64 = 0
+    while i < 8000:
+        s = s + "abcdefghij"
+        i += 1
+    print(len(s))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "80000\n"
+
+
+def test_gc_stats_report_pause_timings():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    s: String = ""
+    i: Int64 = 0
+    while i < 1000:
+        s = s + "abcdefghij"
+        i += 1
+    print(len(s))
+    return 0
+""",
+        env={"THREADON_GC_STATS": "1", "THREADON_GC_THRESHOLD": "1024"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "[gc] collections=" in result.stdout
+    assert "snapshot_max=" in result.stdout
+    assert "mark_max=" in result.stdout
+    assert "sweep_max=" in result.stdout
+
+
+def test_gc_threshold_zero_disables_collection():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    s: String = ""
+    i: Int64 = 0
+    while i < 1000:
+        s = s + "abcdefghij"
+        i += 1
+    print(len(s))
+    return 0
+""",
+        env={"THREADON_GC_STATS": "1", "THREADON_GC_THRESHOLD": "0"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "[gc] collections=0 " in result.stdout
+
+
+def test_gc_with_threads_and_lists():
+    result = compile_stdlib_run(
+        """
+thread worker() on True:
+    xs: List[String] = ["a", "b"]
+    xs.append("c")
+    print(len(xs))
+
+def main() -> Int32
+    ys: List[String] = ["x", "y", "z"]
+    print(len(ys))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert "3" in result.stdout.strip().splitlines()

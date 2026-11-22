@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import compile_test as ct
 import pytest
 
+from compiler.threadon.__main__ import dedupe_decls
 from compiler.threadon.checker import CombinedChecker
 from compiler.threadon.optimalise_ir import IROptimizer
 from compiler.threadon.parser import Parser
@@ -62,7 +63,7 @@ def patch_for_execution(llvm, harness):
         ct.POW_I32_IMPL + "\n",
         llvm,
     )
-    return llvm + "\n" + harness + "\n"
+    return dedupe_decls(llvm + "\n" + harness + "\n")
 
 
 def assert_run_output(source, expected, inline_threshold=30):

@@ -1,0 +1,324 @@
+# Threadon container library
+#
+# Stack, queue and map containers with a functional API: every operation
+# returns a NEW container instead of mutating one in place.
+#
+# Why? Threadon classes have value semantics, and a method call receives a
+# copy of `self`, so a method cannot change the caller's object. Read-only
+# methods and methods that build and return a new value work as expected.
+#
+#   s: IntStack = containers.empty_stack()
+#   s = s.pushed(10)
+#   s = s.pushed(20)
+#   out: StackPop = containers.pop(s)   # out.value == 20
+#
+#   ages: StringIntMap = containers.empty_string_int_map()
+#   ages = ages.put("ann", 30)
+#   found: IntLookup = ages.get("ann")
+
+# Lookup results carry a `found` flag so a missing key never needs an
+# unchecked dict access. The `value` is the zero value / empty string when
+# `found` is False. Declared before the map classes so their methods can
+# return these structs.
+struct IntLookup:
+    found: Bool
+    value: Int32
+
+struct StringLookup:
+    found: Bool
+    value: String
+
+class IntStack:
+    data: List[Int32]
+
+    def __init__(self: IntStack, data: List[Int32])
+        self.data = data
+
+    def size(self: IntStack) -> Int32
+        return Int32(len(self.data))
+
+    def is_empty(self: IntStack) -> Bool
+        return len(self.data) == 0
+
+    def peek(self: IntStack) -> Int32
+        if len(self.data) == 0:
+            return 0
+        return self.data[len(self.data) - 1]
+
+    # Return a new stack with `value` on top.
+    def pushed(self: IntStack, value: Int32) -> IntStack
+        data: List[Int32] = self.data
+        data.append(value)
+        return IntStack(data)
+
+    def contains(self: IntStack, value: Int32) -> Bool
+        i: Int32 = 0
+        while i < Int32(len(self.data)):
+            if self.data[i] == value:
+                return True
+            i += 1
+        return False
+
+    # Bottom-to-top copy of the stack.
+    def to_list(self: IntStack) -> List[Int32]
+        out: List[Int32] = []
+        i: Int32 = 0
+        while i < Int32(len(self.data)):
+            out.append(self.data[i])
+            i += 1
+        return out
+
+class IntQueue:
+    data: List[Int32]
+
+    def __init__(self: IntQueue, data: List[Int32])
+        self.data = data
+
+    def size(self: IntQueue) -> Int32
+        return Int32(len(self.data))
+
+    def is_empty(self: IntQueue) -> Bool
+        return len(self.data) == 0
+
+    def front(self: IntQueue) -> Int32
+        if len(self.data) == 0:
+            return 0
+        return self.data[len(self.data) - 1]
+
+    # Return a new queue with `value` at the back.
+    def enqueued(self: IntQueue, value: Int32) -> IntQueue
+        data: List[Int32] = self.data
+        data.insert(0, value)
+        return IntQueue(data)
+
+    def contains(self: IntQueue, value: Int32) -> Bool
+        i: Int32 = 0
+        while i < Int32(len(self.data)):
+            if self.data[i] == value:
+                return True
+            i += 1
+        return False
+
+    # Oldest-to-newest copy of the queue, i.e. dequeue order.
+    def to_list(self: IntQueue) -> List[Int32]
+        out: List[Int32] = []
+        i: Int32 = Int32(len(self.data)) - 1
+        while i >= 0:
+            out.append(self.data[i])
+            i -= 1
+        return out
+
+# A map from String keys to Int32 values, backed by a Dict.
+class StringIntMap:
+    entries: Dict[String, Int32]
+
+    def __init__(self: StringIntMap, entries: Dict[String, Int32])
+        self.entries = entries
+
+    def size(self: StringIntMap) -> Int32
+        return Int32(len(self.entries))
+
+    def get(self: StringIntMap, key: String) -> IntLookup
+        entries: Dict[String, Int32] = self.entries
+        for k in entries:
+            if k == key:
+                return IntLookup(found=True, value=entries[key])
+        return IntLookup(found=False, value=0)
+
+    def has(self: StringIntMap, key: String) -> Bool
+        found: IntLookup = self.get(key)
+        return found.found
+
+    # Return a new map with `key` set to `value`.
+    def put(self: StringIntMap, key: String, value: Int32) -> StringIntMap
+        entries: Dict[String, Int32] = self.entries
+        entries[key] = value
+        return StringIntMap(entries)
+
+    # Return a new map without `key`. Missing keys leave the map unchanged.
+    def remove(self: StringIntMap, key: String) -> StringIntMap
+        if not self.has(key):
+            return self
+        entries: Dict[String, Int32] = {}
+        old: Dict[String, Int32] = self.entries
+        for k in old:
+            if k != key:
+                entries[k] = old[k]
+        return StringIntMap(entries)
+
+    def keys(self: StringIntMap) -> List[String]
+        keys: List[String] = []
+        entries: Dict[String, Int32] = self.entries
+        for k in entries:
+            keys.append(k)
+        return keys
+
+# The mirror image: Int32 keys to String values.
+class IntStringMap:
+    entries: Dict[Int32, String]
+
+    def __init__(self: IntStringMap, entries: Dict[Int32, String])
+        self.entries = entries
+
+    def size(self: IntStringMap) -> Int32
+        return Int32(len(self.entries))
+
+    def get(self: IntStringMap, key: Int32) -> StringLookup
+        entries: Dict[Int32, String] = self.entries
+        for k in entries:
+            if k == key:
+                return StringLookup(found=True, value=entries[key])
+        return StringLookup(found=False, value="")
+
+    def has(self: IntStringMap, key: Int32) -> Bool
+        found: StringLookup = self.get(key)
+        return found.found
+
+    # Return a new map with `key` set to `value`.
+    def put(self: IntStringMap, key: Int32, value: String) -> IntStringMap
+        entries: Dict[Int32, String] = self.entries
+        entries[key] = value
+        return IntStringMap(entries)
+
+    # Return a new map without `key`. Missing keys leave the map unchanged.
+    def remove(self: IntStringMap, key: Int32) -> IntStringMap
+        if not self.has(key):
+            return self
+        entries: Dict[Int32, String] = {}
+        old: Dict[Int32, String] = self.entries
+        for k in old:
+            if k != key:
+                entries[k] = old[k]
+        return IntStringMap(entries)
+
+    def keys(self: IntStringMap) -> List[Int32]
+        keys: List[Int32] = []
+        entries: Dict[Int32, String] = self.entries
+        for k in entries:
+            keys.append(k)
+        return keys
+
+# A popped value together with the remaining container. These stay as free
+# results because they refer to the container classes, which must exist first.
+struct StackPop:
+    value: Int32
+    stack: IntStack
+
+struct QueuePop:
+    value: Int32
+    queue: IntQueue
+
+def empty_stack() -> IntStack
+    data: List[Int32] = []
+    return IntStack(data)
+
+def empty_queue() -> IntQueue
+    data: List[Int32] = []
+    return IntQueue(data)
+
+def empty_string_int_map() -> StringIntMap
+    entries: Dict[String, Int32] = {}
+    return StringIntMap(entries)
+
+def empty_int_string_map() -> IntStringMap
+    entries: Dict[Int32, String] = {}
+    return IntStringMap(entries)
+
+# The free functions below are thin aliases for the methods above. They keep
+# the original module-style API working while the methods are the nicer form.
+def stack_size(s: IntStack) -> Int32
+    return s.size()
+
+def stack_is_empty(s: IntStack) -> Bool
+    return s.is_empty()
+
+def peek(s: IntStack) -> Int32
+    return s.peek()
+
+def push(s: IntStack, value: Int32) -> IntStack
+    return s.pushed(value)
+
+# Return the top value and a new stack without it. Empty stacks give value 0
+# and an unchanged stack.
+def pop(s: IntStack) -> StackPop
+    if s.is_empty():
+        return StackPop(value=0, stack=s)
+    value: Int32 = s.peek()
+    rest: List[Int32] = []
+    i: Int32 = 0
+    while i < s.size() - 1:
+        rest.append(s.data[i])
+        i += 1
+    return StackPop(value=value, stack=IntStack(rest))
+
+def stack_contains(s: IntStack, value: Int32) -> Bool
+    return s.contains(value)
+
+def stack_to_list(s: IntStack) -> List[Int32]
+    return s.to_list()
+
+def queue_size(q: IntQueue) -> Int32
+    return q.size()
+
+def queue_is_empty(q: IntQueue) -> Bool
+    return q.is_empty()
+
+def front(q: IntQueue) -> Int32
+    return q.front()
+
+def enqueue(q: IntQueue, value: Int32) -> IntQueue
+    return q.enqueued(value)
+
+# Return the oldest value and a new queue without it.
+def dequeue(q: IntQueue) -> QueuePop
+    if q.is_empty():
+        return QueuePop(value=0, queue=q)
+    value: Int32 = q.front()
+    rest: List[Int32] = []
+    i: Int32 = 0
+    while i < q.size() - 1:
+        rest.append(q.data[i])
+        i += 1
+    return QueuePop(value=value, queue=IntQueue(rest))
+
+def queue_contains(q: IntQueue, value: Int32) -> Bool
+    return q.contains(value)
+
+def queue_to_list(q: IntQueue) -> List[Int32]
+    return q.to_list()
+
+def string_int_size(m: StringIntMap) -> Int32
+    return m.size()
+
+def string_int_has(m: StringIntMap, key: String) -> Bool
+    return m.has(key)
+
+def string_int_get(m: StringIntMap, key: String) -> IntLookup
+    return m.get(key)
+
+def string_int_put(m: StringIntMap, key: String, value: Int32) -> StringIntMap
+    return m.put(key, value)
+
+def string_int_remove(m: StringIntMap, key: String) -> StringIntMap
+    return m.remove(key)
+
+def string_int_keys(m: StringIntMap) -> List[String]
+    return m.keys()
+
+def int_string_size(m: IntStringMap) -> Int32
+    return m.size()
+
+def int_string_has(m: IntStringMap, key: Int32) -> Bool
+    return m.has(key)
+
+def int_string_get(m: IntStringMap, key: Int32) -> StringLookup
+    return m.get(key)
+
+def int_string_put(m: IntStringMap, key: Int32, value: String) -> IntStringMap
+    return m.put(key, value)
+
+def int_string_remove(m: IntStringMap, key: Int32) -> IntStringMap
+    return m.remove(key)
+
+def int_string_keys(m: IntStringMap) -> List[Int32]
+    return m.keys()

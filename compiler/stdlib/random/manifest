@@ -1,0 +1,3 @@
+module random
+lang threadon
+source random.th

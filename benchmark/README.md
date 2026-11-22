@@ -27,6 +27,7 @@ python3 benchmark/run.py --list                     # list available cases
 python3 benchmark/run.py --cases mandelbrot         # one case
 python3 benchmark/run.py --langs cpp threadon-jit   # selected implementations
 python3 benchmark/run.py --runs 10                  # more timing samples
+python3 benchmark/run.py --inline-threshold 1000    # Threadon -O 1000
 python3 benchmark/run.py --installed                # benchmark installed package
 ```
 

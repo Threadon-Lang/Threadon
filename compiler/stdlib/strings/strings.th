@@ -1,0 +1,252 @@
+# Threadon string library
+#
+# The language itself gives strings concatenation, indexing, slicing and
+# comparison. This module adds the everyday helpers on top: case conversion,
+# trimming, searching, splitting, replacing, padding and character tests.
+#
+# Strings are immutable: every function here returns a NEW String and never
+# changes its argument. Indexes and lengths are counted in bytes (the same
+# units the compiler's `len` and `s[i]` use).
+
+def length(s: String) -> Int64
+    return len(s)
+
+# Character code of a one-character string, or -1 if the string is empty or
+# longer than one byte. Uses the language's chr() cast in reverse.
+def ord(c: String) -> Int32
+    if len(c) != 1:
+        return -1
+    i: Int32 = 0
+    while i < 256:
+        if c == chr(i):
+            return i
+        i += 1
+    return -1
+
+def upper_char(c: String) -> String
+    n: Int32 = ord(c)
+    if n >= 97 and n <= 122:
+        return chr(n - 32)
+    return c
+
+def lower_char(c: String) -> String
+    n: Int32 = ord(c)
+    if n >= 65 and n <= 90:
+        return chr(n + 32)
+    return c
+
+def upper(s: String) -> String
+    out: String = ""
+    i: Int64 = 0
+    while i < len(s):
+        out = out + upper_char(s[i:i + 1])
+        i += 1
+    return out
+
+def lower(s: String) -> String
+    out: String = ""
+    i: Int64 = 0
+    while i < len(s):
+        out = out + lower_char(s[i:i + 1])
+        i += 1
+    return out
+
+def is_space(c: String) -> Bool
+    if len(c) != 1:
+        return False
+    if c == " ":
+        return True
+    if c == "\t":
+        return True
+    if c == "\n":
+        return True
+    if c == chr(13):
+        return True
+    return False
+
+def ltrim(s: String) -> String
+    start: Int64 = 0
+    while start < len(s):
+        if not is_space(s[start:start + 1]):
+            break
+        start += 1
+    return s[start:]
+
+def rtrim(s: String) -> String
+    end: Int64 = len(s)
+    while end > 0:
+        if not is_space(s[end - 1:end]):
+            break
+        end -= 1
+    return s[:end]
+
+def trim(s: String) -> String
+    return rtrim(ltrim(s))
+
+# Index of the first occurrence of `needle`, or -1 when it is absent.
+def index_of(s: String, needle: String) -> Int32
+    nl: Int64 = len(needle)
+    if nl == 0:
+        return 0
+    sl: Int64 = len(s)
+    if nl > sl:
+        return -1
+    i: Int64 = 0
+    while i + nl <= sl:
+        if s[i:i + nl] == needle:
+            return Int32(i)
+        i += 1
+    return -1
+
+def contains(s: String, needle: String) -> Bool
+    return index_of(s, needle) >= 0
+
+# Index of the last occurrence of `needle`, or -1. Useful with path.basename.
+def last_index_of(s: String, needle: String) -> Int32
+    nl: Int64 = len(needle)
+    if nl == 0:
+        return Int32(len(s))
+    i: Int64 = len(s) - nl
+    while i >= 0:
+        if s[i:i + nl] == needle:
+            return Int32(i)
+        i -= 1
+    return -1
+
+def starts_with(s: String, prefix: String) -> Bool
+    if len(prefix) > len(s):
+        return False
+    return s[:len(prefix)] == prefix
+
+def ends_with(s: String, suffix: String) -> Bool
+    if len(suffix) > len(s):
+        return False
+    return s[len(s) - len(suffix):] == suffix
+
+def count(s: String, needle: String) -> Int32
+    if len(needle) == 0:
+        return 0
+    n: Int32 = 0
+    pos: Int64 = 0
+    while pos + len(needle) <= len(s):
+        if s[pos:pos + len(needle)] == needle:
+            n += 1
+            pos += len(needle)
+        else:
+            pos += 1
+    return n
+
+# Replace every occurrence of `old` with `new`. An empty `old` returns `s`.
+def replace(s: String, old: String, new: String) -> String
+    ol: Int64 = len(old)
+    if ol == 0:
+        return s
+    out: String = ""
+    pos: Int64 = 0
+    while pos + ol <= len(s):
+        if s[pos:pos + ol] == old:
+            out = out + new
+            pos += ol
+        else:
+            out = out + s[pos:pos + 1]
+            pos += 1
+    return out + s[pos:]
+
+# Split on a separator. An empty separator gives a single-element list.
+def split(s: String, sep: String) -> List[String]
+    out: List[String] = []
+    sl: Int64 = len(s)
+    nl: Int64 = len(sep)
+    if nl == 0:
+        out.append(s)
+        return out
+    start: Int64 = 0
+    pos: Int64 = 0
+    while pos + nl <= sl:
+        if s[pos:pos + nl] == sep:
+            out.append(s[start:pos])
+            pos += nl
+            start = pos
+        else:
+            pos += 1
+    out.append(s[start:])
+    return out
+
+def join(parts: List[String], sep: String) -> String
+    out: String = ""
+    i: Int64 = 0
+    while i < len(parts):
+        if i > 0:
+            out = out + sep
+        out = out + parts[Int32(i)]
+        i += 1
+    return out
+
+def reverse(s: String) -> String
+    out: String = ""
+    i: Int64 = len(s) - 1
+    while i >= 0:
+        out = out + s[i:i + 1]
+        i -= 1
+    return out
+
+def repeat(s: String, times: Int32) -> String
+    out: String = ""
+    i: Int32 = 0
+    while i < times:
+        out = out + s
+        i += 1
+    return out
+
+# Pad on the left/right to at least `width` bytes. `pad` uses its first byte.
+def pad_left(s: String, width: Int32, pad: String) -> String
+    unit: String = "-"
+    if len(pad) > 0:
+        unit = pad[:1]
+    out: String = s
+    while Int32(len(out)) < width:
+        out = unit + out
+    return out
+
+def pad_right(s: String, width: Int32, pad: String) -> String
+    unit: String = "-"
+    if len(pad) > 0:
+        unit = pad[:1]
+    out: String = s
+    while Int32(len(out)) < width:
+        out = out + unit
+    return out
+
+def is_digit(s: String) -> Bool
+    if len(s) == 0:
+        return False
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        if c < "0" or c > "9":
+            return False
+        i += 1
+    return True
+
+def is_alpha(s: String) -> Bool
+    if len(s) == 0:
+        return False
+    i: Int64 = 0
+    while i < len(s):
+        c: String = lower_char(s[i:i + 1])
+        if c < "a" or c > "z":
+            return False
+        i += 1
+    return True
+
+def is_alnum(s: String) -> Bool
+    if len(s) == 0:
+        return False
+    i: Int64 = 0
+    while i < len(s):
+        c: String = lower_char(s[i:i + 1])
+        if c < "0" or c > "9":
+            if c < "a" or c > "z":
+                return False
+        i += 1
+    return True

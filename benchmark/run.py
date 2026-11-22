@@ -95,11 +95,13 @@ def build_plan(
     case: str,
     build_dir: Path,
     use_installed: bool,
+    inline_threshold: int,
 ) -> tuple[list[list[str]], list[str], dict[str, str] | None]:
     """Return (build commands, run command, environment) for an implementation."""
     source_dir = CASES_DIR / case
     base = source_dir / case
     env = threadon_env(use_installed)
+    threadon_cmd = [sys.executable, "-m", "threadon", "-O", str(inline_threshold)]
 
     if impl.key == "cpp":
         exe = build_dir / f"{case}_cpp"
@@ -115,7 +117,7 @@ def build_plan(
     if impl.key == "threadon-jit":
         ir = build_dir / f"{case}.ll"
         return (
-            [[sys.executable, "-m", "threadon", str(base) + ".th", "-o", str(ir)]],
+            [threadon_cmd + [str(base) + ".th", "-o", str(ir)]],
             lli_command(ir),
             env,
         )
@@ -123,16 +125,7 @@ def build_plan(
     if impl.key == "threadon-native":
         exe = build_dir / f"{case}_threadon"
         return (
-            [
-                [
-                    sys.executable,
-                    "-m",
-                    "threadon",
-                    "--exe",
-                    str(exe),
-                    str(base) + ".th",
-                ]
-            ],
+            [threadon_cmd + ["--exe", str(exe), str(base) + ".th"]],
             [str(exe)],
             env,
         )
@@ -159,8 +152,11 @@ def measure(
     build_dir: Path,
     runs: int,
     use_installed: bool,
+    inline_threshold: int,
 ) -> Result:
-    build_cmds, run_cmd, env = build_plan(impl, case, build_dir, use_installed)
+    build_cmds, run_cmd, env = build_plan(
+        impl, case, build_dir, use_installed, inline_threshold
+    )
 
     compile_time = None
     for cmd in build_cmds:
@@ -236,6 +232,13 @@ def main() -> int:
     )
     parser.add_argument("--runs", type=int, default=5, help="Runs per case (default: 5).")
     parser.add_argument(
+        "--inline-threshold",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Threadon -O inline threshold (default: 0 = no inlining).",
+    )
+    parser.add_argument(
         "--build-dir",
         type=Path,
         default=DEFAULT_BUILD_DIR,
@@ -280,7 +283,8 @@ def main() -> int:
     args.build_dir.mkdir(parents=True, exist_ok=True)
     print(
         f"Benchmarking {len(cases)} case(s), {args.runs} run(s) each; "
-        f"compiler: {'installed package' if args.installed else 'repo compiler/'}"
+        f"compiler: {'installed package' if args.installed else 'repo compiler/'}; "
+        f"-O {args.inline_threshold}"
     )
     if skipped:
         print("Skipping (toolchain unavailable): " + ", ".join(i.name for i in skipped))
@@ -292,7 +296,14 @@ def main() -> int:
         for impl in available:
             try:
                 results.append(
-                    measure(impl, case, args.build_dir, args.runs, args.installed)
+                    measure(
+                        impl,
+                        case,
+                        args.build_dir,
+                        args.runs,
+                        args.installed,
+                        args.inline_threshold,
+                    )
                 )
             except BenchmarkError as exc:
                 failed = True

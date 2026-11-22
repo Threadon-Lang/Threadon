@@ -1,0 +1,82 @@
+# Threadon path helpers
+#
+# String utilities for POSIX-style paths. Threadon has no filesystem access,
+# so these functions only manipulate text: they never touch the disk and never
+# check that a path exists. Built on the `strings` module.
+
+from strings import last_index_of, starts_with, ends_with
+
+# Last component of a path: "a/b/c.txt" -> "c.txt".
+def basename(p: String) -> String
+    slash: Int32 = last_index_of(p, "/")
+    if slash < 0:
+        return p
+    return p[slash + 1:]
+
+# Everything before the last slash. The root's dirname is "/".
+def dirname(p: String) -> String
+    slash: Int32 = last_index_of(p, "/")
+    if slash < 0:
+        return "."
+    if slash == 0:
+        return "/"
+    return p[:slash]
+
+# Extension including the dot: "c.txt" -> ".txt", or "" when there is none.
+def extension(p: String) -> String
+    name: String = basename(p)
+    dot: Int32 = last_index_of(name, ".")
+    if dot < 0:
+        return ""
+    return name[dot:]
+
+# File name without its extension.
+def stem(p: String) -> String
+    name: String = basename(p)
+    dot: Int32 = last_index_of(name, ".")
+    if dot < 0:
+        return name
+    return name[:dot]
+
+# Replace the extension (pass the new one with its leading dot).
+def with_extension(p: String, ext: String) -> String
+    parent: String = dirname(p)
+    name: String = stem(p) + ext
+    if parent == ".":
+        return name
+    if parent == "/" and basename(p) == "":
+        return "/" + name
+    return parent + "/" + name
+
+# Join two path pieces with exactly one slash between them.
+def join(a: String, b: String) -> String
+    if len(a) == 0:
+        return b
+    if len(b) == 0:
+        return a
+    if starts_with(b, "/"):
+        return b
+    if ends_with(a, "/"):
+        return a + b
+    return a + "/" + b
+
+def is_absolute(p: String) -> Bool
+    return starts_with(p, "/")
+
+# Collapse repeated slashes and drop a trailing slash (except for "/").
+def normalize(p: String) -> String
+    out: String = ""
+    i: Int32 = 0
+    while i < Int32(len(p)):
+        c: String = p[i:i + 1]
+        if c == "/":
+            if len(out) > 0:
+                if out[len(out) - 1:len(out)] == "/":
+                    i += 1
+                    continue
+        out = out + c
+        i += 1
+    if len(out) > 1:
+        if ends_with(out, "/"):
+            out = out[:len(out) - 1]
+    return out

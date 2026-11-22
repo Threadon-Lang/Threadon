@@ -2,6 +2,7 @@ import struct
 import re 
 import math
 import sys
+import os
 
 from .builtins import (
     BUILTIN_SIGS,
@@ -57,9 +58,11 @@ class LLVMIRCompiler:
         self._union_seq = 0
         self._closure_types = {}
         self.module_globals = set()
+        self.used_gc = False
 
     def compile(self, module, native_exports=None):
         self.module = module 
+        self.used_gc = False
         self.native_symbols = {}
         self.func_name_set = {f.name for f in module.funcs}
         self.has_module_threads = "__threadon_module_threads" in self.func_name_set
@@ -164,8 +167,7 @@ class LLVMIRCompiler:
             self.emit_function(func)
 
         if self.threads_used:
-            self.used_c_runtime.add("malloc")
-            self.used_c_runtime.add("free")
+            self.used_gc = True
             self._emit_threading_runtime()
 
         self._emit_native_declares()
@@ -193,7 +195,6 @@ class LLVMIRCompiler:
 
         if self.templates_enabled:
             self._emit_template_runtime()
-
 
         self.out.append("")
         if "input_helper" in self.used_c_runtime:
@@ -293,14 +294,52 @@ class LLVMIRCompiler:
             if "free" in self.used_c_runtime:
                 self.out.append("declare void @free(i8*)")
             if self.threads_used:
-                self.out.append("declare i32 @pthread_create(i64*, i8*, i8* (i8*)*, i8*)")
+                # pthread_create is declared by gc_runtime.ll; pthread_join is not.
                 self.out.append("declare i32 @pthread_join(i64, i8**)")
             self.out.append("")
 
-        if self.threads_used:
-            self._wrap_main_with_thread_join()
+        self._wrap_main_with_thread_join()
+
+        if self.used_gc:
+            self._emit_gc_runtime()
 
         return "\n".join(self.out)
+
+    def _emit_gc_runtime(self):
+        """Append the precompiled concurrent collector to this module.
+
+        gc_runtime.ll is produced from gc_runtime.c by build_gc_runtime.sh.
+        That script removes the ModuleID/source_filename/target lines and
+        renames clang's private string constants so they cannot collide with
+        generated ones. Keeping the runtime in IR means both `lli` and native
+        executables get identical GC behaviour.
+        """
+        runtime_path = os.path.join(os.path.dirname(__file__), "gc_runtime.ll")
+        with open(runtime_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+
+        # The runtime declares libc symbols itself (printf for GC stats,
+        # malloc/free/pthread_* for the allocator and collector). Remove any
+        # backend declarations for the same symbols: LLVM rejects a second
+        # declaration even if only the pointer types differ.
+        runtime_decls = set()
+        for line in lines:
+            if line.startswith("declare "):
+                match = re.search(r"@([^\s(]+)", line)
+                if match:
+                    runtime_decls.add(match.group(0))
+        filtered = []
+        for line in self.out:
+            if line.startswith("declare "):
+                match = re.search(r"@([^\s(]+)", line)
+                if match and match.group(0) in runtime_decls:
+                    continue
+            filtered.append(line)
+        self.out = filtered
+
+        self.out.append("")
+        self.out.append("; ---- concurrent garbage collector runtime ----")
+        self.out.extend(lines)
 
     def _register_union(self, t):
         if t not in self.union_types:
@@ -444,6 +483,9 @@ class LLVMIRCompiler:
         else:
             closure = None
         self.out.append(f"define internal i8* @__thread_tramp_{seq}(i8* %_cr) {{")
+        if self.used_gc:
+            self.out.append("  %_gcsp = alloca i8")
+            self.out.append("  call void @__threadon_gc_thread_enter(i8* %_gcsp)")
         if capt_types:
             self.out.append(f"  %_cl = bitcast i8* %_cr to {closure}*")
         arg_bits = []
@@ -455,8 +497,8 @@ class LLVMIRCompiler:
         if arg_str:
             arg_str = " " + arg_str
         self.out.append(f"  call void @{body}({arg_str})")
-        if capt_types:
-            self.out.append("  call void @free(i8* %_cr)")
+        if self.used_gc:
+            self.out.append("  call void @__threadon_gc_thread_exit()")
         self.out.append("  ret i8* null")
         self.out.append("}")
         self.out.append("")
@@ -475,10 +517,22 @@ class LLVMIRCompiler:
             return
         self.out.append("")
         self.out.append("define i32 @main() {")
+        if self.used_gc:
+            self.out.append("  %_gcsp = alloca i8")
+            self.out.append("  call void @__threadon_gc_thread_enter(i8* %_gcsp)")
+            for name, var_type, _ in getattr(self.module, 'module_vars', []):
+                llvm_type = "i8" if var_type == "Bool" else self.to_llvm_type(var_type)
+                size = self._llvm_sizeof(llvm_type)
+                self.out.append(
+                    f"  call void @__threadon_gc_add_root(i8* bitcast ({llvm_type}* @{name} to i8*), i64 {size})"
+                )
         if getattr(self, 'has_module_threads', False):
             self.out.append("  call void @__threadon_module_threads()")
         self.out.append("  %_r = call i32 @__threadon_real_main()")
-        self.out.append("  call void @__threadon_thread_join_all()")
+        if self.threads_used:
+            self.out.append("  call void @__threadon_thread_join_all()")
+        if self.used_gc:
+            self.out.append("  call void @__threadon_gc_shutdown()")
         self.out.append("  ret i32 %_r")
         self.out.append("}")
         self.out.append("")
@@ -1105,7 +1159,7 @@ class LLVMIRCompiler:
 
     def _emit_str_concat(self, res, left, right):
         self.used_c_runtime.add("strlen")
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         self.used_c_runtime.add("memcpy")
 
         l = self.operand(left)
@@ -1121,7 +1175,7 @@ class LLVMIRCompiler:
             f"{len_r} = call i64 @strlen(i8* {r})",
             f"{total} = add i64 {len_l}, {len_r}",
             f"{total}_1 = add i64 {total}, 1",
-            f"{buf} = call i8* @malloc(i64 {total}_1)",
+            f"{buf} = call i8* @__threadon_gc_alloc(i64 {total}_1, i64 0)",
             f"call void @llvm.memcpy.p0i8.p0i8.i64(i8* {buf}, i8* {l}, i64 {len_l}, i1 false)",
             f"{buf}_mid = getelementptr i8, i8* {buf}, i64 {len_l}",
             f"call void @llvm.memcpy.p0i8.p0i8.i64(i8* {buf}_mid, i8* {r}, i64 {len_r}, i1 false)",
@@ -1773,6 +1827,17 @@ class LLVMIRCompiler:
         ptr_op = self.operand(ptr_val)
         return f"store {val_type} {val_op}, {val_type}* {ptr_op}"
 
+    def _gc_barrier_lines(self, ptr, llvm_type, hint="gcb", size=None):
+        """Tell the collector about a pointer stored into a heap object."""
+        self.used_gc = True
+        slot = self._fresh_reg(hint)
+        if size is None:
+            size = self._llvm_sizeof(llvm_type)
+        return [
+            f"{slot} = ptrtoint {llvm_type}* {ptr} to i64",
+            f"call void @__threadon_gc_barrier(i64 {slot}, i64 {size})",
+        ]
+
     def _error(self, msg):
         print(f"\033[91m\033[1mError:\033[0m {msg}", file=sys.stderr)
         raise SystemExit(1)
@@ -2078,13 +2143,13 @@ class LLVMIRCompiler:
         return [f"{res} = extractvalue {obj_llvm} {obj_op}, 0"]
 
     def _emit_chr(self, res, code):
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         code_llvm = self.to_llvm_type(code.type)
         cv = self.operand(code)
         b = f"{res}_b"
         t = f"{res}_t"
         return [
-            f"{res} = call i8* @malloc(i64 2)",
+            f"{res} = call i8* @__threadon_gc_alloc(i64 2, i64 0)",
             f"{b} = trunc {code_llvm} {cv} to i8",
             f"store i8 {b}, i8* {res}",
             f"{t} = getelementptr i8, i8* {res}, i64 1",
@@ -2719,7 +2784,7 @@ class LLVMIRCompiler:
         if closure is not None:
             bytes = self._llvm_sizeof(closure)
             cl_fl = self._fresh_reg("cl")
-            out.append(f"{cl_fl} = call i8* @malloc(i64 {bytes})")
+            out.append(f"{cl_fl} = call i8* @__threadon_gc_alloc(i64 {bytes}, i64 0)")
             cl_ll = self._fresh_reg("cll")
             out.append(
                 f"{cl_ll} = bitcast i8* {cl_fl} to {closure}*"
@@ -2732,6 +2797,7 @@ class LLVMIRCompiler:
                 out.append(
                     f"  store {t} {self.operand(val)}, {t}* {f}"
                 )
+                out.extend(self._gc_barrier_lines(f, t, "gcbcl"))
             closure_arg = cl_fl
         else:
             closure_arg = "null"
@@ -3078,7 +3144,8 @@ class LLVMIRCompiler:
         return f"{res} = insertvalue {llvm_type} {base}, {ftype} {foperand}, {idx}"
 
     def _emit_tmpl_concat(self, res, parts):
-        self.used_c_runtime.update(["malloc", "strlen"])
+        self.used_c_runtime.add("strlen")
+        self.used_gc = True
         n = len(parts)
         lines = []
 
@@ -3106,13 +3173,13 @@ class LLVMIRCompiler:
         return lines
 
     def _emit_template_new(self, res, args):
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         render_name = args[0]
         ptrs = args[1:]
         n = len(ptrs)
         lines = []
 
-        lines.append(f"{res}_payload = call i8* @malloc(i64 {8 * n})")
+        lines.append(f"{res}_payload = call i8* @__threadon_gc_alloc(i64 {8 * n}, i64 0)")
 
         for i, p in enumerate(ptrs):
             po = self.operand(p, materialize=False)
@@ -3122,6 +3189,9 @@ class LLVMIRCompiler:
             )
             lines.append(f"{res}_bc{i} = bitcast {ptype} {po} to i8*")
             lines.append(f"store i8* {res}_bc{i}, i8* {res}_pg{i}")
+            lines.extend(
+                self._gc_barrier_lines(f"{res}_pg{i}", "i8", "gcbtp", size=8)
+            )
 
         lines.append(
             f"{res}_fn = bitcast i8* (i8**)* @{render_name} to i8*"
@@ -3149,7 +3219,8 @@ class LLVMIRCompiler:
         ]
 
     def _emit_template_runtime(self):
-        self.used_c_runtime.update(["malloc", "strlen"])
+        self.used_c_runtime.add("strlen")
+        self.used_gc = True
 
         self.out.append("")
         self.out.append("define i8* @__threadon_concat(i8** %parts, i64 %count) {")
@@ -3176,7 +3247,7 @@ class LLVMIRCompiler:
         self.out.append("done1:")
         self.out.append("  %tot = load i64, i64* %len")
         self.out.append("  %tot1 = add i64 %tot, 1")
-        self.out.append("  %buf = call i8* @malloc(i64 %tot1)")
+        self.out.append("  %buf = call i8* @__threadon_gc_alloc(i64 %tot1, i64 0)")
         self.out.append("  %wi = alloca i64")
         self.out.append("  store i64 0, i64* %wi")
         self.out.append("  %pi = alloca i64")
@@ -3222,7 +3293,7 @@ class LLVMIRCompiler:
 
         self.out.append("define i8* @__threadon_tmpl_new(i8* %render, i8* %payload) {")
         self.out.append("entry:")
-        self.out.append("  %obj = call i8* @malloc(i64 16)")
+        self.out.append("  %obj = call i8* @__threadon_gc_alloc(i64 16, i64 0)")
         self.out.append("  store i8* %render, i8* %obj")
         self.out.append("  %p = getelementptr i8, i8* %obj, i64 8")
         self.out.append("  store i8* %payload, i8* %p")
@@ -3332,22 +3403,24 @@ class LLVMIRCompiler:
         n = len(elems)
         elem_size = self._llvm_sizeof(elem_llvm)
         total = n * elem_size
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         lines = []
         raw = f"{res}_raw"
-        lines.append(f"{raw} = call i8* @malloc(i64 {total})")
+        lines.append(f"{raw} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
         data = f"{res}_data"
         lines.append(f"{data} = bitcast i8* {raw} to {elem_llvm}*")
         for i, e in enumerate(elems):
             val = self.operand(e)
             if i == 0:
                 lines.append(f"store {elem_llvm} {val}, {elem_llvm}* {data}")
+                lines.extend(self._gc_barrier_lines(data, elem_llvm, "gcbli"))
             else:
                 ptr = f"{res}_p{i}"
                 lines.append(
                     f"{ptr} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {i}"
                 )
                 lines.append(f"store {elem_llvm} {val}, {elem_llvm}* {ptr}")
+                lines.extend(self._gc_barrier_lines(ptr, elem_llvm, "gcbli"))
         v0 = f"{res}_v0"
         lines.append(f"{v0} = insertvalue {rtype} undef, i64 {n}, 0")
         lines.append(f"{res} = insertvalue {rtype} {v0}, {elem_llvm}* {data}, 1")
@@ -3434,6 +3507,7 @@ class LLVMIRCompiler:
         gep = f"{res}_gep"
         lines.append(f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {idx64}")
         lines.append(f"store {elem_llvm} {self.operand(val, materialize=False)}, {elem_llvm}* {gep}")
+        lines.extend(self._gc_barrier_lines(gep, elem_llvm, "gcbls"))
         v0 = f"{res}_v0"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {lenv}, 0")
         lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {data}, 1")
@@ -3497,9 +3571,9 @@ class LLVMIRCompiler:
             lines.append("  unreachable")
             lines.append(f"{res.lstrip('%')}_get:")
 
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         buf = f"{res}_buf"
-        lines.append(f"{buf} = call i8* @malloc(i64 2)")
+        lines.append(f"{buf} = call i8* @__threadon_gc_alloc(i64 2, i64 0)")
         gep = f"{res}_gep"
         lines.append(f"{gep} = getelementptr i8, i8* {obj_op}, i64 {idx64}")
         byte = f"{res}_byte"
@@ -3517,7 +3591,7 @@ class LLVMIRCompiler:
         end = instr.args[2]
         obj_op = self.operand(obj)
         self.used_c_runtime.add("strlen")
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         self.used_intrinsics.add("llvm.memcpy.p0i8.p0i8.i64")
         lines = []
         len_reg = f"{res}_len"
@@ -3542,7 +3616,7 @@ class LLVMIRCompiler:
         total = f"{res}_tot"
         lines.append(f"{total} = add i64 {cnt}, 1")
         buf = f"{res}_buf"
-        lines.append(f"{buf} = call i8* @malloc(i64 {total})")
+        lines.append(f"{buf} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
         srcp = f"{res}_srcp"
         lines.append(f"{srcp} = getelementptr i8, i8* {obj_op}, i64 {s_reg}")
         lines.append(
@@ -3563,7 +3637,7 @@ class LLVMIRCompiler:
         elem_llvm = self.to_llvm_type(elem_type)
         llvm_type = self.to_llvm_type(obj_type)
         obj_op = self.operand(obj)
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         lines = []
         len_reg = f"{res}_len"
         lines.append(f"{len_reg} = extractvalue {llvm_type} {obj_op}, 0")
@@ -3590,7 +3664,7 @@ class LLVMIRCompiler:
         total = f"{res}_tot"
         lines.append(f"{total} = mul i64 {cnt}, {size}")
         raw = f"{res}_raw"
-        lines.append(f"{raw} = call i8* @malloc(i64 {total})")
+        lines.append(f"{raw} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
         ndata = f"{res}_ndata"
         lines.append(f"{ndata} = bitcast i8* {raw} to {elem_llvm}*")
         srcp = f"{res}_srcp"
@@ -3667,7 +3741,7 @@ class LLVMIRCompiler:
         llvm_type = self.to_llvm_type(obj_type)
         obj_op = self.operand(obj)
         val_op = self.operand(val, materialize=False)
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
 
         lenv = f"{res}_len"
         data = f"{res}_data"
@@ -3681,7 +3755,7 @@ class LLVMIRCompiler:
         total = f"{res}_tot"
         lines.append(f"{total} = mul i64 {new_len}, {size}")
         raw = f"{res}_raw"
-        lines.append(f"{raw} = call i8* @malloc(i64 {total})")
+        lines.append(f"{raw} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
         new_data = f"{res}_ndata"
         lines.append(f"{new_data} = bitcast i8* {raw} to {elem_llvm}*")
 
@@ -3696,6 +3770,7 @@ class LLVMIRCompiler:
             f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {new_data}, i64 {lenv}"
         )
         lines.append(f"store {elem_llvm} {val_op}, {elem_llvm}* {gep}")
+        lines.extend(self._gc_barrier_lines(gep, elem_llvm, "gcbla"))
 
         v0 = f"{res}_v0"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {new_len}, 0")
@@ -3779,14 +3854,14 @@ class LLVMIRCompiler:
         lines.append(f"{oob} = icmp sgt i64 {lower}, {lenv}")
         lines.append(f"{cidx} = select i1 {oob}, i64 {lenv}, i64 {lower}")
 
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         new_len = f"{res}_nlen"
         lines.append(f"{new_len} = add i64 {lenv}, 1")
         size = self._llvm_sizeof(elem_llvm)
         total = f"{res}_tot"
         lines.append(f"{total} = mul i64 {new_len}, {size}")
         raw = f"{res}_raw"
-        lines.append(f"{raw} = call i8* @malloc(i64 {total})")
+        lines.append(f"{raw} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
         new_data = f"{res}_ndata"
         lines.append(f"{new_data} = bitcast i8* {raw} to {elem_llvm}*")
 
@@ -3801,6 +3876,7 @@ class LLVMIRCompiler:
             f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {new_data}, i64 {cidx}"
         )
         lines.append(f"store {elem_llvm} {val_op}, {elem_llvm}* {gep}")
+        lines.extend(self._gc_barrier_lines(gep, elem_llvm, "gcbli2"))
 
         rem = f"{res}_rem"
         lines.append(f"{rem} = sub i64 {lenv}, {cidx}")
@@ -3910,14 +3986,14 @@ class LLVMIRCompiler:
             lines.append(f"br label %{merge}")
 
         lines.append(f"{found}:")
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         new_len = f"{res}_flnr"
         lines.append(f"{new_len} = sub i64 {lenv}, 1")
         size = self._llvm_sizeof(elem_llvm)
         total = f"{res}_flt"
         lines.append(f"{total} = mul i64 {new_len}, {size}")
         raw = f"{res}_flraw"
-        lines.append(f"{raw} = call i8* @malloc(i64 {total})")
+        lines.append(f"{raw} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
         new_data = f"{res}_flnd"
         lines.append(f"{new_data} = bitcast i8* {raw} to {elem_llvm}*")
 
@@ -3990,18 +4066,18 @@ class LLVMIRCompiler:
         n = len(keys)
         key_llvm = self.to_llvm_type(key_type)
         val_llvm = self.to_llvm_type(val_type)
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         lines = []
 
         key_total = n * self._llvm_sizeof(key_llvm)
         keys_raw = f"{res}_kr"
-        lines.append(f"{keys_raw} = call i8* @malloc(i64 {key_total})")
+        lines.append(f"{keys_raw} = call i8* @__threadon_gc_alloc(i64 {key_total}, i64 0)")
         keys_data = f"{res}_kd"
         lines.append(f"{keys_data} = bitcast i8* {keys_raw} to {key_llvm}*")
 
         val_total = n * self._llvm_sizeof(val_llvm)
         vals_raw = f"{res}_vr"
-        lines.append(f"{vals_raw} = call i8* @malloc(i64 {val_total})")
+        lines.append(f"{vals_raw} = call i8* @__threadon_gc_alloc(i64 {val_total}, i64 0)")
         vals_data = f"{res}_vd"
         lines.append(f"{vals_data} = bitcast i8* {vals_raw} to {val_llvm}*")
 
@@ -4010,7 +4086,9 @@ class LLVMIRCompiler:
             vval = self.operand(v)
             if i == 0:
                 lines.append(f"store {key_llvm} {kval}, {key_llvm}* {keys_data}")
+                lines.extend(self._gc_barrier_lines(keys_data, key_llvm, "gcbdik"))
                 lines.append(f"store {val_llvm} {vval}, {val_llvm}* {vals_data}")
+                lines.extend(self._gc_barrier_lines(vals_data, val_llvm, "gcbdiv"))
             else:
                 kptr = f"{res}_kp{i}"
                 vptr = f"{res}_vp{i}"
@@ -4018,10 +4096,12 @@ class LLVMIRCompiler:
                     f"{kptr} = getelementptr {key_llvm}, {key_llvm}* {keys_data}, i64 {i}"
                 )
                 lines.append(f"store {key_llvm} {kval}, {key_llvm}* {kptr}")
+                lines.extend(self._gc_barrier_lines(kptr, key_llvm, "gcbdik"))
                 lines.append(
                     f"{vptr} = getelementptr {val_llvm}, {val_llvm}* {vals_data}, i64 {i}"
                 )
                 lines.append(f"store {val_llvm} {vval}, {val_llvm}* {vptr}")
+                lines.extend(self._gc_barrier_lines(vptr, val_llvm, "gcbdiv"))
 
         v0 = f"{res}_v0"
         v1 = f"{res}_v1"
@@ -4155,7 +4235,7 @@ class LLVMIRCompiler:
             f"{old_vals} = extractvalue {llvm_type} {obj_op}, 2",
         ]
 
-        self.used_c_runtime.add("malloc")
+        self.used_gc = True
         new_count = f"{res}_nc"
         lines.append(f"{new_count} = add i64 {old_count}, 1")
 
@@ -4165,14 +4245,14 @@ class LLVMIRCompiler:
         key_total = f"{res}_kt"
         lines.append(f"{key_total} = mul i64 {new_count}, {key_size}")
         keys_raw = f"{res}_kr"
-        lines.append(f"{keys_raw} = call i8* @malloc(i64 {key_total})")
+        lines.append(f"{keys_raw} = call i8* @__threadon_gc_alloc(i64 {key_total}, i64 0)")
         new_keys = f"{res}_nkd"
         lines.append(f"{new_keys} = bitcast i8* {keys_raw} to {key_llvm}*")
 
         val_total = f"{res}_vt"
         lines.append(f"{val_total} = mul i64 {new_count}, {val_size}")
         vals_raw = f"{res}_vr"
-        lines.append(f"{vals_raw} = call i8* @malloc(i64 {val_total})")
+        lines.append(f"{vals_raw} = call i8* @__threadon_gc_alloc(i64 {val_total}, i64 0)")
         new_vals = f"{res}_nvd"
         lines.append(f"{new_vals} = bitcast i8* {vals_raw} to {val_llvm}*")
 
@@ -4259,6 +4339,7 @@ class LLVMIRCompiler:
         ck_val = f"{res}_ckv"
         lines.append(f"{ck_val} = load {key_llvm}, {key_llvm}* {ck_src}")
         lines.append(f"store {key_llvm} {ck_val}, {key_llvm}* {ck_dst}")
+        lines.extend(self._gc_barrier_lines(ck_dst, key_llvm, "gcbdsk"))
 
         cv_src = f"{res}_cvs"
         cv_dst = f"{res}_cvd"
@@ -4271,6 +4352,7 @@ class LLVMIRCompiler:
         cv_val = f"{res}_cvv"
         lines.append(f"{cv_val} = load {val_llvm}, {val_llvm}* {cv_src}")
         lines.append(f"store {val_llvm} {cv_val}, {val_llvm}* {cv_dst}")
+        lines.extend(self._gc_barrier_lines(cv_dst, val_llvm, "gcbdsv"))
 
         lines.append(f"{ci}_next = add i64 {ciphi}, 1")
         lines.append(f"br label %{cpy_nxt}")
@@ -4283,11 +4365,13 @@ class LLVMIRCompiler:
             f"{kgend} = getelementptr {key_llvm}, {key_llvm}* {new_keys}, i64 {iphi_final}"
         )
         lines.append(f"store {key_llvm} {key_op}, {key_llvm}* {kgend}")
+        lines.extend(self._gc_barrier_lines(kgend, key_llvm, "gcbdsk"))
         vgend = f"{res}_vgend"
         lines.append(
             f"{vgend} = getelementptr {val_llvm}, {val_llvm}* {new_vals}, i64 {iphi_final}"
         )
         lines.append(f"store {val_llvm} {val_op}, {val_llvm}* {vgend}")
+        lines.extend(self._gc_barrier_lines(vgend, val_llvm, "gcbdsv"))
 
         v0 = f"{res}_v0"
         v1 = f"{res}_v1"

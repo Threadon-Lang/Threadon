@@ -1,0 +1,103 @@
+# Threadon number formatting
+#
+# Threadon prints floats with a fixed six decimals and has no printf-style
+# formatting. This module adds hexadecimal/binary strings, zero padding,
+# fixed-decimal rendering and thousands separators. Built on `strings` and
+# `math`, both pure Threadon.
+
+from strings import pad_left
+from math import round_f
+
+def hex_digit(n: Int32) -> String
+    if n < 10:
+        return chr(48 + n)
+    return chr(87 + n)
+
+def bin32(x: UInt32) -> String
+    if x == UInt32(0):
+        return "0"
+    n: UInt32 = x
+    out: String = ""
+    while n > UInt32(0):
+        if n % UInt32(2) == UInt32(1):
+            out = "1" + out
+        else:
+            out = "0" + out
+        n = n / UInt32(2)
+    return out
+
+def hex32(x: UInt32) -> String
+    if x == UInt32(0):
+        return "0"
+    n: UInt32 = x
+    out: String = ""
+    while n > UInt32(0):
+        d: Int32 = Int32(n % UInt32(16))
+        out = hex_digit(d) + out
+        n = n / UInt32(16)
+    return out
+
+# The `+ ""` forces a copy of the cast result. Returning a String made by a
+# cast directly from a function currently returns a dangling buffer; copying
+# it first avoids the compiler bug.
+def pad_int(value: Int32, width: Int32, pad: String) -> String
+    text: String = String(value) + ""
+    return pad_left(text, width, pad)
+
+def pad_float(value: Float64, width: Int32, pad: String) -> String
+    text: String = String(value) + ""
+    return pad_left(text, width, pad)
+
+# 10 ** n as an Int64 (n >= 0).
+def pow10(n: Int32) -> Int64
+    p: Int64 = 1
+    i: Int32 = 0
+    while i < n:
+        p = p * 10
+        i += 1
+    return p
+
+# Render a float with a chosen number of decimals, e.g. fixed(3.14159, 2)
+# gives "3.14". Values are rounded half up, then printed without trailing
+# formatting noise.
+def fixed(x: Float64, decimals: Int32) -> String
+    factor: Int64 = pow10(decimals)
+    scaled: Int64 = round_f(x * Float64(factor))
+    negative: Bool = scaled < 0
+    if negative:
+        scaled = -scaled
+    digits: String = String(scaled) + ""
+    out: String = digits
+    if decimals > 0:
+        while Int32(len(digits)) <= decimals:
+            digits = "0" + digits
+        split: Int64 = len(digits) - Int64(decimals)
+        out = digits[:split] + "." + digits[split:]
+    if negative:
+        out = "-" + out
+    return out
+
+def percent(x: Float64, decimals: Int32) -> String
+    return fixed(x * 100.0, decimals) + "%"
+
+# Group the digits of an integer in threes: 1234567 -> "1,234,567".
+def commas(n: Int32) -> String
+    digits: String = String(n)
+    negative: Bool = False
+    if len(digits) > 0:
+        if digits[0:1] == "-":
+            negative = True
+            digits = digits[1:]
+    out: String = ""
+    i: Int32 = Int32(len(digits)) - 1
+    group: Int32 = 0
+    while i >= 0:
+        out = digits[i:i + 1] + out
+        group += 1
+        if group == 3 and i > 0:
+            out = "," + out
+            group = 0
+        i -= 1
+    if negative:
+        return "-" + out
+    return out

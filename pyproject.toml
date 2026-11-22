@@ -26,5 +26,9 @@ threadon = [
     "../stdlib/**/*.th",
     "../stdlib/**/manifest",
     "../stdlib/**/*.cpp",
-    "*.cpp"
+    "*.cpp",
+    "gc_runtime.c",
+    "gc_runtime.ll",
+    "build_gc_runtime.sh",
+    "GC.md"
 ]

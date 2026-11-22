@@ -1,0 +1,107 @@
+# Threadon CSV helpers
+#
+# A tiny RFC-4180-style CSV reader and writer for text held in a String:
+#   * fields are separated by commas
+#   * fields containing a comma, quote or newline are wrapped in quotes
+#   * a quote inside a quoted field is written as two quotes
+#   * lines are separated by \n
+#
+# There is no file I/O in Threadon, so these functions work on strings from
+# input() or on string literals.
+
+def is_quote(c: String) -> Bool
+    return c == "\""
+
+def is_comma(c: String) -> Bool
+    return c == ","
+
+# Split one CSV line into fields. Quotes may contain commas.
+def parse_line(line: String) -> List[String]
+    fields: List[String] = []
+    field: String = ""
+    quoted: Bool = False
+    i: Int32 = 0
+    while i < Int32(len(line)):
+        c: String = line[i:i + 1]
+        if quoted:
+            if is_quote(c):
+                if i + 1 < Int32(len(line)):
+                    if is_quote(line[i + 1:i + 2]):
+                        field = field + "\""
+                        i += 2
+                        continue
+                quoted = False
+                i += 1
+                continue
+            field = field + c
+            i += 1
+            continue
+        if is_quote(c) and len(field) == 0:
+            quoted = True
+            i += 1
+            continue
+        if is_comma(c):
+            fields.append(field)
+            field = ""
+            i += 1
+            continue
+        field = field + c
+        i += 1
+    fields.append(field)
+    return fields
+
+# Quote a field only when it needs it.
+def encode_field(s: String) -> String
+    needs_quotes: Bool = False
+    i: Int32 = 0
+    while i < Int32(len(s)):
+        c: String = s[i:i + 1]
+        if is_comma(c) or is_quote(c) or c == "\n" or c == chr(13):
+            needs_quotes = True
+        i += 1
+    if not needs_quotes:
+        return s
+    out: String = "\""
+    i = 0
+    while i < Int32(len(s)):
+        c: String = s[i:i + 1]
+        if is_quote(c):
+            out = out + "\"\""
+        else:
+            out = out + c
+        i += 1
+    return out + "\""
+
+def encode_line(fields: List[String]) -> String
+    out: String = ""
+    i: Int32 = 0
+    while i < Int32(len(fields)):
+        if i > 0:
+            out = out + ","
+        out = out + encode_field(fields[i])
+        i += 1
+    return out
+
+# Split a multi-line CSV string. A trailing newline does not add an empty row.
+def split_lines(text: String) -> List[String]
+    rows: List[String] = []
+    row: String = ""
+    i: Int32 = 0
+    while i < Int32(len(text)):
+        c: String = text[i:i + 1]
+        if c == "\n":
+            rows.append(row)
+            row = ""
+        else:
+            row = row + c
+        i += 1
+    if len(row) > 0:
+        rows.append(row)
+    return rows
+
+# Convenience: field number `index` (0-based) of a single CSV line.
+def get_field(line: String, index: Int32) -> String
+    fields: List[String] = parse_line(line)
+    if index < 0 or index >= Int32(len(fields)):
+        return ""
+    return fields[index]

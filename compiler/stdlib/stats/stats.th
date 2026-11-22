@@ -1,0 +1,96 @@
+# Threadon statistics library
+#
+# Descriptive statistics for List[Int32] and List[Float64]. Built on top of
+# the `lists` and `math` modules, both pure Threadon.
+#
+# Variance is the population variance (divide by N, not N-1). Empty lists
+# produce 0 for every statistic.
+
+from lists import sort_int, sum_int, min_int, max_int
+from math import sqrt_f
+
+def mean_int(xs: List[Int32]) -> Float64
+    if len(xs) == 0:
+        return 0.0
+    return Float64(sum_int(xs)) / Float64(len(xs))
+
+def median_int(xs: List[Int32]) -> Float64
+    if len(xs) == 0:
+        return 0.0
+    ordered: List[Int32] = sort_int(xs)
+    n: Int64 = len(ordered)
+    mid: Int64 = n // 2
+    if n % 2 == 1:
+        return Float64(ordered[Int32(mid)])
+    return (Float64(ordered[Int32(mid - 1)]) + Float64(ordered[Int32(mid)])) / 2.0
+
+def variance_int(xs: List[Int32]) -> Float64
+    if len(xs) == 0:
+        return 0.0
+    m: Float64 = mean_int(xs)
+    total: Float64 = 0.0
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        d: Float64 = Float64(xs[i]) - m
+        total = total + d * d
+        i += 1
+    return total / Float64(len(xs))
+
+def stddev_int(xs: List[Int32]) -> Float64
+    return sqrt_f(variance_int(xs))
+
+# Difference between the largest and smallest value.
+def range_int(xs: List[Int32]) -> Int32
+    if len(xs) == 0:
+        return 0
+    return max_int(xs) - min_int(xs)
+
+def sum_float(xs: List[Float64]) -> Float64
+    total: Float64 = 0.0
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        total = total + xs[i]
+        i += 1
+    return total
+
+def mean_float(xs: List[Float64]) -> Float64
+    if len(xs) == 0:
+        return 0.0
+    return sum_float(xs) / Float64(len(xs))
+
+def min_float(xs: List[Float64]) -> Float64
+    if len(xs) == 0:
+        return 0.0
+    best: Float64 = xs[0]
+    i: Int32 = 1
+    while i < Int32(len(xs)):
+        if xs[i] < best:
+            best = xs[i]
+        i += 1
+    return best
+
+def max_float(xs: List[Float64]) -> Float64
+    if len(xs) == 0:
+        return 0.0
+    best: Float64 = xs[0]
+    i: Int32 = 1
+    while i < Int32(len(xs)):
+        if xs[i] > best:
+            best = xs[i]
+        i += 1
+    return best
+
+def variance_float(xs: List[Float64]) -> Float64
+    if len(xs) == 0:
+        return 0.0
+    m: Float64 = mean_float(xs)
+    total: Float64 = 0.0
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        d: Float64 = xs[i] - m
+        total = total + d * d
+        i += 1
+    return total / Float64(len(xs))
+
+def stddev_float(xs: List[Float64]) -> Float64
+    return sqrt_f(variance_float(xs))

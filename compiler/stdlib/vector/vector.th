@@ -1,0 +1,79 @@
+# Threadon vector library
+#
+# Two- and three-dimensional vectors of Float64. Vec2 and Vec3 are structs,
+# so they use value semantics and named field initializers:
+#
+#   from vector import Vec2, add2
+#   v: Vec2 = Vec2(x=1.0, y=2.0)
+#   w: Vec2 = add2(v, Vec2(x=3.0, y=4.0))
+#
+# Structs have no methods in Threadon, so the operations are plain functions.
+
+from math import sqrt_f
+
+struct Vec2:
+    x: Float64
+    y: Float64
+
+struct Vec3:
+    x: Float64
+    y: Float64
+    z: Float64
+
+def vec2(x: Float64, y: Float64) -> Vec2
+    return Vec2(x=x, y=y)
+
+def vec3(x: Float64, y: Float64, z: Float64) -> Vec3
+    return Vec3(x=x, y=y, z=z)
+
+def add2(a: Vec2, b: Vec2) -> Vec2
+    return Vec2(x=a.x + b.x, y=a.y + b.y)
+
+def sub2(a: Vec2, b: Vec2) -> Vec2
+    return Vec2(x=a.x - b.x, y=a.y - b.y)
+
+def scale2(a: Vec2, k: Float64) -> Vec2
+    return Vec2(x=a.x * k, y=a.y * k)
+
+def dot2(a: Vec2, b: Vec2) -> Float64
+    return a.x * b.x + a.y * b.y
+
+def length2(a: Vec2) -> Float64
+    return sqrt_f(a.x * a.x + a.y * a.y)
+
+# Unit vector in the same direction. The zero vector stays zero.
+def normalize2(a: Vec2) -> Vec2
+    n: Float64 = length2(a)
+    if n == 0.0:
+        return a
+    return Vec2(x=a.x / n, y=a.y / n)
+
+def distance2(a: Vec2, b: Vec2) -> Float64
+    return length2(sub2(a, b))
+
+def add3(a: Vec3, b: Vec3) -> Vec3
+    return Vec3(x=a.x + b.x, y=a.y + b.y, z=a.z + b.z)
+
+def sub3(a: Vec3, b: Vec3) -> Vec3
+    return Vec3(x=a.x - b.x, y=a.y - b.y, z=a.z - b.z)
+
+def scale3(a: Vec3, k: Float64) -> Vec3
+    return Vec3(x=a.x * k, y=a.y * k, z=a.z * k)
+
+def dot3(a: Vec3, b: Vec3) -> Float64
+    return a.x * b.x + a.y * b.y + a.z * b.z
+
+def cross3(a: Vec3, b: Vec3) -> Vec3
+    return Vec3(x=a.y * b.z - a.z * b.y, y=a.z * b.x - a.x * b.z, z=a.x * b.y - a.y * b.x)
+
+def length3(a: Vec3) -> Float64
+    return sqrt_f(a.x * a.x + a.y * a.y + a.z * a.z)
+
+def normalize3(a: Vec3) -> Vec3
+    n: Float64 = length3(a)
+    if n == 0.0:
+        return a
+    return Vec3(x=a.x / n, y=a.y / n, z=a.z / n)
+
+def distance3(a: Vec3, b: Vec3) -> Float64
+    return length3(sub3(a, b))

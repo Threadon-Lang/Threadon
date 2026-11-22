@@ -152,14 +152,22 @@ def patch_llvm(llvm):
 
 
 def dedupe_decls(llvm):
-    """Remove duplicate ``declare`` lines (e.g. printf from backend + harness)."""
+    """Remove duplicate ``declare`` lines by symbol name.
+
+    The GC runtime is emitted before the backend's C-runtime declarations and
+    may already declare ``printf`` (for ``THREADON_GC_STATS``) or ``malloc``
+    with a slightly different signature. LLVM rejects a second declaration of
+    the same symbol even when the types differ, so keep the first one.
+    """
     seen = set()
     out = []
     for line in llvm.splitlines():
         if line.startswith("declare "):
-            if line in seen:
+            match = re.search(r"@([^\s(]+)", line)
+            key = match.group(0) if match else line
+            if key in seen:
                 continue
-            seen.add(line)
+            seen.add(key)
         out.append(line)
     return "\n".join(out)
 
