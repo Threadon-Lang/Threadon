@@ -39,10 +39,6 @@ Execute the program with `lli` after compiling.
 
 Build a native executable via `llc` and `gcc`.
 
-`-e NAME`
-
-Use NAME as the entry point instead of `main`.
-
 `-I DIR`
 
 Add an import search path. Repeatable.
@@ -58,19 +54,10 @@ Optimizer inline threshold. Default `0` = no inlining.
 
 Flag infinite (`inf`) and `NaN` float values: non-finite constants are a compile-time error and values that become non-finite at runtime raise a runtime error. Independent of `--debug`. Without it, non-finite values are allowed silently.
 
-Choosing the entry point
-------------------------
+Entry point
+-----------
 
-By default the program starts at `main`, and its return value becomes the exit code. Use `-e` to start somewhere else:
-
-    python3 -m threadon --run -e greet file.th
-
-Two conditions hold:
-
-*   The named function must exist. Otherwise: _"no function 'greet' found in the compiled module"_.
-*   The file must not also define `main`. Otherwise: _"the module already defines a 'main' function"_.
-
-The entry function's return value becomes the exit code, like `main`. If it returns `NoneType`, the exit code is 0.
+Programs always start at `main`. Its return value becomes the exit code. A program without a `main` function cannot be run or built as an executable: `error: no function 'main' found in the compiled module`.
 
 Building an executable
 ----------------------

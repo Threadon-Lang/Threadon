@@ -470,25 +470,27 @@ class Importer:
         if name in self.sources:
             return self.sources[name]
 
-        manifest_path = self._find_manifest_path(name)
-        if manifest_path is not None:
-            man = parse_manifest(manifest_path.read_text(), manifest_path)
-            if man.lang != "threadon":
-                return None
-            source_name = man.source or f"{name.split('.')[-1]}.th"
-            source_path = manifest_path.parent / source_name
-            if source_path.is_file():
-                return source_path.read_text()
-            return None
-
         rel = Path(*name.split("."))
-        candidates = [rel.with_suffix(MODULE_EXTENSION)]
+        plain = rel.with_suffix(MODULE_EXTENSION)
 
+        # Search one directory at a time. A plain module in an earlier search
+        # path must win over a bundled manifest in a later one; scanning all
+        # manifests first would let stdlib shadow a local math.th, for example.
         for base in self.search_paths:
-            for candidate in candidates:
-                path = base / candidate
-                if path.is_file():
-                    return path.read_text()
+            manifest_path = base / rel / MANIFEST_FILENAME
+            if manifest_path.is_file():
+                man = parse_manifest(manifest_path.read_text(), manifest_path)
+                if man.lang != "threadon":
+                    return None
+                source_name = man.source or f"{name.split('.')[-1]}.th"
+                source_path = manifest_path.parent / source_name
+                if source_path.is_file():
+                    return source_path.read_text()
+                return None
+
+            path = base / plain
+            if path.is_file():
+                return path.read_text()
 
         return None
 

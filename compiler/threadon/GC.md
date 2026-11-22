@@ -1,8 +1,23 @@
 # Threadon garbage collector
 
-Threadon manages heap memory automatically. There is no `free` in the
-language, and you do not need to call one from native modules for values the
-compiler allocates.
+Threadon has an explicit, manual garbage collector. There is no `free` in the
+language; instead the built-in `collect()` function runs a full collection
+synchronously before returning:
+
+```threadon
+def work() -> NoneType
+    s: String = ""
+    i: Int32 = 0
+    while i < 1000:
+        s = s + "garbage"
+        i += 1
+    collect()  # reclaim the discarded intermediate strings here
+```
+
+`collect()` takes no arguments and returns `NoneType`. Nothing is collected
+automatically: there is no background collector thread, no allocation
+threshold and no `THREADON_GC_THRESHOLD` environment variable. A program that
+never calls `collect()` never runs a collection, even if it allocates heavily.
 
 ## What is collected
 
@@ -16,6 +31,11 @@ Every allocation emitted by the compiler goes through `__threadon_gc_alloc`:
 String literals are static constants and are not collected. Memory owned by
 native modules (C/C++/Rust/Python objects) is still owned by those modules.
 
+A collection reclaims blocks that are unreachable from the current roots. The
+compiler does not insert collection calls for you, so call `collect()` at
+points where you know a batch of temporary values has become garbage — for
+example between iterations of a long loop, or after dropping a large list.
+
 ## How it works
 
 Each heap object has a 48-byte header (magic, size, mark epoch, links)
@@ -23,52 +43,42 @@ followed by the payload pointer returned to generated code. Payload words are
 scanned **conservatively** — a word is treated as a pointer if it points at a
 live header. This avoids emitting type descriptors for every container type.
 
-Collection runs on a **background thread**:
+A call to `collect()` performs these steps synchronously, on the calling
+thread:
 
-1. The collector increments the snapshot generation. Mutator threads publish
-   a snapshot of their stack the next time they allocate. A thread only pauses
-   for the few microseconds needed to copy its own root words; other threads
-   keep running.
-2. The collector marks module globals and all published stack snapshots.
-3. It asks for a second snapshot to catch pointers stored into locals during
-   step 2, and marks again.
-4. It sweeps unmarked objects. Objects allocated during the cycle are marked
-   as live by the allocator, and pointer stores into heap objects call a write
-   barrier that marks the new value.
+1. It bumps the mark epoch and snapshot generation, then snapshots the calling
+   thread's stack directly. Mutator threads publish a snapshot of their stack
+   whenever they allocate; those published snapshots are used as roots too.
+2. It marks module globals and all published stack snapshots, following every
+   pointer found inside marked payloads.
+3. It takes a second snapshot generation to catch pointers stored into locals
+   while the first marking pass was running, and marks again.
+4. It sweeps unmarked objects. Objects allocated *during* a collection are
+   marked immediately, and pointer stores into heap objects call a write
+   barrier that marks the new value. Together these preserve the tri-color
+   invariant without precise per-field barriers.
 
-So there is **no stop-the-world pause**. Marking and sweeping run concurrently
-with the program; the only synchronization is a short per-thread stack
-snapshot and a small spinlock around heap bookkeeping.
+Collection pauses the calling thread for the whole mark-and-sweep cycle. Other
+threads keep running, but they briefly lock around heap bookkeeping and stack
+snapshot publication. New allocations during a cycle are safe.
 
-## Tuning
+## Stats
 
-Set `THREADON_GC_THRESHOLD` to change the allocation threshold (in bytes):
-
-```bash
-THREADON_GC_THRESHOLD=16777216 python3 -m threadon app.th --run
-```
-
-The default is 4 MiB. A smaller value collects more often (more CPU, less
-memory); a larger value collects less often. `THREADON_GC_THRESHOLD=0` disables
-collection entirely — allocations still use the GC allocator, but no collector
-thread is started. That is useful for very small, bounded heaps, but memory is
-then never reclaimed.
-
-To see what the collector is doing, set `THREADON_GC_STATS=1`:
+Set `THREADON_GC_STATS` to any value other than `0` to get timing info:
 
 ```bash
-THREADON_GC_STATS=1 THREADON_GC_THRESHOLD=1048576 python3 -m threadon app.th --run
+THREADON_GC_STATS=1 python3 -m threadon app.th --run
 ```
 
 At exit it prints a line like:
 
 ```
-[gc] collections=428 snapshots=856 snapshot_max=2us snapshot_avg=0us mark_max=1550us sweep_max=857us collector_total=491.0ms
+[gc] collections=2 snapshots=4 snapshot_max=0us snapshot_avg=0us mark_max=11us sweep_max=179us collector_total=0.2ms
 ```
 
-`snapshot_*` is the per-thread pause while publishing roots; `mark_max` and
-`sweep_max` are the longest background phases. `collector_total` includes time
-waiting for snapshots, so it is not the same as pause time.
+`collections` counts explicit `collect()` calls. `snapshot_*` is the time spent
+publishing root snapshots, `mark_max` and `sweep_max` are the longest single
+mark/sweep phases, and `collector_total` is the sum of all collection time.
 
 ## Implementation notes
 
@@ -81,22 +91,22 @@ waiting for snapshots, so it is not the same as pause time.
 The script strips module/target lines and renames clang's private `@.str.*`
 constants so they cannot collide with string constants in generated modules.
 
-The generated IR is appended to a module only when it actually allocates, so
-compute-only programs do not pay for the collector at JIT startup. Keeping the
-runtime in IR means `lli` and native executables behave identically.
+The generated IR is appended to a module when it allocates **or** calls
+`collect()`, so compute-only programs do not pay for the collector at JIT
+startup. Keeping the runtime in IR means `lli` and native executables behave
+identically.
 
 ### Known limitations
 
 - Conservative scanning can keep an object alive for one extra cycle if an
   integer happens to look like a heap pointer.
 - A thread that is blocked forever (or never allocates again) keeps its last
-  published stack snapshot. The collector proceeds after a short timeout.
+  published stack snapshot. An explicit `collect()` proceeds with whatever
+  snapshots are available.
 - The collector does not move objects, so native pointers into Threadon
   strings/lists remain valid while the object is live.
-- This is a **soft real-time** design, not a hard 1 ms guarantee. Mutator
-  threads are not globally stopped, but each thread briefly pauses for its own
-  stack snapshot, and the background marker/sweeper competes for CPU and the
-  heap lock. In a stress run with a 4 MiB heap, `mark_max` reached ~4 ms; with a
-  1 MiB threshold it stayed around ~1.5 ms. For a hard deadline, keep the
-  deadline path allocation-free (compute-only code has no GC runtime in the IR)
-  or use `THREADON_GC_THRESHOLD=0` with a bounded heap.
+- Collection time grows with the number of live, reachable blocks. Long
+  mark/sweep pauses are possible on large heaps; tune where you call
+  `collect()` accordingly.
+- Fixed caps: 128 registered threads, 8192 snapshot words per thread and 256
+  global roots.

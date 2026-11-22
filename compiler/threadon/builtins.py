@@ -5,6 +5,7 @@ BUILTIN_SIGS = {
     "dict_key": ([("dict", "poly"), ("index", "Int64")], "poly"),
     "chr": ([("code", "Int32")], "String"),
     "thread_exit": ([], "NoneType"),
+    "collect": ([], "NoneType"),
 }
 
 

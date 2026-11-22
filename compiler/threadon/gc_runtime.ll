@@ -2,656 +2,303 @@
 %struct.GCThread = type { i64, i64, i64, i64, [8192 x i64] }
 %struct.timespec = type { i64, i64 }
 
-@__threadon_gc_alloc.env_initialized = internal unnamed_addr global i1 false, align 4
-@__gc_str = private unnamed_addr constant [22 x i8] c"THREADON_GC_THRESHOLD\00", align 1
-@gc_disabled = internal unnamed_addr global i1 false, align 4
-@gc_threshold = internal unnamed_addr global i64 4194304, align 8
-@__gc_str_1 = private unnamed_addr constant [18 x i8] c"THREADON_GC_STATS\00", align 1
-@gc_stats = internal unnamed_addr global i1 false, align 4
 @gc_collecting = internal unnamed_addr global i64 0, align 8
-@gc_bytes = internal unnamed_addr global i64 0, align 8
 @gc_epoch = internal global i64 1, align 8
-@gc_snap_gen = internal global i64 0, align 8
 @gc_head = internal unnamed_addr global i64 0, align 8
 @gc_min = internal unnamed_addr global i64 -1, align 8
 @gc_max = internal unnamed_addr global i64 0, align 8
-@gc_my_id = internal thread_local unnamed_addr global i64 0, align 8
 @gc_root_count = internal unnamed_addr global i64 0, align 8
 @gc_roots = internal unnamed_addr global [512 x i64] zeroinitializer, align 16
 @gc_thread_count = internal unnamed_addr global i64 0, align 8
+@gc_my_id = internal thread_local unnamed_addr global i64 0, align 8
 @gc_threads = internal unnamed_addr global [128 x %struct.GCThread] zeroinitializer, align 16
-@__gc_str_3 = private unnamed_addr constant [134 x i8] c"[gc] collections=%llu snapshots=%llu snapshot_max=%.0fus snapshot_avg=%.0fus mark_max=%.0fus sweep_max=%.0fus collector_total=%.1fms\0A\00", align 1
+@gc_stats = internal unnamed_addr global i1 false, align 4
 @gc_collections = internal global i64 0, align 8
-@gc_snapshot_count = internal global i64 0, align 8
-@gc_max_snapshot_ns = internal global i64 0, align 8
-@gc_sum_snapshot_ns = internal global i64 0, align 8
+@gc_snap_gen = internal global i64 0, align 8
 @gc_max_mark_ns = internal global i64 0, align 8
 @gc_max_sweep_ns = internal global i64 0, align 8
 @gc_sum_collector_ns = internal global i64 0, align 8
+@__gc_str = private unnamed_addr constant [134 x i8] c"[gc] collections=%llu snapshots=%llu snapshot_max=%.0fus snapshot_avg=%.0fus mark_max=%.0fus sweep_max=%.0fus collector_total=%.1fms\0A\00", align 1
+@gc_snapshot_count = internal global i64 0, align 8
+@gc_max_snapshot_ns = internal global i64 0, align 8
+@gc_sum_snapshot_ns = internal global i64 0, align 8
+@gc_env_initialized = internal unnamed_addr global i1 false, align 4
+@__gc_str_1 = private unnamed_addr constant [18 x i8] c"THREADON_GC_STATS\00", align 1
 @gc_lock = internal global i8 0, align 1
 
 ; Function Attrs: nounwind uwtable
 define dso_local nonnull ptr @__threadon_gc_alloc(i64 noundef %0, i64 noundef %1) local_unnamed_addr #0 {
-  %3 = alloca %struct.timespec, align 8
-  %4 = alloca %struct.timespec, align 8
-  %5 = alloca i64, align 8
-  %6 = load i1, ptr @__threadon_gc_alloc.env_initialized, align 4
-  br i1 %6, label %32, label %7
+  %3 = load i1, ptr @gc_env_initialized, align 4
+  br i1 %3, label %16, label %4
 
-7:                                                ; preds = %2
-  %8 = tail call ptr @getenv(ptr noundef nonnull @__gc_str) #14
-  %9 = icmp eq ptr %8, null
-  br i1 %9, label %15, label %10
+4:                                                ; preds = %2
+  %5 = tail call ptr @getenv(ptr noundef nonnull @__gc_str_1) #14
+  %6 = icmp eq ptr %5, null
+  br i1 %6, label %15, label %7
+
+7:                                                ; preds = %4
+  %8 = load i8, ptr %5, align 1
+  %9 = icmp eq i8 %8, 48
+  br i1 %9, label %10, label %14
 
 10:                                               ; preds = %7
-  %11 = tail call i64 @strtoull(ptr nocapture noundef nonnull %8, ptr noundef null, i32 noundef 0) #14
-  %12 = icmp eq i64 %11, 0
-  br i1 %12, label %13, label %14
+  %11 = getelementptr inbounds i8, ptr %5, i64 1
+  %12 = load i8, ptr %11, align 1
+  %13 = icmp eq i8 %12, 0
+  br i1 %13, label %15, label %14
 
-13:                                               ; preds = %10
-  store i1 true, ptr @gc_disabled, align 4
-  br label %15
-
-14:                                               ; preds = %10
-  store i64 %11, ptr @gc_threshold, align 8, !tbaa !5
-  br label %15
-
-15:                                               ; preds = %13, %14, %7
-  %16 = tail call ptr @getenv(ptr noundef nonnull @__gc_str_1) #14
-  %17 = icmp eq ptr %16, null
-  br i1 %17, label %31, label %18
-
-18:                                               ; preds = %15
-  %19 = load i8, ptr %16, align 1
-  %20 = zext i8 %19 to i32
-  %21 = add nsw i32 %20, -48
-  %22 = icmp eq i32 %21, 0
-  br i1 %22, label %23, label %27
-
-23:                                               ; preds = %18
-  %24 = getelementptr inbounds i8, ptr %16, i64 1
-  %25 = load i8, ptr %24, align 1
-  %26 = zext i8 %25 to i32
-  br label %27
-
-27:                                               ; preds = %18, %23
-  %28 = phi i32 [ %21, %18 ], [ %26, %23 ]
-  %29 = icmp eq i32 %28, 0
-  br i1 %29, label %31, label %30
-
-30:                                               ; preds = %27
+14:                                               ; preds = %10, %7
   store i1 true, ptr @gc_stats, align 4
-  br label %31
+  br label %15
 
-31:                                               ; preds = %30, %27, %15
-  store i1 true, ptr @__threadon_gc_alloc.env_initialized, align 4
-  br label %32
+15:                                               ; preds = %14, %10, %4
+  store i1 true, ptr @gc_env_initialized, align 4
+  br label %16
 
-32:                                               ; preds = %31, %2
-  %33 = add i64 %0, 55
-  %34 = and i64 %33, -8
-  %35 = icmp ult i64 %33, 48
-  %36 = select i1 %35, i64 48, i64 %34
-  %37 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
-  %38 = icmp eq i8 %37, 0
-  br i1 %38, label %43, label %39
+16:                                               ; preds = %2, %15
+  %17 = add i64 %0, 55
+  %18 = and i64 %17, -8
+  %19 = icmp ult i64 %17, 48
+  %20 = select i1 %19, i64 48, i64 %18
+  %21 = tail call noalias ptr @malloc(i64 noundef %20) #15
+  %22 = icmp eq ptr %21, null
+  br i1 %22, label %23, label %24
 
-39:                                               ; preds = %32, %39
-  %40 = tail call i32 @sched_yield() #14
-  %41 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
-  %42 = icmp eq i8 %41, 0
-  br i1 %42, label %43, label %39, !llvm.loop !9
-
-43:                                               ; preds = %39, %32
-  %44 = load atomic i64, ptr @gc_collecting seq_cst, align 8
-  %45 = load i1, ptr @gc_disabled, align 4
-  %46 = icmp ne i64 %44, 0
-  %47 = select i1 %45, i1 true, i1 %46
-  br i1 %47, label %55, label %48
-
-48:                                               ; preds = %43
-  %49 = load i64, ptr @gc_bytes, align 8, !tbaa !5
-  %50 = load i64, ptr @gc_threshold, align 8, !tbaa !5
-  %51 = icmp ugt i64 %49, %50
-  br i1 %51, label %52, label %55
-
-52:                                               ; preds = %48
-  store atomic i64 1, ptr @gc_collecting seq_cst, align 8
-  %53 = atomicrmw add ptr @gc_epoch, i64 1 seq_cst, align 8
-  %54 = atomicrmw add ptr @gc_snap_gen, i64 1 seq_cst, align 8
-  br label %55
-
-55:                                               ; preds = %52, %48, %43
-  %56 = phi i1 [ true, %43 ], [ false, %52 ], [ true, %48 ]
-  %57 = tail call noalias ptr @malloc(i64 noundef %36) #15
-  %58 = icmp eq ptr %57, null
-  br i1 %58, label %59, label %60
-
-59:                                               ; preds = %55
+23:                                               ; preds = %16
   tail call void @abort() #16
   unreachable
 
-60:                                               ; preds = %55
-  store i64 6073194554910330702, ptr %57, align 8, !tbaa !11
-  %61 = getelementptr inbounds i8, ptr %57, i64 8
-  store i64 %36, ptr %61, align 8, !tbaa !13
-  %62 = getelementptr inbounds i8, ptr %57, i64 32
-  tail call void @llvm.memset.p0.i64(ptr noundef nonnull align 8 dereferenceable(16) %62, i8 0, i64 16, i1 false)
-  %63 = load atomic i64, ptr @gc_collecting seq_cst, align 8
-  %64 = icmp eq i64 %63, 0
-  br i1 %64, label %67, label %65
+24:                                               ; preds = %16
+  %25 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %26 = icmp eq i8 %25, 0
+  br i1 %26, label %31, label %27
 
-65:                                               ; preds = %60
-  %66 = load atomic i64, ptr @gc_epoch seq_cst, align 8
-  br label %67
+27:                                               ; preds = %24, %27
+  %28 = tail call i32 @sched_yield() #14
+  %29 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %30 = icmp eq i8 %29, 0
+  br i1 %30, label %31, label %27, !llvm.loop !5
 
-67:                                               ; preds = %60, %65
-  %68 = phi i64 [ %66, %65 ], [ 0, %60 ]
-  %69 = getelementptr inbounds i8, ptr %57, i64 16
-  store i64 %68, ptr %69, align 8, !tbaa !14
-  %70 = load i64, ptr @gc_head, align 8, !tbaa !5
-  %71 = getelementptr inbounds i8, ptr %57, i64 24
-  store i64 %70, ptr %71, align 8, !tbaa !15
-  %72 = ptrtoint ptr %57 to i64
-  store i64 %72, ptr @gc_head, align 8, !tbaa !5
-  %73 = load i64, ptr @gc_bytes, align 8, !tbaa !5
-  %74 = add i64 %73, %36
-  store i64 %74, ptr @gc_bytes, align 8, !tbaa !5
-  %75 = load i64, ptr @gc_min, align 8, !tbaa !5
-  %76 = icmp ugt i64 %75, %72
-  br i1 %76, label %77, label %78
+31:                                               ; preds = %27, %24
+  store i64 6073194554910330702, ptr %21, align 8, !tbaa !7
+  %32 = getelementptr inbounds i8, ptr %21, i64 8
+  store i64 %20, ptr %32, align 8, !tbaa !12
+  %33 = getelementptr inbounds i8, ptr %21, i64 32
+  tail call void @llvm.memset.p0.i64(ptr noundef nonnull align 8 dereferenceable(16) %33, i8 0, i64 16, i1 false)
+  %34 = load atomic i64, ptr @gc_collecting seq_cst, align 8
+  %35 = icmp eq i64 %34, 0
+  br i1 %35, label %38, label %36
 
-77:                                               ; preds = %67
-  store i64 %72, ptr @gc_min, align 8, !tbaa !5
-  br label %78
+36:                                               ; preds = %31
+  %37 = load atomic i64, ptr @gc_epoch seq_cst, align 8
+  br label %38
 
-78:                                               ; preds = %77, %67
-  %79 = add i64 %36, %72
-  %80 = load i64, ptr @gc_max, align 8, !tbaa !5
-  %81 = icmp ugt i64 %79, %80
-  br i1 %81, label %82, label %83
+38:                                               ; preds = %31, %36
+  %39 = phi i64 [ %37, %36 ], [ 0, %31 ]
+  %40 = getelementptr inbounds i8, ptr %21, i64 16
+  store i64 %39, ptr %40, align 8, !tbaa !13
+  %41 = load i64, ptr @gc_head, align 8, !tbaa !14
+  %42 = getelementptr inbounds i8, ptr %21, i64 24
+  store i64 %41, ptr %42, align 8, !tbaa !15
+  %43 = ptrtoint ptr %21 to i64
+  store i64 %43, ptr @gc_head, align 8, !tbaa !14
+  %44 = load i64, ptr @gc_min, align 8, !tbaa !14
+  %45 = icmp ugt i64 %44, %43
+  br i1 %45, label %46, label %47
 
-82:                                               ; preds = %78
-  store i64 %79, ptr @gc_max, align 8, !tbaa !5
-  br label %83
+46:                                               ; preds = %38
+  store i64 %43, ptr @gc_min, align 8, !tbaa !14
+  br label %47
 
-83:                                               ; preds = %82, %78
+47:                                               ; preds = %46, %38
+  %48 = add i64 %20, %43
+  %49 = load i64, ptr @gc_max, align 8, !tbaa !14
+  %50 = icmp ugt i64 %48, %49
+  br i1 %50, label %51, label %52
+
+51:                                               ; preds = %47
+  store i64 %48, ptr @gc_max, align 8, !tbaa !14
+  br label %52
+
+52:                                               ; preds = %51, %47
   store atomic volatile i8 0, ptr @gc_lock release, align 1
-  %84 = tail call align 8 ptr @llvm.threadlocal.address.p0(ptr align 8 @gc_my_id)
-  %85 = load i64, ptr %84, align 8, !tbaa !5
-  %86 = icmp eq i64 %85, 0
-  br i1 %86, label %186, label %87
-
-87:                                               ; preds = %83
-  %88 = load atomic i64, ptr @gc_collecting seq_cst, align 8
-  %89 = icmp eq i64 %88, 0
-  br i1 %89, label %186, label %90
-
-90:                                               ; preds = %87
-  %91 = load i64, ptr %84, align 8, !tbaa !5
-  %92 = add i64 %91, -129
-  %93 = icmp ult i64 %92, -128
-  br i1 %93, label %186, label %94
-
-94:                                               ; preds = %90
-  %95 = add nsw i64 %91, -1
-  %96 = getelementptr inbounds [128 x %struct.GCThread], ptr @gc_threads, i64 0, i64 %95
-  %97 = load atomic i64, ptr @gc_snap_gen seq_cst, align 8
-  %98 = getelementptr inbounds i8, ptr %96, i64 16
-  %99 = load i64, ptr %98, align 16, !tbaa !16
-  %100 = icmp eq i64 %99, %97
-  br i1 %100, label %186, label %101
-
-101:                                              ; preds = %94
-  %102 = tail call ptr @llvm.frameaddress.p0(i32 0)
-  %103 = ptrtoint ptr %102 to i64
-  %104 = getelementptr inbounds i8, ptr %96, i64 8
-  %105 = load i64, ptr %104, align 8, !tbaa !18
-  %106 = icmp ne i64 %105, 0
-  %107 = icmp ugt i64 %105, %103
-  %108 = select i1 %106, i1 %107, i1 false
-  br i1 %108, label %109, label %186
-
-109:                                              ; preds = %101
-  %110 = load i1, ptr @gc_stats, align 4
-  br i1 %110, label %111, label %118
-
-111:                                              ; preds = %109
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %4) #17
-  %112 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %4) #14
-  %113 = load i64, ptr %4, align 8, !tbaa !19
-  %114 = mul i64 %113, -1000000000
-  %115 = getelementptr inbounds i8, ptr %4, i64 8
-  %116 = load i64, ptr %115, align 8, !tbaa !21
-  %117 = sub i64 %114, %116
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %4) #17
-  br label %118
-
-118:                                              ; preds = %111, %109
-  %119 = phi i64 [ %117, %111 ], [ 0, %109 ]
-  %120 = add i64 %103, 8
-  %121 = icmp ugt i64 %120, %105
-  br i1 %121, label %126, label %122
-
-122:                                              ; preds = %118
-  %123 = load i64, ptr @gc_min, align 8
-  %124 = load i64, ptr @gc_max, align 8
-  %125 = getelementptr inbounds i8, ptr %96, i64 32
-  br label %130
-
-126:                                              ; preds = %162, %118
-  %127 = phi i64 [ 0, %118 ], [ %163, %162 ]
-  %128 = getelementptr inbounds i8, ptr %96, i64 24
-  store i64 %127, ptr %128, align 8, !tbaa !22
-  store atomic i64 %97, ptr %98 seq_cst, align 16
-  %129 = load i1, ptr @gc_stats, align 4
-  br i1 %129, label %168, label %186
-
-130:                                              ; preds = %162, %122
-  %131 = phi i64 [ %120, %122 ], [ %164, %162 ]
-  %132 = phi i64 [ 0, %122 ], [ %163, %162 ]
-  %133 = phi ptr [ %102, %122 ], [ %134, %162 ]
-  %134 = inttoptr i64 %131 to ptr
-  %135 = load volatile i64, ptr %133, align 8, !tbaa !5
-  %136 = and i64 %135, -2
-  %137 = icmp eq i64 %136, 0
-  %138 = and i64 %135, 6
-  %139 = icmp ne i64 %138, 0
-  %140 = or i1 %137, %139
-  %141 = icmp ult i64 %136, %123
-  %142 = select i1 %140, i1 true, i1 %141
-  br i1 %142, label %162, label %143
-
-143:                                              ; preds = %130
-  %144 = icmp ugt i64 %136, %124
-  %145 = icmp ult i64 %135, 48
-  %146 = or i1 %145, %144
-  br i1 %146, label %162, label %147
-
-147:                                              ; preds = %143
-  %148 = add i64 %136, -48
-  %149 = inttoptr i64 %148 to ptr
-  %150 = load i64, ptr %149, align 8, !tbaa !11
-  %151 = icmp eq i64 %150, 6073194554910330702
-  br i1 %151, label %152, label %162
-
-152:                                              ; preds = %147
-  %153 = getelementptr inbounds i8, ptr %149, i64 8
-  %154 = load i64, ptr %153, align 8, !tbaa !13
-  %155 = icmp ult i64 %154, 48
-  %156 = add i64 %154, %148
-  %157 = icmp ult i64 %156, %136
-  %158 = or i1 %155, %157
-  br i1 %158, label %162, label %159
-
-159:                                              ; preds = %152
-  %160 = add nuw nsw i64 %132, 1
-  %161 = getelementptr inbounds [8192 x i64], ptr %125, i64 0, i64 %132
-  store i64 %136, ptr %161, align 8, !tbaa !5
-  br label %162
-
-162:                                              ; preds = %159, %152, %147, %143, %130
-  %163 = phi i64 [ %160, %159 ], [ %132, %130 ], [ %132, %143 ], [ %132, %147 ], [ %132, %152 ]
-  %164 = add i64 %131, 8
-  %165 = icmp ule i64 %164, %105
-  %166 = icmp ult i64 %163, 8192
-  %167 = select i1 %165, i1 %166, i1 false
-  br i1 %167, label %130, label %126, !llvm.loop !23
-
-168:                                              ; preds = %126
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %3) #17
-  %169 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %3) #14
-  %170 = load i64, ptr %3, align 8, !tbaa !19
-  %171 = mul i64 %170, 1000000000
-  %172 = getelementptr inbounds i8, ptr %3, i64 8
-  %173 = load i64, ptr %172, align 8, !tbaa !21
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %3) #17
-  %174 = add i64 %173, %119
-  %175 = add i64 %174, %171
-  %176 = atomicrmw add ptr @gc_sum_snapshot_ns, i64 %175 monotonic, align 8
-  %177 = atomicrmw add ptr @gc_snapshot_count, i64 1 monotonic, align 8
-  %178 = load atomic i64, ptr @gc_max_snapshot_ns monotonic, align 8
-  br label %179
-
-179:                                              ; preds = %182, %168
-  %180 = phi i64 [ %178, %168 ], [ %185, %182 ]
-  %181 = icmp ugt i64 %175, %180
-  br i1 %181, label %182, label %186
-
-182:                                              ; preds = %179
-  %183 = cmpxchg ptr @gc_max_snapshot_ns, i64 %180, i64 %175 monotonic monotonic, align 8
-  %184 = extractvalue { i64, i1 } %183, 1
-  %185 = extractvalue { i64, i1 } %183, 0
-  br i1 %184, label %186, label %179, !llvm.loop !24
-
-186:                                              ; preds = %182, %179, %126, %101, %94, %90, %87, %83
-  br i1 %56, label %195, label %187
-
-187:                                              ; preds = %186
-  call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %5) #17
-  %188 = call i32 @pthread_create(ptr noundef nonnull %5, ptr noundef null, ptr noundef nonnull @gc_collector_main, ptr noundef null) #14
-  %189 = icmp eq i32 %188, 0
-  br i1 %189, label %190, label %193
-
-190:                                              ; preds = %187
-  %191 = load i64, ptr %5, align 8, !tbaa !5
-  %192 = call i32 @pthread_detach(i64 noundef %191) #14
-  br label %194
-
-193:                                              ; preds = %187
-  store atomic i64 0, ptr @gc_collecting seq_cst, align 8
-  br label %194
-
-194:                                              ; preds = %193, %190
-  call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %5) #17
-  br label %195
-
-195:                                              ; preds = %194, %186
-  %196 = getelementptr inbounds i8, ptr %57, i64 48
-  ret ptr %196
+  tail call fastcc void @gc_capture_stack() #17
+  %53 = getelementptr inbounds i8, ptr %21, i64 48
+  ret ptr %53
 }
 
 ; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #1
 
-; Function Attrs: nofree nounwind memory(read)
-declare noundef ptr @getenv(ptr nocapture noundef) local_unnamed_addr #2
+; Function Attrs: nounwind
+declare noalias ptr @malloc(i64 noundef) local_unnamed_addr #2
 
-; Function Attrs: mustprogress nofree nounwind willreturn
-declare i64 @strtoull(ptr noundef readonly, ptr nocapture noundef, i32 noundef) local_unnamed_addr #3
+; Function Attrs: cold noreturn nounwind
+declare void @abort() local_unnamed_addr #3
+
+; Function Attrs: nounwind uwtable
+define internal fastcc void @gc_capture_stack() unnamed_addr #0 {
+  %1 = alloca %struct.timespec, align 8
+  %2 = alloca %struct.timespec, align 8
+  %3 = tail call align 8 ptr @llvm.threadlocal.address.p0(ptr align 8 @gc_my_id)
+  %4 = load i64, ptr %3, align 8, !tbaa !14
+  %5 = add i64 %4, -129
+  %6 = icmp ult i64 %5, -128
+  br i1 %6, label %107, label %7
+
+7:                                                ; preds = %0
+  %8 = add nsw i64 %4, -1
+  %9 = getelementptr inbounds [128 x %struct.GCThread], ptr @gc_threads, i64 0, i64 %8
+  %10 = load atomic i64, ptr @gc_snap_gen seq_cst, align 8
+  %11 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %12 = icmp eq i8 %11, 0
+  br i1 %12, label %17, label %13
+
+13:                                               ; preds = %7, %13
+  %14 = tail call i32 @sched_yield() #14
+  %15 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %16 = icmp eq i8 %15, 0
+  br i1 %16, label %17, label %13, !llvm.loop !5
+
+17:                                               ; preds = %13, %7
+  %18 = getelementptr inbounds i8, ptr %9, i64 16
+  %19 = load i64, ptr %18, align 16, !tbaa !16
+  %20 = icmp eq i64 %19, %10
+  br i1 %20, label %21, label %22
+
+21:                                               ; preds = %17
+  store atomic volatile i8 0, ptr @gc_lock release, align 1
+  br label %107
+
+22:                                               ; preds = %17
+  %23 = tail call ptr @llvm.frameaddress.p0(i32 0)
+  %24 = ptrtoint ptr %23 to i64
+  %25 = getelementptr inbounds i8, ptr %9, i64 8
+  %26 = load i64, ptr %25, align 8, !tbaa !18
+  %27 = load i1, ptr @gc_stats, align 4
+  br i1 %27, label %28, label %35
+
+28:                                               ; preds = %22
+  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %2) #18
+  %29 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %2) #14
+  %30 = load i64, ptr %2, align 8, !tbaa !19
+  %31 = mul i64 %30, -1000000000
+  %32 = getelementptr inbounds i8, ptr %2, i64 8
+  %33 = load i64, ptr %32, align 8, !tbaa !21
+  %34 = sub i64 %31, %33
+  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %2) #18
+  br label %35
+
+35:                                               ; preds = %22, %28
+  %36 = phi i64 [ %34, %28 ], [ 0, %22 ]
+  %37 = icmp ne i64 %26, 0
+  %38 = icmp ugt i64 %26, %24
+  %39 = select i1 %37, i1 %38, i1 false
+  br i1 %39, label %40, label %85
+
+40:                                               ; preds = %35
+  %41 = add i64 %24, 8
+  %42 = icmp ugt i64 %41, %26
+  br i1 %42, label %85, label %43
+
+43:                                               ; preds = %40
+  %44 = load i64, ptr @gc_min, align 8
+  %45 = load i64, ptr @gc_max, align 8
+  %46 = getelementptr inbounds i8, ptr %9, i64 32
+  br label %47
+
+47:                                               ; preds = %43, %79
+  %48 = phi i64 [ %41, %43 ], [ %81, %79 ]
+  %49 = phi i64 [ 0, %43 ], [ %80, %79 ]
+  %50 = phi ptr [ %23, %43 ], [ %51, %79 ]
+  %51 = inttoptr i64 %48 to ptr
+  %52 = load volatile i64, ptr %50, align 8, !tbaa !14
+  %53 = and i64 %52, -2
+  %54 = icmp eq i64 %53, 0
+  %55 = and i64 %52, 6
+  %56 = icmp ne i64 %55, 0
+  %57 = or i1 %54, %56
+  %58 = icmp ult i64 %53, %44
+  %59 = select i1 %57, i1 true, i1 %58
+  br i1 %59, label %79, label %60
+
+60:                                               ; preds = %47
+  %61 = icmp ugt i64 %53, %45
+  %62 = icmp ult i64 %52, 48
+  %63 = or i1 %62, %61
+  br i1 %63, label %79, label %64
+
+64:                                               ; preds = %60
+  %65 = add i64 %53, -48
+  %66 = inttoptr i64 %65 to ptr
+  %67 = load i64, ptr %66, align 8, !tbaa !7
+  %68 = icmp eq i64 %67, 6073194554910330702
+  br i1 %68, label %69, label %79
+
+69:                                               ; preds = %64
+  %70 = getelementptr inbounds i8, ptr %66, i64 8
+  %71 = load i64, ptr %70, align 8, !tbaa !12
+  %72 = icmp ult i64 %71, 48
+  %73 = add i64 %71, %65
+  %74 = icmp ult i64 %73, %53
+  %75 = or i1 %72, %74
+  br i1 %75, label %79, label %76
+
+76:                                               ; preds = %69
+  %77 = add nuw nsw i64 %49, 1
+  %78 = getelementptr inbounds [8192 x i64], ptr %46, i64 0, i64 %49
+  store i64 %53, ptr %78, align 8, !tbaa !14
+  br label %79
+
+79:                                               ; preds = %69, %64, %60, %47, %76
+  %80 = phi i64 [ %77, %76 ], [ %49, %47 ], [ %49, %60 ], [ %49, %64 ], [ %49, %69 ]
+  %81 = add i64 %48, 8
+  %82 = icmp ule i64 %81, %26
+  %83 = icmp ult i64 %80, 8192
+  %84 = select i1 %82, i1 %83, i1 false
+  br i1 %84, label %47, label %85, !llvm.loop !22
+
+85:                                               ; preds = %79, %40, %35
+  %86 = phi i64 [ 0, %35 ], [ 0, %40 ], [ %80, %79 ]
+  %87 = getelementptr inbounds i8, ptr %9, i64 24
+  store i64 %86, ptr %87, align 8, !tbaa !23
+  store atomic i64 %10, ptr %18 seq_cst, align 16
+  store atomic volatile i8 0, ptr @gc_lock release, align 1
+  %88 = load i1, ptr @gc_stats, align 4
+  br i1 %88, label %89, label %107
+
+89:                                               ; preds = %85
+  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %1) #18
+  %90 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %1) #14
+  %91 = load i64, ptr %1, align 8, !tbaa !19
+  %92 = mul i64 %91, 1000000000
+  %93 = getelementptr inbounds i8, ptr %1, i64 8
+  %94 = load i64, ptr %93, align 8, !tbaa !21
+  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %1) #18
+  %95 = add i64 %94, %36
+  %96 = add i64 %95, %92
+  %97 = atomicrmw add ptr @gc_sum_snapshot_ns, i64 %96 monotonic, align 8
+  %98 = atomicrmw add ptr @gc_snapshot_count, i64 1 monotonic, align 8
+  %99 = load atomic i64, ptr @gc_max_snapshot_ns monotonic, align 8
+  br label %100
+
+100:                                              ; preds = %103, %89
+  %101 = phi i64 [ %99, %89 ], [ %106, %103 ]
+  %102 = icmp ult i64 %101, %96
+  br i1 %102, label %103, label %107
+
+103:                                              ; preds = %100
+  %104 = cmpxchg ptr @gc_max_snapshot_ns, i64 %101, i64 %96 monotonic monotonic, align 8
+  %105 = extractvalue { i64, i1 } %104, 1
+  %106 = extractvalue { i64, i1 } %104, 0
+  br i1 %105, label %107, label %100, !llvm.loop !24
+
+107:                                              ; preds = %103, %100, %21, %85, %0
+  ret void
+}
 
 ; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #1
-
-; Function Attrs: nounwind
-declare noalias ptr @malloc(i64 noundef) local_unnamed_addr #4
-
-; Function Attrs: cold noreturn nounwind
-declare void @abort() local_unnamed_addr #5
-
-; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
-declare nonnull ptr @llvm.threadlocal.address.p0(ptr nonnull) #6
-
-; Function Attrs: nounwind
-declare i32 @pthread_create(ptr noundef, ptr noundef, ptr noundef, ptr noundef) local_unnamed_addr #4
-
-; Function Attrs: nounwind uwtable
-define internal noalias noundef ptr @gc_collector_main(ptr nocapture readnone %0) #0 {
-  %2 = alloca %struct.timespec, align 8
-  %3 = alloca %struct.timespec, align 8
-  %4 = alloca %struct.timespec, align 8
-  %5 = alloca %struct.timespec, align 8
-  %6 = alloca %struct.timespec, align 8
-  %7 = alloca %struct.timespec, align 8
-  %8 = alloca %struct.timespec, align 8
-  %9 = alloca %struct.timespec, align 8
-  %10 = load i1, ptr @gc_stats, align 4
-  br i1 %10, label %11, label %18
-
-11:                                               ; preds = %1
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %9) #17
-  %12 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %9) #14
-  %13 = load i64, ptr %9, align 8, !tbaa !19
-  %14 = mul i64 %13, -1000000000
-  %15 = getelementptr inbounds i8, ptr %9, i64 8
-  %16 = load i64, ptr %15, align 8, !tbaa !21
-  %17 = sub i64 %14, %16
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %9) #17
-  br label %18
-
-18:                                               ; preds = %1, %11
-  %19 = phi i64 [ %17, %11 ], [ 0, %1 ]
-  %20 = atomicrmw add ptr @gc_collections, i64 1 monotonic, align 8
-  %21 = load atomic i64, ptr @gc_snap_gen seq_cst, align 8
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %8) #17
-  store i64 0, ptr %8, align 8, !tbaa !19
-  %22 = getelementptr inbounds i8, ptr %8, i64 8
-  store i64 1000000, ptr %22, align 8, !tbaa !21
-  br label %23
-
-23:                                               ; preds = %46, %18
-  %24 = phi i32 [ 0, %18 ], [ %48, %46 ]
-  %25 = load i64, ptr @gc_thread_count, align 8, !tbaa !5
-  %26 = icmp eq i64 %25, 0
-  br i1 %26, label %50, label %27
-
-27:                                               ; preds = %23, %40
-  %28 = phi i64 [ %41, %40 ], [ %25, %23 ]
-  %29 = phi i64 [ %42, %40 ], [ 0, %23 ]
-  %30 = getelementptr inbounds [128 x %struct.GCThread], ptr @gc_threads, i64 0, i64 %29
-  %31 = getelementptr inbounds i8, ptr %30, i64 8
-  %32 = load i64, ptr %31, align 8, !tbaa !18
-  %33 = icmp eq i64 %32, 0
-  br i1 %33, label %40, label %34
-
-34:                                               ; preds = %27
-  %35 = getelementptr inbounds i8, ptr %30, i64 16
-  %36 = load atomic i64, ptr %35 seq_cst, align 16
-  %37 = icmp ult i64 %36, %21
-  br i1 %37, label %46, label %38
-
-38:                                               ; preds = %34
-  %39 = load i64, ptr @gc_thread_count, align 8, !tbaa !5
-  br label %40
-
-40:                                               ; preds = %38, %27
-  %41 = phi i64 [ %39, %38 ], [ %28, %27 ]
-  %42 = add nuw nsw i64 %29, 1
-  %43 = icmp ult i64 %42, %41
-  %44 = icmp ult i64 %29, 127
-  %45 = and i1 %44, %43
-  br i1 %45, label %27, label %50, !llvm.loop !25
-
-46:                                               ; preds = %34
-  %47 = call i32 @nanosleep(ptr noundef nonnull %8, ptr noundef null) #14
-  %48 = add nuw nsw i32 %24, 1
-  %49 = icmp eq i32 %48, 8
-  br i1 %49, label %50, label %23, !llvm.loop !26
-
-50:                                               ; preds = %23, %46, %40
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %8) #17
-  %51 = load i1, ptr @gc_stats, align 4
-  br i1 %51, label %52, label %59
-
-52:                                               ; preds = %50
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %7) #17
-  %53 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %7) #14
-  %54 = load i64, ptr %7, align 8, !tbaa !19
-  %55 = mul i64 %54, -1000000000
-  %56 = getelementptr inbounds i8, ptr %7, i64 8
-  %57 = load i64, ptr %56, align 8, !tbaa !21
-  %58 = sub i64 %55, %57
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %7) #17
-  br label %59
-
-59:                                               ; preds = %50, %52
-  %60 = phi i64 [ %58, %52 ], [ 0, %50 ]
-  call fastcc void @gc_mark_roots() #18
-  %61 = atomicrmw add ptr @gc_snap_gen, i64 1 seq_cst, align 8
-  %62 = load atomic i64, ptr @gc_snap_gen seq_cst, align 8
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %6) #17
-  store i64 0, ptr %6, align 8, !tbaa !19
-  %63 = getelementptr inbounds i8, ptr %6, i64 8
-  store i64 1000000, ptr %63, align 8, !tbaa !21
-  br label %64
-
-64:                                               ; preds = %87, %59
-  %65 = phi i32 [ 0, %59 ], [ %89, %87 ]
-  %66 = load i64, ptr @gc_thread_count, align 8, !tbaa !5
-  %67 = icmp eq i64 %66, 0
-  br i1 %67, label %91, label %68
-
-68:                                               ; preds = %64, %81
-  %69 = phi i64 [ %82, %81 ], [ %66, %64 ]
-  %70 = phi i64 [ %83, %81 ], [ 0, %64 ]
-  %71 = getelementptr inbounds [128 x %struct.GCThread], ptr @gc_threads, i64 0, i64 %70
-  %72 = getelementptr inbounds i8, ptr %71, i64 8
-  %73 = load i64, ptr %72, align 8, !tbaa !18
-  %74 = icmp eq i64 %73, 0
-  br i1 %74, label %81, label %75
-
-75:                                               ; preds = %68
-  %76 = getelementptr inbounds i8, ptr %71, i64 16
-  %77 = load atomic i64, ptr %76 seq_cst, align 16
-  %78 = icmp ult i64 %77, %62
-  br i1 %78, label %87, label %79
-
-79:                                               ; preds = %75
-  %80 = load i64, ptr @gc_thread_count, align 8, !tbaa !5
-  br label %81
-
-81:                                               ; preds = %79, %68
-  %82 = phi i64 [ %80, %79 ], [ %69, %68 ]
-  %83 = add nuw nsw i64 %70, 1
-  %84 = icmp ult i64 %83, %82
-  %85 = icmp ult i64 %70, 127
-  %86 = and i1 %85, %84
-  br i1 %86, label %68, label %91, !llvm.loop !25
-
-87:                                               ; preds = %75
-  %88 = call i32 @nanosleep(ptr noundef nonnull %6, ptr noundef null) #14
-  %89 = add nuw nsw i32 %65, 1
-  %90 = icmp eq i32 %89, 8
-  br i1 %90, label %91, label %64, !llvm.loop !26
-
-91:                                               ; preds = %64, %87, %81
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %6) #17
-  call fastcc void @gc_mark_roots() #18
-  %92 = load i1, ptr @gc_stats, align 4
-  br i1 %92, label %93, label %118
-
-93:                                               ; preds = %91
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %5) #17
-  %94 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %5) #14
-  %95 = load i64, ptr %5, align 8, !tbaa !19
-  %96 = mul i64 %95, 1000000000
-  %97 = getelementptr inbounds i8, ptr %5, i64 8
-  %98 = load i64, ptr %97, align 8, !tbaa !21
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %5) #17
-  %99 = add i64 %98, %60
-  %100 = add i64 %99, %96
-  %101 = load atomic i64, ptr @gc_max_mark_ns monotonic, align 8
-  br label %102
-
-102:                                              ; preds = %105, %93
-  %103 = phi i64 [ %101, %93 ], [ %108, %105 ]
-  %104 = icmp ugt i64 %100, %103
-  br i1 %104, label %105, label %109
-
-105:                                              ; preds = %102
-  %106 = cmpxchg ptr @gc_max_mark_ns, i64 %103, i64 %100 monotonic monotonic, align 8
-  %107 = extractvalue { i64, i1 } %106, 1
-  %108 = extractvalue { i64, i1 } %106, 0
-  br i1 %107, label %109, label %102, !llvm.loop !27
-
-109:                                              ; preds = %105, %102
-  %110 = load i1, ptr @gc_stats, align 4
-  br i1 %110, label %111, label %118
-
-111:                                              ; preds = %109
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %4) #17
-  %112 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %4) #14
-  %113 = load i64, ptr %4, align 8, !tbaa !19
-  %114 = mul i64 %113, -1000000000
-  %115 = getelementptr inbounds i8, ptr %4, i64 8
-  %116 = load i64, ptr %115, align 8, !tbaa !21
-  %117 = sub i64 %114, %116
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %4) #17
-  br label %118
-
-118:                                              ; preds = %91, %109, %111
-  %119 = phi i64 [ %117, %111 ], [ 0, %109 ], [ 0, %91 ]
-  %120 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
-  %121 = icmp eq i8 %120, 0
-  br i1 %121, label %126, label %122
-
-122:                                              ; preds = %118, %122
-  %123 = call i32 @sched_yield() #14
-  %124 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
-  %125 = icmp eq i8 %124, 0
-  br i1 %125, label %126, label %122, !llvm.loop !9
-
-126:                                              ; preds = %122, %118
-  %127 = load atomic i64, ptr @gc_epoch seq_cst, align 8
-  %128 = load i64, ptr @gc_head, align 8, !tbaa !5
-  %129 = icmp eq i64 %128, 0
-  br i1 %129, label %147, label %130
-
-130:                                              ; preds = %126, %144
-  %131 = phi ptr [ %145, %144 ], [ @gc_head, %126 ]
-  %132 = phi i64 [ %135, %144 ], [ %128, %126 ]
-  %133 = inttoptr i64 %132 to ptr
-  %134 = getelementptr inbounds i8, ptr %133, i64 24
-  %135 = load i64, ptr %134, align 8, !tbaa !15
-  %136 = getelementptr inbounds i8, ptr %133, i64 16
-  %137 = load atomic i64, ptr %136 seq_cst, align 8
-  %138 = icmp eq i64 %137, %127
-  br i1 %138, label %144, label %139
-
-139:                                              ; preds = %130
-  store i64 %135, ptr %131, align 8, !tbaa !5
-  %140 = getelementptr inbounds i8, ptr %133, i64 8
-  %141 = load i64, ptr %140, align 8, !tbaa !13
-  %142 = load i64, ptr @gc_bytes, align 8, !tbaa !5
-  %143 = sub i64 %142, %141
-  store i64 %143, ptr @gc_bytes, align 8, !tbaa !5
-  call void @free(ptr noundef nonnull %133) #15
-  br label %144
-
-144:                                              ; preds = %139, %130
-  %145 = phi ptr [ %131, %139 ], [ %134, %130 ]
-  %146 = icmp eq i64 %135, 0
-  br i1 %146, label %147, label %130, !llvm.loop !28
-
-147:                                              ; preds = %144, %126
-  store atomic volatile i8 0, ptr @gc_lock release, align 1
-  %148 = load i1, ptr @gc_stats, align 4
-  br i1 %148, label %149, label %174
-
-149:                                              ; preds = %147
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %3) #17
-  %150 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %3) #14
-  %151 = load i64, ptr %3, align 8, !tbaa !19
-  %152 = mul i64 %151, 1000000000
-  %153 = getelementptr inbounds i8, ptr %3, i64 8
-  %154 = load i64, ptr %153, align 8, !tbaa !21
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %3) #17
-  %155 = add i64 %154, %119
-  %156 = add i64 %155, %152
-  %157 = load atomic i64, ptr @gc_max_sweep_ns monotonic, align 8
-  br label %158
-
-158:                                              ; preds = %161, %149
-  %159 = phi i64 [ %157, %149 ], [ %164, %161 ]
-  %160 = icmp ugt i64 %156, %159
-  br i1 %160, label %161, label %165
-
-161:                                              ; preds = %158
-  %162 = cmpxchg ptr @gc_max_sweep_ns, i64 %159, i64 %156 monotonic monotonic, align 8
-  %163 = extractvalue { i64, i1 } %162, 1
-  %164 = extractvalue { i64, i1 } %162, 0
-  br i1 %163, label %165, label %158, !llvm.loop !29
-
-165:                                              ; preds = %158, %161
-  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %2) #17
-  %166 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %2) #14
-  %167 = load i64, ptr %2, align 8, !tbaa !19
-  %168 = mul i64 %167, 1000000000
-  %169 = getelementptr inbounds i8, ptr %2, i64 8
-  %170 = load i64, ptr %169, align 8, !tbaa !21
-  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %2) #17
-  %171 = add i64 %170, %19
-  %172 = add i64 %171, %168
-  %173 = atomicrmw add ptr @gc_sum_collector_ns, i64 %172 monotonic, align 8
-  br label %174
-
-174:                                              ; preds = %165, %147
-  store atomic i64 0, ptr @gc_collecting seq_cst, align 8
-  ret ptr null
-}
-
-; Function Attrs: nounwind
-declare i32 @pthread_detach(i64 noundef) local_unnamed_addr #4
 
 ; Function Attrs: nounwind uwtable
 define dso_local void @__threadon_gc_barrier(i64 noundef %0, i64 noundef %1) local_unnamed_addr #0 {
@@ -659,14 +306,14 @@ define dso_local void @__threadon_gc_barrier(i64 noundef %0, i64 noundef %1) loc
   %4 = icmp eq i64 %3, 0
   %5 = icmp ult i64 %1, 8
   %6 = or i1 %4, %5
-  br i1 %6, label %148, label %7
+  br i1 %6, label %161, label %7
 
-7:                                                ; preds = %2, %145
-  %8 = phi i64 [ %146, %145 ], [ 8, %2 ]
-  %9 = phi i64 [ %8, %145 ], [ 0, %2 ]
+7:                                                ; preds = %2, %158
+  %8 = phi i64 [ %159, %158 ], [ 8, %2 ]
+  %9 = phi i64 [ %8, %158 ], [ 0, %2 ]
   %10 = add i64 %9, %0
   %11 = inttoptr i64 %10 to ptr
-  %12 = load volatile i64, ptr %11, align 8, !tbaa !5
+  %12 = load volatile i64, ptr %11, align 8, !tbaa !14
   %13 = and i64 %12, -2
   %14 = icmp eq i64 %13, 0
   %15 = and i64 %12, 6
@@ -675,186 +322,205 @@ define dso_local void @__threadon_gc_barrier(i64 noundef %0, i64 noundef %1) loc
   %18 = load i64, ptr @gc_min, align 8
   %19 = icmp ult i64 %13, %18
   %20 = select i1 %17, i1 true, i1 %19
-  br i1 %20, label %145, label %21
+  br i1 %20, label %158, label %21
 
 21:                                               ; preds = %7
   %22 = load i64, ptr @gc_max, align 8
   %23 = icmp ugt i64 %13, %22
   %24 = icmp ult i64 %12, 48
   %25 = or i1 %24, %23
-  br i1 %25, label %145, label %26
+  br i1 %25, label %158, label %26
 
 26:                                               ; preds = %21
   %27 = add i64 %13, -48
   %28 = inttoptr i64 %27 to ptr
-  %29 = load i64, ptr %28, align 8, !tbaa !11
+  %29 = load i64, ptr %28, align 8, !tbaa !7
   %30 = icmp eq i64 %29, 6073194554910330702
-  br i1 %30, label %31, label %145
+  br i1 %30, label %31, label %158
 
 31:                                               ; preds = %26
   %32 = getelementptr inbounds i8, ptr %28, i64 8
-  %33 = load i64, ptr %32, align 8, !tbaa !13
+  %33 = load i64, ptr %32, align 8, !tbaa !12
   %34 = icmp ult i64 %33, 48
   %35 = add i64 %33, %27
   %36 = icmp ult i64 %35, %13
   %37 = or i1 %34, %36
-  br i1 %37, label %145, label %38
+  br i1 %37, label %158, label %38
 
 38:                                               ; preds = %31
   %39 = tail call noalias ptr @malloc(i64 noundef 2048) #15
   %40 = icmp eq ptr %39, null
-  br i1 %40, label %145, label %41
+  br i1 %40, label %158, label %41
 
 41:                                               ; preds = %38
-  store i64 %13, ptr %39, align 8, !tbaa !5
-  br label %42
+  %42 = load i64, ptr @gc_min, align 8
+  %43 = icmp ult i64 %13, %42
+  %44 = load i64, ptr @gc_max, align 8
+  %45 = icmp ugt i64 %13, %44
+  %46 = select i1 %43, i1 true, i1 %45
+  br i1 %46, label %156, label %47
 
-42:                                               ; preds = %139, %41
-  %43 = phi i64 [ 256, %41 ], [ %142, %139 ]
-  %44 = phi i64 [ 1, %41 ], [ %141, %139 ]
-  %45 = phi ptr [ %39, %41 ], [ %140, %139 ]
-  %46 = add i64 %44, -1
-  %47 = getelementptr inbounds i64, ptr %45, i64 %46
-  %48 = load i64, ptr %47, align 8, !tbaa !5
-  %49 = and i64 %48, -2
-  %50 = icmp eq i64 %49, 0
-  %51 = and i64 %48, 6
-  %52 = icmp ne i64 %51, 0
-  %53 = or i1 %50, %52
-  %54 = load i64, ptr @gc_min, align 8
-  %55 = icmp ult i64 %49, %54
-  %56 = select i1 %53, i1 true, i1 %55
-  br i1 %56, label %139, label %57
+47:                                               ; preds = %41
+  %48 = load i64, ptr %28, align 8, !tbaa !7
+  %49 = icmp eq i64 %48, 6073194554910330702
+  br i1 %49, label %50, label %156
 
-57:                                               ; preds = %42
-  %58 = load i64, ptr @gc_max, align 8, !tbaa !5
-  %59 = icmp ugt i64 %49, %58
-  %60 = icmp ult i64 %48, 48
-  %61 = or i1 %60, %59
-  br i1 %61, label %139, label %62
+50:                                               ; preds = %47
+  %51 = load i64, ptr %32, align 8, !tbaa !12
+  %52 = icmp ult i64 %51, 48
+  %53 = add i64 %51, %27
+  %54 = icmp ult i64 %53, %13
+  %55 = or i1 %52, %54
+  br i1 %55, label %156, label %56
 
-62:                                               ; preds = %57
-  %63 = add i64 %49, -48
-  %64 = inttoptr i64 %63 to ptr
-  %65 = load i64, ptr %64, align 8, !tbaa !11
-  %66 = icmp eq i64 %65, 6073194554910330702
-  br i1 %66, label %67, label %139
+56:                                               ; preds = %50
+  store i64 %13, ptr %39, align 8, !tbaa !14
+  br label %57
 
-67:                                               ; preds = %62
-  %68 = getelementptr inbounds i8, ptr %64, i64 8
-  %69 = load i64, ptr %68, align 8, !tbaa !13
-  %70 = icmp ult i64 %69, 48
-  %71 = add i64 %69, %63
-  %72 = icmp ult i64 %71, %49
-  %73 = or i1 %70, %72
-  br i1 %73, label %139, label %74, !llvm.loop !30
+57:                                               ; preds = %151, %56
+  %58 = phi ptr [ %154, %151 ], [ %39, %56 ]
+  %59 = phi i64 [ %153, %151 ], [ 1, %56 ]
+  %60 = phi i64 [ %152, %151 ], [ 256, %56 ]
+  %61 = add i64 %59, -1
+  %62 = getelementptr inbounds i64, ptr %58, i64 %61
+  %63 = load i64, ptr %62, align 8, !tbaa !14
+  %64 = and i64 %63, -2
+  %65 = icmp eq i64 %64, 0
+  %66 = and i64 %63, 6
+  %67 = icmp ne i64 %66, 0
+  %68 = or i1 %65, %67
+  %69 = load i64, ptr @gc_min, align 8
+  %70 = icmp ult i64 %64, %69
+  %71 = select i1 %68, i1 true, i1 %70
+  br i1 %71, label %151, label %72
 
-74:                                               ; preds = %67
-  %75 = load atomic i64, ptr @gc_epoch seq_cst, align 8
-  %76 = getelementptr inbounds i8, ptr %64, i64 16
-  %77 = load atomic i64, ptr %76 seq_cst, align 8
-  %78 = icmp eq i64 %77, %75
-  br i1 %78, label %139, label %79, !llvm.loop !30
+72:                                               ; preds = %57
+  %73 = load i64, ptr @gc_max, align 8, !tbaa !14
+  %74 = icmp ugt i64 %64, %73
+  %75 = icmp ult i64 %63, 48
+  %76 = or i1 %75, %74
+  br i1 %76, label %151, label %77
 
-79:                                               ; preds = %74
-  store atomic i64 %75, ptr %76 seq_cst, align 8
-  %80 = load i64, ptr %68, align 8, !tbaa !13
-  %81 = add i64 %80, %63
-  %82 = add i64 %49, 8
-  %83 = icmp ugt i64 %82, %81
-  br i1 %83, label %139, label %84
+77:                                               ; preds = %72
+  %78 = add i64 %64, -48
+  %79 = inttoptr i64 %78 to ptr
+  %80 = load i64, ptr %79, align 8, !tbaa !7
+  %81 = icmp eq i64 %80, 6073194554910330702
+  br i1 %81, label %82, label %151
 
-84:                                               ; preds = %79
-  %85 = load i64, ptr @gc_min, align 8
-  br label %86
+82:                                               ; preds = %77
+  %83 = getelementptr inbounds i8, ptr %79, i64 8
+  %84 = load i64, ptr %83, align 8, !tbaa !12
+  %85 = icmp ult i64 %84, 48
+  %86 = add i64 %84, %78
+  %87 = icmp ult i64 %86, %64
+  %88 = or i1 %85, %87
+  br i1 %88, label %151, label %89, !llvm.loop !25
 
-86:                                               ; preds = %84, %132
-  %87 = phi i64 [ %133, %132 ], [ %85, %84 ]
-  %88 = phi i64 [ %137, %132 ], [ %82, %84 ]
-  %89 = phi i64 [ %136, %132 ], [ %43, %84 ]
-  %90 = phi i64 [ %88, %132 ], [ %49, %84 ]
-  %91 = phi i64 [ %135, %132 ], [ %46, %84 ]
-  %92 = phi ptr [ %134, %132 ], [ %45, %84 ]
-  %93 = inttoptr i64 %90 to ptr
-  %94 = load volatile i64, ptr %93, align 8, !tbaa !5
-  %95 = and i64 %94, -2
-  %96 = icmp eq i64 %95, 0
-  %97 = and i64 %94, 6
-  %98 = icmp ne i64 %97, 0
-  %99 = or i1 %96, %98
-  %100 = icmp ult i64 %95, %87
-  %101 = select i1 %99, i1 true, i1 %100
-  br i1 %101, label %132, label %102
+89:                                               ; preds = %82
+  %90 = load atomic i64, ptr @gc_epoch seq_cst, align 8
+  %91 = getelementptr inbounds i8, ptr %79, i64 16
+  %92 = load atomic i64, ptr %91 seq_cst, align 8
+  %93 = icmp eq i64 %92, %90
+  br i1 %93, label %151, label %94, !llvm.loop !25
 
-102:                                              ; preds = %86
-  %103 = load i64, ptr @gc_max, align 8, !tbaa !5
-  %104 = icmp ugt i64 %95, %103
-  %105 = icmp ult i64 %94, 48
-  %106 = or i1 %105, %104
-  br i1 %106, label %132, label %107
+94:                                               ; preds = %89
+  store atomic i64 %90, ptr %91 seq_cst, align 8
+  %95 = load i64, ptr %83, align 8, !tbaa !12
+  %96 = add i64 %95, %78
+  %97 = add i64 %64, 8
+  %98 = icmp ugt i64 %97, %96
+  br i1 %98, label %151, label %99
 
-107:                                              ; preds = %102
-  %108 = add i64 %95, -48
-  %109 = inttoptr i64 %108 to ptr
-  %110 = load i64, ptr %109, align 8, !tbaa !11
-  %111 = icmp eq i64 %110, 6073194554910330702
-  br i1 %111, label %112, label %132
+99:                                               ; preds = %94, %145
+  %100 = phi i64 [ %149, %145 ], [ %97, %94 ]
+  %101 = phi i64 [ %100, %145 ], [ %64, %94 ]
+  %102 = phi ptr [ %148, %145 ], [ %58, %94 ]
+  %103 = phi i64 [ %147, %145 ], [ %61, %94 ]
+  %104 = phi i64 [ %146, %145 ], [ %60, %94 ]
+  %105 = inttoptr i64 %101 to ptr
+  %106 = load volatile i64, ptr %105, align 8, !tbaa !14
+  %107 = and i64 %106, -2
+  %108 = icmp eq i64 %107, 0
+  %109 = and i64 %106, 6
+  %110 = icmp ne i64 %109, 0
+  %111 = or i1 %108, %110
+  %112 = load i64, ptr @gc_min, align 8
+  %113 = icmp ult i64 %107, %112
+  %114 = select i1 %111, i1 true, i1 %113
+  br i1 %114, label %145, label %115
 
-112:                                              ; preds = %107
-  %113 = getelementptr inbounds i8, ptr %109, i64 8
-  %114 = load i64, ptr %113, align 8, !tbaa !13
-  %115 = icmp ult i64 %114, 48
-  %116 = add i64 %114, %108
-  %117 = icmp ult i64 %116, %95
-  %118 = or i1 %115, %117
-  br i1 %118, label %132, label %119
+115:                                              ; preds = %99
+  %116 = load i64, ptr @gc_max, align 8, !tbaa !14
+  %117 = icmp ugt i64 %107, %116
+  %118 = icmp ult i64 %106, 48
+  %119 = or i1 %118, %117
+  br i1 %119, label %145, label %120
 
-119:                                              ; preds = %112
-  %120 = icmp eq i64 %91, %89
-  br i1 %120, label %121, label %126
+120:                                              ; preds = %115
+  %121 = add i64 %107, -48
+  %122 = inttoptr i64 %121 to ptr
+  %123 = load i64, ptr %122, align 8, !tbaa !7
+  %124 = icmp eq i64 %123, 6073194554910330702
+  br i1 %124, label %125, label %145
 
-121:                                              ; preds = %119
-  %122 = shl i64 %89, 1
-  %123 = shl i64 %89, 4
-  %124 = tail call ptr @realloc(ptr noundef %92, i64 noundef %123) #19
-  %125 = icmp eq ptr %124, null
-  br i1 %125, label %139, label %126
+125:                                              ; preds = %120
+  %126 = getelementptr inbounds i8, ptr %122, i64 8
+  %127 = load i64, ptr %126, align 8, !tbaa !12
+  %128 = icmp ult i64 %127, 48
+  %129 = add i64 %127, %121
+  %130 = icmp ult i64 %129, %107
+  %131 = or i1 %128, %130
+  br i1 %131, label %145, label %132
 
-126:                                              ; preds = %121, %119
-  %127 = phi ptr [ %124, %121 ], [ %92, %119 ]
-  %128 = phi i64 [ %122, %121 ], [ %89, %119 ]
-  %129 = add i64 %91, 1
-  %130 = getelementptr inbounds i64, ptr %127, i64 %91
-  store i64 %95, ptr %130, align 8, !tbaa !5
-  %131 = load i64, ptr @gc_min, align 8
-  br label %132
+132:                                              ; preds = %125
+  %133 = icmp eq i64 %103, %104
+  br i1 %133, label %134, label %140
 
-132:                                              ; preds = %126, %112, %107, %102, %86
-  %133 = phi i64 [ %131, %126 ], [ %87, %86 ], [ %87, %102 ], [ %87, %107 ], [ %87, %112 ]
-  %134 = phi ptr [ %127, %126 ], [ %92, %86 ], [ %92, %102 ], [ %92, %107 ], [ %92, %112 ]
-  %135 = phi i64 [ %129, %126 ], [ %91, %86 ], [ %91, %102 ], [ %91, %107 ], [ %91, %112 ]
-  %136 = phi i64 [ %128, %126 ], [ %89, %86 ], [ %89, %102 ], [ %89, %107 ], [ %89, %112 ]
-  %137 = add i64 %88, 8
-  %138 = icmp ugt i64 %137, %81
-  br i1 %138, label %139, label %86, !llvm.loop !31
+134:                                              ; preds = %132
+  %135 = shl i64 %103, 4
+  %136 = tail call ptr @realloc(ptr noundef %102, i64 noundef %135) #19
+  %137 = icmp eq ptr %136, null
+  br i1 %137, label %145, label %138
 
-139:                                              ; preds = %132, %121, %79, %74, %67, %62, %57, %42
-  %140 = phi ptr [ %45, %74 ], [ %45, %42 ], [ %45, %57 ], [ %45, %62 ], [ %45, %67 ], [ %45, %79 ], [ %134, %132 ], [ %92, %121 ]
-  %141 = phi i64 [ %46, %74 ], [ %46, %42 ], [ %46, %57 ], [ %46, %62 ], [ %46, %67 ], [ %46, %79 ], [ %135, %132 ], [ %89, %121 ]
-  %142 = phi i64 [ %43, %74 ], [ %43, %42 ], [ %43, %57 ], [ %43, %62 ], [ %43, %67 ], [ %43, %79 ], [ %136, %132 ], [ %122, %121 ]
-  %143 = icmp eq i64 %141, 0
-  br i1 %143, label %144, label %42
+138:                                              ; preds = %134
+  %139 = shl i64 %103, 1
+  br label %140
 
-144:                                              ; preds = %139
-  tail call void @free(ptr noundef %140) #15
+140:                                              ; preds = %138, %132
+  %141 = phi i64 [ %139, %138 ], [ %104, %132 ]
+  %142 = phi ptr [ %136, %138 ], [ %102, %132 ]
+  %143 = add i64 %103, 1
+  %144 = getelementptr inbounds i64, ptr %142, i64 %103
+  store i64 %107, ptr %144, align 8, !tbaa !14
   br label %145
 
-145:                                              ; preds = %31, %26, %21, %7, %144, %38
-  %146 = add i64 %8, 8
-  %147 = icmp ugt i64 %146, %1
-  br i1 %147, label %148, label %7, !llvm.loop !32
+145:                                              ; preds = %140, %134, %125, %120, %115, %99
+  %146 = phi i64 [ %104, %99 ], [ %104, %115 ], [ %104, %125 ], [ %103, %134 ], [ %141, %140 ], [ %104, %120 ]
+  %147 = phi i64 [ %103, %99 ], [ %103, %115 ], [ %103, %125 ], [ %103, %134 ], [ %143, %140 ], [ %103, %120 ]
+  %148 = phi ptr [ %102, %99 ], [ %102, %115 ], [ %102, %125 ], [ %102, %134 ], [ %142, %140 ], [ %102, %120 ]
+  %149 = add i64 %100, 8
+  %150 = icmp ugt i64 %149, %96
+  br i1 %150, label %151, label %99, !llvm.loop !26
 
-148:                                              ; preds = %145, %2
+151:                                              ; preds = %145, %94, %89, %82, %77, %72, %57
+  %152 = phi i64 [ %60, %89 ], [ %60, %57 ], [ %60, %72 ], [ %60, %77 ], [ %60, %82 ], [ %60, %94 ], [ %146, %145 ]
+  %153 = phi i64 [ %61, %89 ], [ %61, %57 ], [ %61, %72 ], [ %61, %77 ], [ %61, %82 ], [ %61, %94 ], [ %147, %145 ]
+  %154 = phi ptr [ %58, %89 ], [ %58, %57 ], [ %58, %72 ], [ %58, %77 ], [ %58, %82 ], [ %58, %94 ], [ %148, %145 ]
+  %155 = icmp eq i64 %153, 0
+  br i1 %155, label %156, label %57
+
+156:                                              ; preds = %151, %50, %47, %41
+  %157 = phi ptr [ %39, %41 ], [ %39, %50 ], [ %39, %47 ], [ %154, %151 ]
+  tail call void @free(ptr noundef %157) #15
+  br label %158
+
+158:                                              ; preds = %31, %26, %21, %7, %156, %38
+  %159 = add i64 %8, 8
+  %160 = icmp ugt i64 %159, %1
+  br i1 %160, label %161, label %7, !llvm.loop !27
+
+161:                                              ; preds = %158, %2
   ret void
 }
 
@@ -868,10 +534,10 @@ define dso_local void @__threadon_gc_add_root(ptr noundef %0, i64 noundef %1) lo
   %6 = tail call i32 @sched_yield() #14
   %7 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
   %8 = icmp eq i8 %7, 0
-  br i1 %8, label %9, label %5, !llvm.loop !9
+  br i1 %8, label %9, label %5, !llvm.loop !5
 
 9:                                                ; preds = %5, %2
-  %10 = load i64, ptr @gc_root_count, align 8, !tbaa !5
+  %10 = load i64, ptr @gc_root_count, align 8, !tbaa !14
   %11 = add i64 %10, 1
   %12 = icmp ult i64 %11, 512
   br i1 %12, label %13, label %18
@@ -879,11 +545,11 @@ define dso_local void @__threadon_gc_add_root(ptr noundef %0, i64 noundef %1) lo
 13:                                               ; preds = %9
   %14 = ptrtoint ptr %0 to i64
   %15 = getelementptr inbounds [512 x i64], ptr @gc_roots, i64 0, i64 %10
-  store i64 %14, ptr %15, align 8, !tbaa !5
+  store i64 %14, ptr %15, align 8, !tbaa !14
   %16 = add nsw i64 %10, 2
-  store i64 %16, ptr @gc_root_count, align 8, !tbaa !5
+  store i64 %16, ptr @gc_root_count, align 8, !tbaa !14
   %17 = getelementptr inbounds [512 x i64], ptr @gc_roots, i64 0, i64 %11
-  store i64 %1, ptr %17, align 8, !tbaa !5
+  store i64 %1, ptr %17, align 8, !tbaa !14
   br label %18
 
 18:                                               ; preds = %13, %9
@@ -901,21 +567,21 @@ define dso_local void @__threadon_gc_thread_enter(ptr noundef %0) local_unnamed_
   %5 = tail call i32 @sched_yield() #14
   %6 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
   %7 = icmp eq i8 %6, 0
-  br i1 %7, label %8, label %4, !llvm.loop !9
+  br i1 %7, label %8, label %4, !llvm.loop !5
 
 8:                                                ; preds = %4, %1
-  %9 = load i64, ptr @gc_thread_count, align 8, !tbaa !5
+  %9 = load i64, ptr @gc_thread_count, align 8, !tbaa !14
   %10 = add i64 %9, 1
-  store i64 %10, ptr @gc_thread_count, align 8, !tbaa !5
+  store i64 %10, ptr @gc_thread_count, align 8, !tbaa !14
   %11 = icmp ult i64 %10, 129
   br i1 %11, label %12, label %19
 
 12:                                               ; preds = %8
   %13 = tail call align 8 ptr @llvm.threadlocal.address.p0(ptr align 8 @gc_my_id)
-  store i64 %10, ptr %13, align 8, !tbaa !5
+  store i64 %10, ptr %13, align 8, !tbaa !14
   %14 = tail call i64 @pthread_self() #20
   %15 = getelementptr inbounds [128 x %struct.GCThread], ptr @gc_threads, i64 0, i64 %9
-  store i64 %14, ptr %15, align 16, !tbaa !33
+  store i64 %14, ptr %15, align 16, !tbaa !28
   %16 = ptrtoint ptr %0 to i64
   %17 = getelementptr inbounds i8, ptr %15, i64 8
   store i64 %16, ptr %17, align 8, !tbaa !18
@@ -928,11 +594,14 @@ define dso_local void @__threadon_gc_thread_enter(ptr noundef %0) local_unnamed_
   ret void
 }
 
+; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare nonnull ptr @llvm.threadlocal.address.p0(ptr nonnull) #4
+
 ; Function Attrs: mustprogress nofree nosync nounwind willreturn memory(none)
-declare i64 @pthread_self() local_unnamed_addr #7
+declare i64 @pthread_self() local_unnamed_addr #5
 
 ; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(readwrite, argmem: none, inaccessiblemem: none) uwtable
-define dso_local void @__threadon_gc_thread_exit() local_unnamed_addr #8 {
+define dso_local void @__threadon_gc_thread_exit() local_unnamed_addr #6 {
   %1 = tail call align 8 ptr @llvm.threadlocal.address.p0(ptr align 8 @gc_my_id)
   %2 = load i64, ptr %1, align 8
   %3 = add i64 %2, -1
@@ -942,7 +611,7 @@ define dso_local void @__threadon_gc_thread_exit() local_unnamed_addr #8 {
 5:                                                ; preds = %0
   %6 = getelementptr inbounds [128 x %struct.GCThread], ptr @gc_threads, i64 0, i64 %3, i32 1
   store i64 0, ptr %6, align 8, !tbaa !18
-  store i64 0, ptr %1, align 8, !tbaa !5
+  store i64 0, ptr %1, align 8, !tbaa !14
   br label %7
 
 7:                                                ; preds = %5, %0
@@ -950,469 +619,726 @@ define dso_local void @__threadon_gc_thread_exit() local_unnamed_addr #8 {
 }
 
 ; Function Attrs: nounwind uwtable
-define dso_local void @__threadon_gc_shutdown() local_unnamed_addr #0 {
-  br label %1
+define dso_local void @__threadon_gc_collect() local_unnamed_addr #0 {
+  %1 = alloca %struct.timespec, align 8
+  %2 = alloca %struct.timespec, align 8
+  %3 = alloca %struct.timespec, align 8
+  %4 = alloca %struct.timespec, align 8
+  %5 = alloca %struct.timespec, align 8
+  %6 = alloca %struct.timespec, align 8
+  %7 = load i1, ptr @gc_env_initialized, align 4
+  br i1 %7, label %20, label %8
 
-1:                                                ; preds = %0, %5
-  %2 = phi i32 [ 0, %0 ], [ %7, %5 ]
-  %3 = load atomic i64, ptr @gc_collecting seq_cst, align 8
-  %4 = icmp eq i64 %3, 0
-  br i1 %4, label %9, label %5
+8:                                                ; preds = %0
+  %9 = tail call ptr @getenv(ptr noundef nonnull @__gc_str_1) #14
+  %10 = icmp eq ptr %9, null
+  br i1 %10, label %19, label %11
 
-5:                                                ; preds = %1
-  %6 = tail call i32 @sched_yield() #14
-  %7 = add nuw nsw i32 %2, 1
-  %8 = icmp eq i32 %7, 100000
-  br i1 %8, label %9, label %1, !llvm.loop !34
+11:                                               ; preds = %8
+  %12 = load i8, ptr %9, align 1
+  %13 = icmp eq i8 %12, 48
+  br i1 %13, label %14, label %18
 
-9:                                                ; preds = %1, %5
-  %10 = load i1, ptr @gc_stats, align 4
-  br i1 %10, label %11, label %36
+14:                                               ; preds = %11
+  %15 = getelementptr inbounds i8, ptr %9, i64 1
+  %16 = load i8, ptr %15, align 1
+  %17 = icmp eq i8 %16, 0
+  br i1 %17, label %19, label %18
 
-11:                                               ; preds = %9
-  %12 = load i64, ptr @gc_collections, align 8, !tbaa !5
-  %13 = load i64, ptr @gc_snapshot_count, align 8, !tbaa !5
-  %14 = load i64, ptr @gc_max_snapshot_ns, align 8, !tbaa !5
-  %15 = uitofp i64 %14 to double
-  %16 = fdiv double %15, 1.000000e+03
-  %17 = icmp eq i64 %13, 0
-  br i1 %17, label %24, label %18
+18:                                               ; preds = %14, %11
+  store i1 true, ptr @gc_stats, align 4
+  br label %19
 
-18:                                               ; preds = %11
-  %19 = load i64, ptr @gc_sum_snapshot_ns, align 8, !tbaa !5
-  %20 = uitofp i64 %19 to double
-  %21 = uitofp i64 %13 to double
-  %22 = fdiv double %20, %21
-  %23 = fdiv double %22, 1.000000e+03
-  br label %24
+19:                                               ; preds = %18, %14, %8
+  store i1 true, ptr @gc_env_initialized, align 4
+  br label %20
 
-24:                                               ; preds = %11, %18
-  %25 = phi double [ %23, %18 ], [ 0.000000e+00, %11 ]
-  %26 = load i64, ptr @gc_max_mark_ns, align 8, !tbaa !5
-  %27 = uitofp i64 %26 to double
-  %28 = fdiv double %27, 1.000000e+03
-  %29 = load i64, ptr @gc_max_sweep_ns, align 8, !tbaa !5
-  %30 = uitofp i64 %29 to double
-  %31 = fdiv double %30, 1.000000e+03
-  %32 = load i64, ptr @gc_sum_collector_ns, align 8, !tbaa !5
-  %33 = uitofp i64 %32 to double
-  %34 = fdiv double %33, 1.000000e+06
-  %35 = tail call i32 (ptr, ...) @printf(ptr noundef nonnull dereferenceable(1) @__gc_str_3, i64 noundef %12, i64 noundef %13, double noundef %16, double noundef %25, double noundef %28, double noundef %31, double noundef %34) #18
-  br label %36
+20:                                               ; preds = %0, %19
+  %21 = load i1, ptr @gc_stats, align 4
+  br i1 %21, label %22, label %29
 
-36:                                               ; preds = %24, %9
+22:                                               ; preds = %20
+  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %6) #18
+  %23 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %6) #14
+  %24 = load i64, ptr %6, align 8, !tbaa !19
+  %25 = mul i64 %24, -1000000000
+  %26 = getelementptr inbounds i8, ptr %6, i64 8
+  %27 = load i64, ptr %26, align 8, !tbaa !21
+  %28 = sub i64 %25, %27
+  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %6) #18
+  br label %29
+
+29:                                               ; preds = %20, %22
+  %30 = phi i64 [ %28, %22 ], [ 0, %20 ]
+  %31 = atomicrmw add ptr @gc_collections, i64 1 monotonic, align 8
+  %32 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %33 = icmp eq i8 %32, 0
+  br i1 %33, label %38, label %34
+
+34:                                               ; preds = %29, %34
+  %35 = call i32 @sched_yield() #14
+  %36 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %37 = icmp eq i8 %36, 0
+  br i1 %37, label %38, label %34, !llvm.loop !5
+
+38:                                               ; preds = %34, %29
+  store atomic i64 1, ptr @gc_collecting seq_cst, align 8
+  %39 = atomicrmw add ptr @gc_epoch, i64 1 seq_cst, align 8
+  %40 = atomicrmw add ptr @gc_snap_gen, i64 1 seq_cst, align 8
+  store atomic volatile i8 0, ptr @gc_lock release, align 1
+  %41 = load i1, ptr @gc_stats, align 4
+  br i1 %41, label %42, label %49
+
+42:                                               ; preds = %38
+  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %5) #18
+  %43 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %5) #14
+  %44 = load i64, ptr %5, align 8, !tbaa !19
+  %45 = mul i64 %44, -1000000000
+  %46 = getelementptr inbounds i8, ptr %5, i64 8
+  %47 = load i64, ptr %46, align 8, !tbaa !21
+  %48 = sub i64 %45, %47
+  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %5) #18
+  br label %49
+
+49:                                               ; preds = %38, %42
+  %50 = phi i64 [ %48, %42 ], [ 0, %38 ]
+  call fastcc void @gc_capture_stack() #17
+  call fastcc void @gc_mark_roots() #17
+  %51 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %52 = icmp eq i8 %51, 0
+  br i1 %52, label %57, label %53
+
+53:                                               ; preds = %49, %53
+  %54 = call i32 @sched_yield() #14
+  %55 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %56 = icmp eq i8 %55, 0
+  br i1 %56, label %57, label %53, !llvm.loop !5
+
+57:                                               ; preds = %53, %49
+  %58 = atomicrmw add ptr @gc_snap_gen, i64 1 seq_cst, align 8
+  store atomic volatile i8 0, ptr @gc_lock release, align 1
+  call fastcc void @gc_capture_stack() #17
+  call fastcc void @gc_mark_roots() #17
+  %59 = load i1, ptr @gc_stats, align 4
+  br i1 %59, label %60, label %85
+
+60:                                               ; preds = %57
+  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %4) #18
+  %61 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %4) #14
+  %62 = load i64, ptr %4, align 8, !tbaa !19
+  %63 = mul i64 %62, 1000000000
+  %64 = getelementptr inbounds i8, ptr %4, i64 8
+  %65 = load i64, ptr %64, align 8, !tbaa !21
+  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %4) #18
+  %66 = add i64 %65, %50
+  %67 = add i64 %66, %63
+  %68 = load atomic i64, ptr @gc_max_mark_ns monotonic, align 8
+  br label %69
+
+69:                                               ; preds = %72, %60
+  %70 = phi i64 [ %68, %60 ], [ %75, %72 ]
+  %71 = icmp ult i64 %70, %67
+  br i1 %71, label %72, label %76
+
+72:                                               ; preds = %69
+  %73 = cmpxchg ptr @gc_max_mark_ns, i64 %70, i64 %67 monotonic monotonic, align 8
+  %74 = extractvalue { i64, i1 } %73, 1
+  %75 = extractvalue { i64, i1 } %73, 0
+  br i1 %74, label %76, label %69, !llvm.loop !24
+
+76:                                               ; preds = %72, %69
+  %77 = load i1, ptr @gc_stats, align 4
+  br i1 %77, label %78, label %85
+
+78:                                               ; preds = %76
+  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %3) #18
+  %79 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %3) #14
+  %80 = load i64, ptr %3, align 8, !tbaa !19
+  %81 = mul i64 %80, -1000000000
+  %82 = getelementptr inbounds i8, ptr %3, i64 8
+  %83 = load i64, ptr %82, align 8, !tbaa !21
+  %84 = sub i64 %81, %83
+  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %3) #18
+  br label %85
+
+85:                                               ; preds = %57, %76, %78
+  %86 = phi i64 [ %84, %78 ], [ 0, %76 ], [ 0, %57 ]
+  %87 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %88 = icmp eq i8 %87, 0
+  br i1 %88, label %93, label %89
+
+89:                                               ; preds = %85, %89
+  %90 = call i32 @sched_yield() #14
+  %91 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %92 = icmp eq i8 %91, 0
+  br i1 %92, label %93, label %89, !llvm.loop !5
+
+93:                                               ; preds = %89, %85
+  %94 = load atomic i64, ptr @gc_epoch seq_cst, align 8
+  %95 = load i64, ptr @gc_head, align 8, !tbaa !14
+  %96 = icmp eq i64 %95, 0
+  br i1 %96, label %110, label %97
+
+97:                                               ; preds = %93, %107
+  %98 = phi ptr [ %108, %107 ], [ @gc_head, %93 ]
+  %99 = phi i64 [ %102, %107 ], [ %95, %93 ]
+  %100 = inttoptr i64 %99 to ptr
+  %101 = getelementptr inbounds i8, ptr %100, i64 24
+  %102 = load i64, ptr %101, align 8, !tbaa !15
+  %103 = getelementptr inbounds i8, ptr %100, i64 16
+  %104 = load atomic i64, ptr %103 seq_cst, align 8
+  %105 = icmp eq i64 %104, %94
+  br i1 %105, label %107, label %106
+
+106:                                              ; preds = %97
+  store i64 %102, ptr %98, align 8, !tbaa !14
+  call void @free(ptr noundef nonnull %100) #15
+  br label %107
+
+107:                                              ; preds = %106, %97
+  %108 = phi ptr [ %98, %106 ], [ %101, %97 ]
+  %109 = icmp eq i64 %102, 0
+  br i1 %109, label %110, label %97, !llvm.loop !29
+
+110:                                              ; preds = %107, %93
+  store atomic volatile i8 0, ptr @gc_lock release, align 1
+  %111 = load i1, ptr @gc_stats, align 4
+  br i1 %111, label %112, label %137
+
+112:                                              ; preds = %110
+  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %2) #18
+  %113 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %2) #14
+  %114 = load i64, ptr %2, align 8, !tbaa !19
+  %115 = mul i64 %114, 1000000000
+  %116 = getelementptr inbounds i8, ptr %2, i64 8
+  %117 = load i64, ptr %116, align 8, !tbaa !21
+  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %2) #18
+  %118 = add i64 %117, %86
+  %119 = add i64 %118, %115
+  %120 = load atomic i64, ptr @gc_max_sweep_ns monotonic, align 8
+  br label %121
+
+121:                                              ; preds = %124, %112
+  %122 = phi i64 [ %120, %112 ], [ %127, %124 ]
+  %123 = icmp ult i64 %122, %119
+  br i1 %123, label %124, label %128
+
+124:                                              ; preds = %121
+  %125 = cmpxchg ptr @gc_max_sweep_ns, i64 %122, i64 %119 monotonic monotonic, align 8
+  %126 = extractvalue { i64, i1 } %125, 1
+  %127 = extractvalue { i64, i1 } %125, 0
+  br i1 %126, label %128, label %121, !llvm.loop !24
+
+128:                                              ; preds = %121, %124
+  call void @llvm.lifetime.start.p0(i64 16, ptr nonnull %1) #18
+  %129 = call i32 @clock_gettime(i32 noundef 1, ptr noundef nonnull %1) #14
+  %130 = load i64, ptr %1, align 8, !tbaa !19
+  %131 = mul i64 %130, 1000000000
+  %132 = getelementptr inbounds i8, ptr %1, i64 8
+  %133 = load i64, ptr %132, align 8, !tbaa !21
+  call void @llvm.lifetime.end.p0(i64 16, ptr nonnull %1) #18
+  %134 = add i64 %133, %30
+  %135 = add i64 %134, %131
+  %136 = atomicrmw add ptr @gc_sum_collector_ns, i64 %135 monotonic, align 8
+  br label %137
+
+137:                                              ; preds = %128, %110
+  %138 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %139 = icmp eq i8 %138, 0
+  br i1 %139, label %144, label %140
+
+140:                                              ; preds = %137, %140
+  %141 = call i32 @sched_yield() #14
+  %142 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %143 = icmp eq i8 %142, 0
+  br i1 %143, label %144, label %140, !llvm.loop !5
+
+144:                                              ; preds = %140, %137
+  store atomic i64 0, ptr @gc_collecting seq_cst, align 8
+  store atomic volatile i8 0, ptr @gc_lock release, align 1
   ret void
 }
-
-; Function Attrs: nounwind
-declare i32 @sched_yield() local_unnamed_addr #4
-
-; Function Attrs: nofree nounwind
-declare noundef i32 @printf(ptr nocapture noundef readonly, ...) local_unnamed_addr #9
-
-; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(none)
-declare ptr @llvm.frameaddress.p0(i32 immarg) #10
-
-; Function Attrs: nounwind
-declare i32 @clock_gettime(i32 noundef, ptr noundef) local_unnamed_addr #4
 
 ; Function Attrs: nounwind uwtable
 define internal fastcc void @gc_mark_roots() unnamed_addr #0 {
   %1 = tail call noalias ptr @malloc(i64 noundef 2048) #15
   %2 = icmp eq ptr %1, null
-  br i1 %2, label %271, label %3
+  br i1 %2, label %283, label %3
 
 3:                                                ; preds = %0
-  %4 = load i64, ptr @gc_root_count, align 8, !tbaa !5
+  %4 = load i64, ptr @gc_root_count, align 8, !tbaa !14
   %5 = icmp ugt i64 %4, 1
   br i1 %5, label %12, label %6
 
-6:                                                ; preds = %75, %3
-  %7 = phi ptr [ %1, %3 ], [ %76, %75 ]
-  %8 = phi i64 [ 0, %3 ], [ %77, %75 ]
-  %9 = phi i64 [ 256, %3 ], [ %78, %75 ]
-  %10 = load i64, ptr @gc_thread_count, align 8, !tbaa !5
+6:                                                ; preds = %29, %3
+  %7 = phi i64 [ 256, %3 ], [ %31, %29 ]
+  %8 = phi i64 [ 0, %3 ], [ %32, %29 ]
+  %9 = phi ptr [ %1, %3 ], [ %33, %29 ]
+  %10 = load i64, ptr @gc_thread_count, align 8, !tbaa !14
   %11 = icmp eq i64 %10, 0
-  br i1 %11, label %83, label %88
+  br i1 %11, label %88, label %93
 
-12:                                               ; preds = %3, %75
-  %13 = phi i64 [ %78, %75 ], [ 256, %3 ]
-  %14 = phi i64 [ %77, %75 ], [ 0, %3 ]
-  %15 = phi ptr [ %76, %75 ], [ %1, %3 ]
-  %16 = phi i64 [ %79, %75 ], [ 0, %3 ]
-  %17 = or disjoint i64 %16, 1
-  %18 = getelementptr inbounds [512 x i64], ptr @gc_roots, i64 0, i64 %16
-  %19 = load i64, ptr %18, align 16, !tbaa !5
-  %20 = getelementptr inbounds [512 x i64], ptr @gc_roots, i64 0, i64 %17
-  %21 = load i64, ptr %20, align 8, !tbaa !5
-  %22 = icmp ult i64 %21, 8
-  br i1 %22, label %75, label %23
+12:                                               ; preds = %3, %29
+  %13 = phi i64 [ %30, %29 ], [ %4, %3 ]
+  %14 = phi i64 [ %34, %29 ], [ 0, %3 ]
+  %15 = phi ptr [ %33, %29 ], [ %1, %3 ]
+  %16 = phi i64 [ %32, %29 ], [ 0, %3 ]
+  %17 = phi i64 [ %31, %29 ], [ 256, %3 ]
+  %18 = or disjoint i64 %14, 1
+  %19 = getelementptr inbounds [512 x i64], ptr @gc_roots, i64 0, i64 %14
+  %20 = load i64, ptr %19, align 16, !tbaa !14
+  %21 = getelementptr inbounds [512 x i64], ptr @gc_roots, i64 0, i64 %18
+  %22 = load i64, ptr %21, align 8, !tbaa !14
+  %23 = icmp ult i64 %22, 8
+  br i1 %23, label %29, label %24
 
-23:                                               ; preds = %12, %69
-  %24 = phi i64 [ %73, %69 ], [ 8, %12 ]
-  %25 = phi i64 [ %72, %69 ], [ %13, %12 ]
-  %26 = phi i64 [ %71, %69 ], [ %14, %12 ]
-  %27 = phi ptr [ %70, %69 ], [ %15, %12 ]
-  %28 = phi i64 [ %24, %69 ], [ 0, %12 ]
-  %29 = add i64 %28, %19
-  %30 = inttoptr i64 %29 to ptr
-  %31 = load volatile i64, ptr %30, align 8, !tbaa !5
-  %32 = and i64 %31, -2
-  %33 = icmp eq i64 %32, 0
-  %34 = and i64 %31, 6
-  %35 = icmp ne i64 %34, 0
-  %36 = or i1 %33, %35
-  %37 = load i64, ptr @gc_min, align 8
-  %38 = icmp ult i64 %32, %37
-  %39 = select i1 %36, i1 true, i1 %38
-  br i1 %39, label %69, label %40
+24:                                               ; preds = %12
+  %25 = load i64, ptr @gc_min, align 8
+  %26 = load i64, ptr @gc_max, align 8
+  br label %37
 
-40:                                               ; preds = %23
-  %41 = load i64, ptr @gc_max, align 8, !tbaa !5
-  %42 = icmp ugt i64 %32, %41
-  %43 = icmp ult i64 %31, 48
-  %44 = or i1 %43, %42
-  br i1 %44, label %69, label %45
+27:                                               ; preds = %82
+  %28 = load i64, ptr @gc_root_count, align 8, !tbaa !14
+  br label %29
 
-45:                                               ; preds = %40
-  %46 = add i64 %32, -48
-  %47 = inttoptr i64 %46 to ptr
-  %48 = load i64, ptr %47, align 8, !tbaa !11
-  %49 = icmp eq i64 %48, 6073194554910330702
-  br i1 %49, label %50, label %69
+29:                                               ; preds = %27, %12
+  %30 = phi i64 [ %13, %12 ], [ %28, %27 ]
+  %31 = phi i64 [ %17, %12 ], [ %83, %27 ]
+  %32 = phi i64 [ %16, %12 ], [ %84, %27 ]
+  %33 = phi ptr [ %15, %12 ], [ %85, %27 ]
+  %34 = add i64 %14, 2
+  %35 = or disjoint i64 %34, 1
+  %36 = icmp ult i64 %35, %30
+  br i1 %36, label %12, label %6, !llvm.loop !30
 
-50:                                               ; preds = %45
-  %51 = getelementptr inbounds i8, ptr %47, i64 8
-  %52 = load i64, ptr %51, align 8, !tbaa !13
-  %53 = icmp ult i64 %52, 48
-  %54 = add i64 %52, %46
-  %55 = icmp ult i64 %54, %32
-  %56 = or i1 %53, %55
-  br i1 %56, label %69, label %57
+37:                                               ; preds = %24, %82
+  %38 = phi i64 [ 8, %24 ], [ %86, %82 ]
+  %39 = phi i64 [ 0, %24 ], [ %38, %82 ]
+  %40 = phi ptr [ %15, %24 ], [ %85, %82 ]
+  %41 = phi i64 [ %16, %24 ], [ %84, %82 ]
+  %42 = phi i64 [ %17, %24 ], [ %83, %82 ]
+  %43 = add i64 %39, %20
+  %44 = inttoptr i64 %43 to ptr
+  %45 = load volatile i64, ptr %44, align 8, !tbaa !14
+  %46 = and i64 %45, -2
+  %47 = icmp eq i64 %46, 0
+  %48 = and i64 %45, 6
+  %49 = icmp ne i64 %48, 0
+  %50 = or i1 %47, %49
+  %51 = icmp ult i64 %46, %25
+  %52 = select i1 %50, i1 true, i1 %51
+  br i1 %52, label %82, label %53
 
-57:                                               ; preds = %50
-  %58 = icmp eq i64 %26, %25
-  br i1 %58, label %59, label %64
+53:                                               ; preds = %37
+  %54 = icmp ugt i64 %46, %26
+  %55 = icmp ult i64 %45, 48
+  %56 = or i1 %55, %54
+  br i1 %56, label %82, label %57
 
-59:                                               ; preds = %57
-  %60 = shl i64 %26, 1
-  %61 = shl i64 %26, 4
-  %62 = tail call ptr @realloc(ptr noundef %27, i64 noundef %61) #19
-  %63 = icmp eq ptr %62, null
-  br i1 %63, label %75, label %64
+57:                                               ; preds = %53
+  %58 = add i64 %46, -48
+  %59 = inttoptr i64 %58 to ptr
+  %60 = load i64, ptr %59, align 8, !tbaa !7
+  %61 = icmp eq i64 %60, 6073194554910330702
+  br i1 %61, label %62, label %82
 
-64:                                               ; preds = %59, %57
-  %65 = phi ptr [ %62, %59 ], [ %27, %57 ]
-  %66 = phi i64 [ %60, %59 ], [ %25, %57 ]
-  %67 = add i64 %26, 1
-  %68 = getelementptr inbounds i64, ptr %65, i64 %26
-  store i64 %32, ptr %68, align 8, !tbaa !5
-  br label %69
+62:                                               ; preds = %57
+  %63 = getelementptr inbounds i8, ptr %59, i64 8
+  %64 = load i64, ptr %63, align 8, !tbaa !12
+  %65 = icmp ult i64 %64, 48
+  %66 = add i64 %64, %58
+  %67 = icmp ult i64 %66, %46
+  %68 = or i1 %65, %67
+  br i1 %68, label %82, label %69
 
-69:                                               ; preds = %50, %45, %40, %23, %64
-  %70 = phi ptr [ %65, %64 ], [ %27, %23 ], [ %27, %40 ], [ %27, %45 ], [ %27, %50 ]
-  %71 = phi i64 [ %67, %64 ], [ %26, %23 ], [ %26, %40 ], [ %26, %45 ], [ %26, %50 ]
-  %72 = phi i64 [ %66, %64 ], [ %25, %23 ], [ %25, %40 ], [ %25, %45 ], [ %25, %50 ]
-  %73 = add i64 %24, 8
-  %74 = icmp ugt i64 %73, %21
-  br i1 %74, label %75, label %23, !llvm.loop !35
+69:                                               ; preds = %62
+  %70 = icmp eq i64 %41, %42
+  br i1 %70, label %71, label %77
 
-75:                                               ; preds = %69, %59, %12
-  %76 = phi ptr [ %15, %12 ], [ %70, %69 ], [ %27, %59 ]
-  %77 = phi i64 [ %14, %12 ], [ %71, %69 ], [ %26, %59 ]
-  %78 = phi i64 [ %13, %12 ], [ %72, %69 ], [ %60, %59 ]
-  %79 = add i64 %16, 2
-  %80 = or disjoint i64 %79, 1
-  %81 = load i64, ptr @gc_root_count, align 8, !tbaa !5
-  %82 = icmp ult i64 %80, %81
-  br i1 %82, label %12, label %6, !llvm.loop !36
+71:                                               ; preds = %69
+  %72 = shl i64 %41, 4
+  %73 = tail call ptr @realloc(ptr noundef %40, i64 noundef %72) #19
+  %74 = icmp eq ptr %73, null
+  br i1 %74, label %82, label %75
 
-83:                                               ; preds = %162, %6
-  %84 = phi ptr [ %7, %6 ], [ %164, %162 ]
-  %85 = phi i64 [ %8, %6 ], [ %165, %162 ]
-  %86 = phi i64 [ %9, %6 ], [ %166, %162 ]
-  %87 = icmp eq i64 %85, 0
-  br i1 %87, label %269, label %171
+75:                                               ; preds = %71
+  %76 = shl i64 %41, 1
+  br label %77
 
-88:                                               ; preds = %6, %162
-  %89 = phi i64 [ %163, %162 ], [ %10, %6 ]
-  %90 = phi i64 [ %166, %162 ], [ %9, %6 ]
-  %91 = phi i64 [ %165, %162 ], [ %8, %6 ]
-  %92 = phi ptr [ %164, %162 ], [ %7, %6 ]
-  %93 = phi i64 [ %167, %162 ], [ 0, %6 ]
-  %94 = getelementptr inbounds [128 x %struct.GCThread], ptr @gc_threads, i64 0, i64 %93
-  %95 = getelementptr inbounds i8, ptr %94, i64 8
-  %96 = load i64, ptr %95, align 8, !tbaa !18
-  %97 = icmp eq i64 %96, 0
-  br i1 %97, label %162, label %98
+77:                                               ; preds = %75, %69
+  %78 = phi i64 [ %76, %75 ], [ %42, %69 ]
+  %79 = phi ptr [ %73, %75 ], [ %40, %69 ]
+  %80 = add i64 %41, 1
+  %81 = getelementptr inbounds i64, ptr %79, i64 %41
+  store i64 %46, ptr %81, align 8, !tbaa !14
+  br label %82
 
-98:                                               ; preds = %88
-  %99 = getelementptr inbounds i8, ptr %94, i64 24
-  %100 = load i64, ptr %99, align 8, !tbaa !22
-  %101 = icmp eq i64 %100, 0
-  br i1 %101, label %162, label %102
+82:                                               ; preds = %37, %53, %57, %62, %71, %77
+  %83 = phi i64 [ %42, %37 ], [ %42, %53 ], [ %42, %62 ], [ %41, %71 ], [ %78, %77 ], [ %42, %57 ]
+  %84 = phi i64 [ %41, %37 ], [ %41, %53 ], [ %41, %62 ], [ %41, %71 ], [ %80, %77 ], [ %41, %57 ]
+  %85 = phi ptr [ %40, %37 ], [ %40, %53 ], [ %40, %62 ], [ %40, %71 ], [ %79, %77 ], [ %40, %57 ]
+  %86 = add i64 %38, 8
+  %87 = icmp ugt i64 %86, %22
+  br i1 %87, label %27, label %37, !llvm.loop !31
 
-102:                                              ; preds = %98
-  %103 = getelementptr inbounds i8, ptr %94, i64 32
-  br label %104
+88:                                               ; preds = %173, %6
+  %89 = phi i64 [ %7, %6 ], [ %175, %173 ]
+  %90 = phi i64 [ %8, %6 ], [ %176, %173 ]
+  %91 = phi ptr [ %9, %6 ], [ %177, %173 ]
+  %92 = icmp eq i64 %90, 0
+  br i1 %92, label %281, label %182
 
-104:                                              ; preds = %102, %150
-  %105 = phi i64 [ %100, %102 ], [ %151, %150 ]
-  %106 = phi i64 [ %90, %102 ], [ %152, %150 ]
-  %107 = phi i64 [ %91, %102 ], [ %153, %150 ]
-  %108 = phi ptr [ %92, %102 ], [ %154, %150 ]
-  %109 = phi i64 [ 0, %102 ], [ %155, %150 ]
-  %110 = getelementptr inbounds [8192 x i64], ptr %103, i64 0, i64 %109
-  %111 = load i64, ptr %110, align 8, !tbaa !5
-  %112 = and i64 %111, -2
-  %113 = icmp eq i64 %112, 0
-  %114 = and i64 %111, 6
-  %115 = icmp ne i64 %114, 0
-  %116 = or i1 %113, %115
-  %117 = load i64, ptr @gc_min, align 8
-  %118 = icmp ult i64 %112, %117
-  %119 = select i1 %116, i1 true, i1 %118
-  br i1 %119, label %150, label %120
+93:                                               ; preds = %6, %173
+  %94 = phi i64 [ %174, %173 ], [ %10, %6 ]
+  %95 = phi i64 [ %178, %173 ], [ 0, %6 ]
+  %96 = phi ptr [ %177, %173 ], [ %9, %6 ]
+  %97 = phi i64 [ %176, %173 ], [ %8, %6 ]
+  %98 = phi i64 [ %175, %173 ], [ %7, %6 ]
+  %99 = getelementptr inbounds [128 x %struct.GCThread], ptr @gc_threads, i64 0, i64 %95
+  %100 = getelementptr inbounds i8, ptr %99, i64 8
+  %101 = load i64, ptr %100, align 8, !tbaa !18
+  %102 = icmp eq i64 %101, 0
+  br i1 %102, label %173, label %103
 
-120:                                              ; preds = %104
-  %121 = load i64, ptr @gc_max, align 8, !tbaa !5
-  %122 = icmp ugt i64 %112, %121
-  %123 = icmp ult i64 %111, 48
-  %124 = or i1 %123, %122
-  br i1 %124, label %150, label %125
+103:                                              ; preds = %93
+  %104 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %105 = icmp eq i8 %104, 0
+  br i1 %105, label %110, label %106
 
-125:                                              ; preds = %120
-  %126 = add i64 %112, -48
-  %127 = inttoptr i64 %126 to ptr
-  %128 = load i64, ptr %127, align 8, !tbaa !11
-  %129 = icmp eq i64 %128, 6073194554910330702
-  br i1 %129, label %130, label %150
+106:                                              ; preds = %103, %106
+  %107 = tail call i32 @sched_yield() #14
+  %108 = atomicrmw volatile xchg ptr @gc_lock, i8 1 acquire, align 1
+  %109 = icmp eq i8 %108, 0
+  br i1 %109, label %110, label %106, !llvm.loop !5
 
-130:                                              ; preds = %125
-  %131 = getelementptr inbounds i8, ptr %127, i64 8
-  %132 = load i64, ptr %131, align 8, !tbaa !13
-  %133 = icmp ult i64 %132, 48
-  %134 = add i64 %132, %126
-  %135 = icmp ult i64 %134, %112
-  %136 = or i1 %133, %135
-  br i1 %136, label %150, label %137
+110:                                              ; preds = %106, %103
+  %111 = getelementptr inbounds i8, ptr %99, i64 24
+  %112 = load i64, ptr %111, align 8, !tbaa !23
+  %113 = tail call i64 @llvm.umin.i64(i64 %112, i64 8192)
+  %114 = icmp eq i64 %112, 0
+  br i1 %114, label %117, label %115
 
-137:                                              ; preds = %130
-  %138 = icmp eq i64 %107, %106
-  br i1 %138, label %139, label %144
+115:                                              ; preds = %110
+  %116 = getelementptr inbounds i8, ptr %99, i64 32
+  br label %122
 
-139:                                              ; preds = %137
-  %140 = shl i64 %106, 1
-  %141 = shl i64 %106, 4
-  %142 = tail call ptr @realloc(ptr noundef %108, i64 noundef %141) #19
-  %143 = icmp eq ptr %142, null
-  br i1 %143, label %157, label %144
+117:                                              ; preds = %167, %110
+  %118 = phi i64 [ %98, %110 ], [ %168, %167 ]
+  %119 = phi i64 [ %97, %110 ], [ %169, %167 ]
+  %120 = phi ptr [ %96, %110 ], [ %170, %167 ]
+  store atomic volatile i8 0, ptr @gc_lock release, align 1
+  %121 = load i64, ptr @gc_thread_count, align 8, !tbaa !14
+  br label %173
 
-144:                                              ; preds = %139, %137
-  %145 = phi ptr [ %142, %139 ], [ %108, %137 ]
-  %146 = phi i64 [ %140, %139 ], [ %106, %137 ]
-  %147 = add i64 %107, 1
-  %148 = getelementptr inbounds i64, ptr %145, i64 %107
-  store i64 %112, ptr %148, align 8, !tbaa !5
-  %149 = load i64, ptr %99, align 8, !tbaa !22
-  br label %150
+122:                                              ; preds = %115, %167
+  %123 = phi i64 [ 0, %115 ], [ %171, %167 ]
+  %124 = phi ptr [ %96, %115 ], [ %170, %167 ]
+  %125 = phi i64 [ %97, %115 ], [ %169, %167 ]
+  %126 = phi i64 [ %98, %115 ], [ %168, %167 ]
+  %127 = getelementptr inbounds [8192 x i64], ptr %116, i64 0, i64 %123
+  %128 = load i64, ptr %127, align 8, !tbaa !14
+  %129 = and i64 %128, -2
+  %130 = icmp eq i64 %129, 0
+  %131 = and i64 %128, 6
+  %132 = icmp ne i64 %131, 0
+  %133 = or i1 %130, %132
+  %134 = load i64, ptr @gc_min, align 8
+  %135 = icmp ult i64 %129, %134
+  %136 = select i1 %133, i1 true, i1 %135
+  br i1 %136, label %167, label %137
 
-150:                                              ; preds = %130, %125, %120, %104, %144
-  %151 = phi i64 [ %149, %144 ], [ %105, %104 ], [ %105, %120 ], [ %105, %125 ], [ %105, %130 ]
-  %152 = phi i64 [ %146, %144 ], [ %106, %104 ], [ %106, %120 ], [ %106, %125 ], [ %106, %130 ]
-  %153 = phi i64 [ %147, %144 ], [ %107, %104 ], [ %107, %120 ], [ %107, %125 ], [ %107, %130 ]
-  %154 = phi ptr [ %145, %144 ], [ %108, %104 ], [ %108, %120 ], [ %108, %125 ], [ %108, %130 ]
-  %155 = add nuw i64 %109, 1
-  %156 = icmp ult i64 %155, %151
-  br i1 %156, label %104, label %157, !llvm.loop !37
+137:                                              ; preds = %122
+  %138 = load i64, ptr @gc_max, align 8, !tbaa !14
+  %139 = icmp ugt i64 %129, %138
+  %140 = icmp ult i64 %128, 48
+  %141 = or i1 %140, %139
+  br i1 %141, label %167, label %142
 
-157:                                              ; preds = %139, %150
-  %158 = phi ptr [ %108, %139 ], [ %154, %150 ]
-  %159 = phi i64 [ %106, %139 ], [ %153, %150 ]
-  %160 = phi i64 [ %140, %139 ], [ %152, %150 ]
-  %161 = load i64, ptr @gc_thread_count, align 8, !tbaa !5
+142:                                              ; preds = %137
+  %143 = add i64 %129, -48
+  %144 = inttoptr i64 %143 to ptr
+  %145 = load i64, ptr %144, align 8, !tbaa !7
+  %146 = icmp eq i64 %145, 6073194554910330702
+  br i1 %146, label %147, label %167
+
+147:                                              ; preds = %142
+  %148 = getelementptr inbounds i8, ptr %144, i64 8
+  %149 = load i64, ptr %148, align 8, !tbaa !12
+  %150 = icmp ult i64 %149, 48
+  %151 = add i64 %149, %143
+  %152 = icmp ult i64 %151, %129
+  %153 = or i1 %150, %152
+  br i1 %153, label %167, label %154
+
+154:                                              ; preds = %147
+  %155 = icmp eq i64 %125, %126
+  br i1 %155, label %156, label %162
+
+156:                                              ; preds = %154
+  %157 = shl i64 %125, 4
+  %158 = tail call ptr @realloc(ptr noundef %124, i64 noundef %157) #19
+  %159 = icmp eq ptr %158, null
+  br i1 %159, label %167, label %160
+
+160:                                              ; preds = %156
+  %161 = shl i64 %125, 1
   br label %162
 
-162:                                              ; preds = %157, %98, %88
-  %163 = phi i64 [ %89, %88 ], [ %89, %98 ], [ %161, %157 ]
-  %164 = phi ptr [ %92, %88 ], [ %92, %98 ], [ %158, %157 ]
-  %165 = phi i64 [ %91, %88 ], [ %91, %98 ], [ %159, %157 ]
-  %166 = phi i64 [ %90, %88 ], [ %90, %98 ], [ %160, %157 ]
-  %167 = add nuw nsw i64 %93, 1
-  %168 = icmp ult i64 %167, %163
-  %169 = icmp ult i64 %93, 127
-  %170 = and i1 %169, %168
-  br i1 %170, label %88, label %83, !llvm.loop !38
+162:                                              ; preds = %160, %154
+  %163 = phi i64 [ %161, %160 ], [ %126, %154 ]
+  %164 = phi ptr [ %158, %160 ], [ %124, %154 ]
+  %165 = add i64 %125, 1
+  %166 = getelementptr inbounds i64, ptr %164, i64 %125
+  store i64 %129, ptr %166, align 8, !tbaa !14
+  br label %167
 
-171:                                              ; preds = %83, %264
-  %172 = phi i64 [ %267, %264 ], [ %86, %83 ]
-  %173 = phi i64 [ %266, %264 ], [ %85, %83 ]
-  %174 = phi ptr [ %265, %264 ], [ %84, %83 ]
-  %175 = add i64 %173, -1
-  %176 = getelementptr inbounds i64, ptr %174, i64 %175
-  %177 = load i64, ptr %176, align 8, !tbaa !5
-  %178 = and i64 %177, -2
-  %179 = icmp eq i64 %178, 0
-  %180 = and i64 %177, 6
-  %181 = icmp ne i64 %180, 0
-  %182 = or i1 %179, %181
-  %183 = load i64, ptr @gc_min, align 8
-  %184 = icmp ult i64 %178, %183
-  %185 = select i1 %182, i1 true, i1 %184
-  br i1 %185, label %264, label %186
+167:                                              ; preds = %122, %137, %142, %147, %156, %162
+  %168 = phi i64 [ %126, %122 ], [ %126, %137 ], [ %126, %147 ], [ %125, %156 ], [ %163, %162 ], [ %126, %142 ]
+  %169 = phi i64 [ %125, %122 ], [ %125, %137 ], [ %125, %147 ], [ %125, %156 ], [ %165, %162 ], [ %125, %142 ]
+  %170 = phi ptr [ %124, %122 ], [ %124, %137 ], [ %124, %147 ], [ %124, %156 ], [ %164, %162 ], [ %124, %142 ]
+  %171 = add nuw nsw i64 %123, 1
+  %172 = icmp eq i64 %171, %113
+  br i1 %172, label %117, label %122, !llvm.loop !32
 
-186:                                              ; preds = %171
-  %187 = load i64, ptr @gc_max, align 8, !tbaa !5
-  %188 = icmp ugt i64 %178, %187
-  %189 = icmp ult i64 %177, 48
-  %190 = or i1 %189, %188
-  br i1 %190, label %264, label %191
+173:                                              ; preds = %93, %117
+  %174 = phi i64 [ %94, %93 ], [ %121, %117 ]
+  %175 = phi i64 [ %98, %93 ], [ %118, %117 ]
+  %176 = phi i64 [ %97, %93 ], [ %119, %117 ]
+  %177 = phi ptr [ %96, %93 ], [ %120, %117 ]
+  %178 = add nuw nsw i64 %95, 1
+  %179 = icmp ult i64 %178, %174
+  %180 = icmp ult i64 %95, 127
+  %181 = and i1 %180, %179
+  br i1 %181, label %93, label %88, !llvm.loop !33
 
-191:                                              ; preds = %186
-  %192 = add i64 %178, -48
-  %193 = inttoptr i64 %192 to ptr
-  %194 = load i64, ptr %193, align 8, !tbaa !11
-  %195 = icmp eq i64 %194, 6073194554910330702
-  br i1 %195, label %196, label %264
+182:                                              ; preds = %88, %276
+  %183 = phi ptr [ %279, %276 ], [ %91, %88 ]
+  %184 = phi i64 [ %278, %276 ], [ %90, %88 ]
+  %185 = phi i64 [ %277, %276 ], [ %89, %88 ]
+  %186 = add i64 %184, -1
+  %187 = getelementptr inbounds i64, ptr %183, i64 %186
+  %188 = load i64, ptr %187, align 8, !tbaa !14
+  %189 = and i64 %188, -2
+  %190 = icmp eq i64 %189, 0
+  %191 = and i64 %188, 6
+  %192 = icmp ne i64 %191, 0
+  %193 = or i1 %190, %192
+  %194 = load i64, ptr @gc_min, align 8
+  %195 = icmp ult i64 %189, %194
+  %196 = select i1 %193, i1 true, i1 %195
+  br i1 %196, label %276, label %197
 
-196:                                              ; preds = %191
-  %197 = getelementptr inbounds i8, ptr %193, i64 8
-  %198 = load i64, ptr %197, align 8, !tbaa !13
-  %199 = icmp ult i64 %198, 48
-  %200 = add i64 %198, %192
-  %201 = icmp ult i64 %200, %178
-  %202 = or i1 %199, %201
-  br i1 %202, label %264, label %203, !llvm.loop !39
+197:                                              ; preds = %182
+  %198 = load i64, ptr @gc_max, align 8, !tbaa !14
+  %199 = icmp ugt i64 %189, %198
+  %200 = icmp ult i64 %188, 48
+  %201 = or i1 %200, %199
+  br i1 %201, label %276, label %202
 
-203:                                              ; preds = %196
-  %204 = load atomic i64, ptr @gc_epoch seq_cst, align 8
-  %205 = getelementptr inbounds i8, ptr %193, i64 16
-  %206 = load atomic i64, ptr %205 seq_cst, align 8
-  %207 = icmp eq i64 %206, %204
-  br i1 %207, label %264, label %208, !llvm.loop !39
+202:                                              ; preds = %197
+  %203 = add i64 %189, -48
+  %204 = inttoptr i64 %203 to ptr
+  %205 = load i64, ptr %204, align 8, !tbaa !7
+  %206 = icmp eq i64 %205, 6073194554910330702
+  br i1 %206, label %207, label %276
 
-208:                                              ; preds = %203
-  store atomic i64 %204, ptr %205 seq_cst, align 8
-  %209 = load i64, ptr %197, align 8, !tbaa !13
-  %210 = add i64 %209, %192
-  %211 = add i64 %178, 8
-  %212 = icmp ugt i64 %211, %210
-  br i1 %212, label %264, label %213
+207:                                              ; preds = %202
+  %208 = getelementptr inbounds i8, ptr %204, i64 8
+  %209 = load i64, ptr %208, align 8, !tbaa !12
+  %210 = icmp ult i64 %209, 48
+  %211 = add i64 %209, %203
+  %212 = icmp ult i64 %211, %189
+  %213 = or i1 %210, %212
+  br i1 %213, label %276, label %214, !llvm.loop !34
 
-213:                                              ; preds = %208, %258
-  %214 = phi i64 [ %262, %258 ], [ %211, %208 ]
-  %215 = phi i64 [ %261, %258 ], [ %172, %208 ]
-  %216 = phi i64 [ %260, %258 ], [ %175, %208 ]
-  %217 = phi i64 [ %214, %258 ], [ %178, %208 ]
-  %218 = phi ptr [ %259, %258 ], [ %174, %208 ]
-  %219 = inttoptr i64 %217 to ptr
-  %220 = load volatile i64, ptr %219, align 8, !tbaa !5
-  %221 = and i64 %220, -2
-  %222 = icmp eq i64 %221, 0
-  %223 = and i64 %220, 6
-  %224 = icmp ne i64 %223, 0
-  %225 = or i1 %222, %224
-  %226 = load i64, ptr @gc_min, align 8
-  %227 = icmp ult i64 %221, %226
-  %228 = select i1 %225, i1 true, i1 %227
-  br i1 %228, label %258, label %229
+214:                                              ; preds = %207
+  %215 = load atomic i64, ptr @gc_epoch seq_cst, align 8
+  %216 = getelementptr inbounds i8, ptr %204, i64 16
+  %217 = load atomic i64, ptr %216 seq_cst, align 8
+  %218 = icmp eq i64 %217, %215
+  br i1 %218, label %276, label %219, !llvm.loop !34
 
-229:                                              ; preds = %213
-  %230 = load i64, ptr @gc_max, align 8, !tbaa !5
-  %231 = icmp ugt i64 %221, %230
-  %232 = icmp ult i64 %220, 48
-  %233 = or i1 %232, %231
-  br i1 %233, label %258, label %234
+219:                                              ; preds = %214
+  store atomic i64 %215, ptr %216 seq_cst, align 8
+  %220 = load i64, ptr %208, align 8, !tbaa !12
+  %221 = add i64 %220, %203
+  %222 = add i64 %189, 8
+  %223 = icmp ugt i64 %222, %221
+  br i1 %223, label %276, label %224
 
-234:                                              ; preds = %229
-  %235 = add i64 %221, -48
-  %236 = inttoptr i64 %235 to ptr
-  %237 = load i64, ptr %236, align 8, !tbaa !11
-  %238 = icmp eq i64 %237, 6073194554910330702
-  br i1 %238, label %239, label %258
+224:                                              ; preds = %219, %270
+  %225 = phi i64 [ %274, %270 ], [ %222, %219 ]
+  %226 = phi i64 [ %225, %270 ], [ %189, %219 ]
+  %227 = phi ptr [ %273, %270 ], [ %183, %219 ]
+  %228 = phi i64 [ %272, %270 ], [ %186, %219 ]
+  %229 = phi i64 [ %271, %270 ], [ %185, %219 ]
+  %230 = inttoptr i64 %226 to ptr
+  %231 = load volatile i64, ptr %230, align 8, !tbaa !14
+  %232 = and i64 %231, -2
+  %233 = icmp eq i64 %232, 0
+  %234 = and i64 %231, 6
+  %235 = icmp ne i64 %234, 0
+  %236 = or i1 %233, %235
+  %237 = load i64, ptr @gc_min, align 8
+  %238 = icmp ult i64 %232, %237
+  %239 = select i1 %236, i1 true, i1 %238
+  br i1 %239, label %270, label %240
 
-239:                                              ; preds = %234
-  %240 = getelementptr inbounds i8, ptr %236, i64 8
-  %241 = load i64, ptr %240, align 8, !tbaa !13
-  %242 = icmp ult i64 %241, 48
-  %243 = add i64 %241, %235
-  %244 = icmp ult i64 %243, %221
-  %245 = or i1 %242, %244
-  br i1 %245, label %258, label %246
+240:                                              ; preds = %224
+  %241 = load i64, ptr @gc_max, align 8, !tbaa !14
+  %242 = icmp ugt i64 %232, %241
+  %243 = icmp ult i64 %231, 48
+  %244 = or i1 %243, %242
+  br i1 %244, label %270, label %245
 
-246:                                              ; preds = %239
-  %247 = icmp eq i64 %216, %215
-  br i1 %247, label %248, label %253
+245:                                              ; preds = %240
+  %246 = add i64 %232, -48
+  %247 = inttoptr i64 %246 to ptr
+  %248 = load i64, ptr %247, align 8, !tbaa !7
+  %249 = icmp eq i64 %248, 6073194554910330702
+  br i1 %249, label %250, label %270
 
-248:                                              ; preds = %246
-  %249 = shl i64 %216, 1
-  %250 = shl i64 %216, 4
-  %251 = tail call ptr @realloc(ptr noundef %218, i64 noundef %250) #19
-  %252 = icmp eq ptr %251, null
-  br i1 %252, label %264, label %253
+250:                                              ; preds = %245
+  %251 = getelementptr inbounds i8, ptr %247, i64 8
+  %252 = load i64, ptr %251, align 8, !tbaa !12
+  %253 = icmp ult i64 %252, 48
+  %254 = add i64 %252, %246
+  %255 = icmp ult i64 %254, %232
+  %256 = or i1 %253, %255
+  br i1 %256, label %270, label %257
 
-253:                                              ; preds = %248, %246
-  %254 = phi ptr [ %251, %248 ], [ %218, %246 ]
-  %255 = phi i64 [ %249, %248 ], [ %215, %246 ]
-  %256 = add i64 %216, 1
-  %257 = getelementptr inbounds i64, ptr %254, i64 %216
-  store i64 %221, ptr %257, align 8, !tbaa !5
-  br label %258
+257:                                              ; preds = %250
+  %258 = icmp eq i64 %228, %229
+  br i1 %258, label %259, label %265
 
-258:                                              ; preds = %239, %234, %229, %213, %253
-  %259 = phi ptr [ %254, %253 ], [ %218, %213 ], [ %218, %229 ], [ %218, %234 ], [ %218, %239 ]
-  %260 = phi i64 [ %256, %253 ], [ %216, %213 ], [ %216, %229 ], [ %216, %234 ], [ %216, %239 ]
-  %261 = phi i64 [ %255, %253 ], [ %215, %213 ], [ %215, %229 ], [ %215, %234 ], [ %215, %239 ]
-  %262 = add i64 %214, 8
-  %263 = icmp ugt i64 %262, %210
-  br i1 %263, label %264, label %213, !llvm.loop !40
+259:                                              ; preds = %257
+  %260 = shl i64 %228, 4
+  %261 = tail call ptr @realloc(ptr noundef %227, i64 noundef %260) #19
+  %262 = icmp eq ptr %261, null
+  br i1 %262, label %270, label %263
 
-264:                                              ; preds = %258, %248, %208, %196, %191, %186, %171, %203
-  %265 = phi ptr [ %174, %203 ], [ %174, %171 ], [ %174, %186 ], [ %174, %191 ], [ %174, %196 ], [ %174, %208 ], [ %218, %248 ], [ %259, %258 ]
-  %266 = phi i64 [ %175, %203 ], [ %175, %171 ], [ %175, %186 ], [ %175, %191 ], [ %175, %196 ], [ %175, %208 ], [ %216, %248 ], [ %260, %258 ]
-  %267 = phi i64 [ %172, %203 ], [ %172, %171 ], [ %172, %186 ], [ %172, %191 ], [ %172, %196 ], [ %172, %208 ], [ %249, %248 ], [ %261, %258 ]
-  %268 = icmp eq i64 %266, 0
-  br i1 %268, label %269, label %171
+263:                                              ; preds = %259
+  %264 = shl i64 %228, 1
+  br label %265
 
-269:                                              ; preds = %264, %83
-  %270 = phi ptr [ %84, %83 ], [ %265, %264 ]
-  tail call void @free(ptr noundef %270) #15
-  br label %271
+265:                                              ; preds = %263, %257
+  %266 = phi i64 [ %264, %263 ], [ %229, %257 ]
+  %267 = phi ptr [ %261, %263 ], [ %227, %257 ]
+  %268 = add i64 %228, 1
+  %269 = getelementptr inbounds i64, ptr %267, i64 %228
+  store i64 %232, ptr %269, align 8, !tbaa !14
+  br label %270
 
-271:                                              ; preds = %0, %269
+270:                                              ; preds = %224, %240, %245, %250, %259, %265
+  %271 = phi i64 [ %229, %224 ], [ %229, %240 ], [ %229, %250 ], [ %228, %259 ], [ %266, %265 ], [ %229, %245 ]
+  %272 = phi i64 [ %228, %224 ], [ %228, %240 ], [ %228, %250 ], [ %228, %259 ], [ %268, %265 ], [ %228, %245 ]
+  %273 = phi ptr [ %227, %224 ], [ %227, %240 ], [ %227, %250 ], [ %227, %259 ], [ %267, %265 ], [ %227, %245 ]
+  %274 = add i64 %225, 8
+  %275 = icmp ugt i64 %274, %221
+  br i1 %275, label %276, label %224, !llvm.loop !35
+
+276:                                              ; preds = %270, %219, %207, %202, %197, %182, %214
+  %277 = phi i64 [ %185, %214 ], [ %185, %182 ], [ %185, %197 ], [ %185, %202 ], [ %185, %207 ], [ %185, %219 ], [ %271, %270 ]
+  %278 = phi i64 [ %186, %214 ], [ %186, %182 ], [ %186, %197 ], [ %186, %202 ], [ %186, %207 ], [ %186, %219 ], [ %272, %270 ]
+  %279 = phi ptr [ %183, %214 ], [ %183, %182 ], [ %183, %197 ], [ %183, %202 ], [ %183, %207 ], [ %183, %219 ], [ %273, %270 ]
+  %280 = icmp eq i64 %278, 0
+  br i1 %280, label %281, label %182
+
+281:                                              ; preds = %276, %88
+  %282 = phi ptr [ %91, %88 ], [ %279, %276 ]
+  tail call void @free(ptr noundef %282) #15
+  br label %283
+
+283:                                              ; preds = %0, %281
   ret void
 }
 
-declare i32 @nanosleep(ptr noundef, ptr noundef) local_unnamed_addr #11
+; Function Attrs: nofree nounwind uwtable
+define dso_local void @__threadon_gc_shutdown() local_unnamed_addr #7 {
+  %1 = load i1, ptr @gc_stats, align 4
+  br i1 %1, label %2, label %27
 
-; Function Attrs: mustprogress nounwind willreturn allockind("realloc") allocsize(1) memory(argmem: readwrite, inaccessiblemem: readwrite)
-declare noalias noundef ptr @realloc(ptr allocptr nocapture noundef, i64 noundef) local_unnamed_addr #12
+2:                                                ; preds = %0
+  %3 = load i64, ptr @gc_collections, align 8, !tbaa !14
+  %4 = load i64, ptr @gc_snapshot_count, align 8, !tbaa !14
+  %5 = load i64, ptr @gc_max_snapshot_ns, align 8, !tbaa !14
+  %6 = uitofp i64 %5 to double
+  %7 = fdiv double %6, 1.000000e+03
+  %8 = icmp eq i64 %4, 0
+  br i1 %8, label %15, label %9
+
+9:                                                ; preds = %2
+  %10 = load i64, ptr @gc_sum_snapshot_ns, align 8, !tbaa !14
+  %11 = uitofp i64 %10 to double
+  %12 = uitofp i64 %4 to double
+  %13 = fdiv double %11, %12
+  %14 = fdiv double %13, 1.000000e+03
+  br label %15
+
+15:                                               ; preds = %2, %9
+  %16 = phi double [ %14, %9 ], [ 0.000000e+00, %2 ]
+  %17 = load i64, ptr @gc_max_mark_ns, align 8, !tbaa !14
+  %18 = uitofp i64 %17 to double
+  %19 = fdiv double %18, 1.000000e+03
+  %20 = load i64, ptr @gc_max_sweep_ns, align 8, !tbaa !14
+  %21 = uitofp i64 %20 to double
+  %22 = fdiv double %21, 1.000000e+03
+  %23 = load i64, ptr @gc_sum_collector_ns, align 8, !tbaa !14
+  %24 = uitofp i64 %23 to double
+  %25 = fdiv double %24, 1.000000e+06
+  %26 = tail call i32 (ptr, ...) @printf(ptr noundef nonnull dereferenceable(1) @__gc_str, i64 noundef %3, i64 noundef %4, double noundef %7, double noundef %16, double noundef %19, double noundef %22, double noundef %25) #17
+  br label %27
+
+27:                                               ; preds = %15, %0
+  ret void
+}
+
+; Function Attrs: nofree nounwind
+declare noundef i32 @printf(ptr nocapture noundef readonly, ...) local_unnamed_addr #8
+
+; Function Attrs: nofree nounwind memory(read)
+declare noundef ptr @getenv(ptr nocapture noundef) local_unnamed_addr #9
 
 ; Function Attrs: nounwind
-declare void @free(ptr noundef) local_unnamed_addr #4
+declare i32 @sched_yield() local_unnamed_addr #2
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(none)
+declare ptr @llvm.frameaddress.p0(i32 immarg) #10
+
+; Function Attrs: nounwind
+declare void @free(ptr noundef) local_unnamed_addr #2
+
+; Function Attrs: mustprogress nounwind willreturn allockind("realloc") allocsize(1) memory(argmem: readwrite, inaccessiblemem: readwrite)
+declare noalias noundef ptr @realloc(ptr allocptr nocapture noundef, i64 noundef) local_unnamed_addr #11
+
+; Function Attrs: nounwind
+declare i32 @clock_gettime(i32 noundef, ptr noundef) local_unnamed_addr #2
+
+; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare i64 @llvm.umin.i64(i64, i64) #12
 
 ; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: write)
 declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg) #13
 
 attributes #0 = { nounwind uwtable "min-legal-vector-width"="0" "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
 attributes #1 = { mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
-attributes #2 = { nofree nounwind memory(read) "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
-attributes #3 = { mustprogress nofree nounwind willreturn "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
-attributes #4 = { nounwind "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
-attributes #5 = { cold noreturn nounwind "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
-attributes #6 = { mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none) }
-attributes #7 = { mustprogress nofree nosync nounwind willreturn memory(none) "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
-attributes #8 = { mustprogress nofree norecurse nosync nounwind willreturn memory(readwrite, argmem: none, inaccessiblemem: none) uwtable "min-legal-vector-width"="0" "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
-attributes #9 = { nofree nounwind "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #2 = { nounwind "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #3 = { cold noreturn nounwind "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #4 = { mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none) }
+attributes #5 = { mustprogress nofree nosync nounwind willreturn memory(none) "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #6 = { mustprogress nofree norecurse nosync nounwind willreturn memory(readwrite, argmem: none, inaccessiblemem: none) uwtable "min-legal-vector-width"="0" "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #7 = { nofree nounwind uwtable "min-legal-vector-width"="0" "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #8 = { nofree nounwind "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #9 = { nofree nounwind memory(read) "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
 attributes #10 = { mustprogress nocallback nofree nosync nounwind willreturn memory(none) }
-attributes #11 = { "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
-attributes #12 = { mustprogress nounwind willreturn allockind("realloc") allocsize(1) memory(argmem: readwrite, inaccessiblemem: readwrite) "alloc-family"="malloc" "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #11 = { mustprogress nounwind willreturn allockind("realloc") allocsize(1) memory(argmem: readwrite, inaccessiblemem: readwrite) "alloc-family"="malloc" "no-builtin-free" "no-builtin-malloc" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #12 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }
 attributes #13 = { nocallback nofree nounwind willreturn memory(argmem: write) }
 attributes #14 = { nounwind "no-builtin-free" "no-builtin-malloc" }
 attributes #15 = { nobuiltin nounwind "no-builtin-free" "no-builtin-malloc" }
 attributes #16 = { cold noreturn nounwind "no-builtin-free" "no-builtin-malloc" }
-attributes #17 = { nounwind }
-attributes #18 = { "no-builtin-free" "no-builtin-malloc" }
+attributes #17 = { "no-builtin-free" "no-builtin-malloc" }
+attributes #18 = { nounwind }
 attributes #19 = { nounwind allocsize(1) "no-builtin-free" "no-builtin-malloc" }
 attributes #20 = { nounwind willreturn memory(none) "no-builtin-free" "no-builtin-malloc" }
 
@@ -1424,39 +1350,34 @@ attributes #20 = { nounwind willreturn memory(none) "no-builtin-free" "no-builti
 !2 = !{i32 7, !"PIE Level", i32 2}
 !3 = !{i32 7, !"uwtable", i32 2}
 !4 = !{!"Debian clang version 19.1.7 (3+b1)"}
-!5 = !{!6, !6, i64 0}
-!6 = !{!"long", !7, i64 0}
-!7 = !{!"omnipotent char", !8, i64 0}
-!8 = !{!"Simple C/C++ TBAA"}
-!9 = distinct !{!9, !10}
-!10 = !{!"llvm.loop.mustprogress"}
-!11 = !{!12, !6, i64 0}
-!12 = !{!"GCBlock", !6, i64 0, !6, i64 8, !6, i64 16, !6, i64 24, !6, i64 32, !6, i64 40}
-!13 = !{!12, !6, i64 8}
-!14 = !{!12, !6, i64 16}
-!15 = !{!12, !6, i64 24}
-!16 = !{!17, !6, i64 16}
-!17 = !{!"", !6, i64 0, !6, i64 8, !6, i64 16, !6, i64 24, !7, i64 32}
-!18 = !{!17, !6, i64 8}
-!19 = !{!20, !6, i64 0}
-!20 = !{!"timespec", !6, i64 0, !6, i64 8}
-!21 = !{!20, !6, i64 8}
-!22 = !{!17, !6, i64 24}
-!23 = distinct !{!23, !10}
-!24 = distinct !{!24, !10}
-!25 = distinct !{!25, !10}
-!26 = distinct !{!26, !10}
-!27 = distinct !{!27, !10}
-!28 = distinct !{!28, !10}
-!29 = distinct !{!29, !10}
-!30 = distinct !{!30, !10}
-!31 = distinct !{!31, !10}
-!32 = distinct !{!32, !10}
-!33 = !{!17, !6, i64 0}
-!34 = distinct !{!34, !10}
-!35 = distinct !{!35, !10}
-!36 = distinct !{!36, !10}
-!37 = distinct !{!37, !10}
-!38 = distinct !{!38, !10}
-!39 = distinct !{!39, !10}
-!40 = distinct !{!40, !10}
+!5 = distinct !{!5, !6}
+!6 = !{!"llvm.loop.mustprogress"}
+!7 = !{!8, !9, i64 0}
+!8 = !{!"GCBlock", !9, i64 0, !9, i64 8, !9, i64 16, !9, i64 24, !9, i64 32, !9, i64 40}
+!9 = !{!"long", !10, i64 0}
+!10 = !{!"omnipotent char", !11, i64 0}
+!11 = !{!"Simple C/C++ TBAA"}
+!12 = !{!8, !9, i64 8}
+!13 = !{!8, !9, i64 16}
+!14 = !{!9, !9, i64 0}
+!15 = !{!8, !9, i64 24}
+!16 = !{!17, !9, i64 16}
+!17 = !{!"", !9, i64 0, !9, i64 8, !9, i64 16, !9, i64 24, !10, i64 32}
+!18 = !{!17, !9, i64 8}
+!19 = !{!20, !9, i64 0}
+!20 = !{!"timespec", !9, i64 0, !9, i64 8}
+!21 = !{!20, !9, i64 8}
+!22 = distinct !{!22, !6}
+!23 = !{!17, !9, i64 24}
+!24 = distinct !{!24, !6}
+!25 = distinct !{!25, !6}
+!26 = distinct !{!26, !6}
+!27 = distinct !{!27, !6}
+!28 = !{!17, !9, i64 0}
+!29 = distinct !{!29, !6}
+!30 = distinct !{!30, !6}
+!31 = distinct !{!31, !6}
+!32 = distinct !{!32, !6}
+!33 = distinct !{!33, !6}
+!34 = distinct !{!34, !6}
+!35 = distinct !{!35, !6}

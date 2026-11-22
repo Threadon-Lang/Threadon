@@ -2039,6 +2039,20 @@ def main() -> Int32
     assert "call i8* @__threadon_gc_alloc(" in llvm
     assert "call void @__threadon_gc_thread_enter(" in llvm
     assert "call i8* @malloc(" not in llvm
+    assert "pthread_create" not in llvm
+
+
+def test_collect_builtin_adds_runtime_without_allocations():
+    llvm = compile_source(
+        """
+def main() -> Int32
+    collect()
+    return 0
+""",
+        importer=Importer(),
+    )
+    assert "call void @__threadon_gc_collect()" in llvm
+    assert "call i8* @__threadon_gc_alloc(" not in llvm
 
 
 def test_gc_runtime_skipped_for_scalar_only_program():
@@ -2056,8 +2070,9 @@ def main() -> Int32
 
 
 def test_gc_collects_long_string_chain():
-    # 8000 concatenations allocate a total of ~320 MB. Without collection the
-    # process would need that much live memory just to keep the intermediates.
+    # 8000 concatenations allocate a total of ~320 MB. Without the periodic
+    # collect() calls the process would need that much memory just for the
+    # intermediate buffers.
     result = compile_stdlib_run(
         """
 def main() -> Int32
@@ -2065,8 +2080,11 @@ def main() -> Int32
     i: Int64 = 0
     while i < 8000:
         s = s + "abcdefghij"
+        if i % 100 == 0:
+            collect()
         i += 1
     print(len(s))
+    collect()
     return 0
 """
     )
@@ -2084,18 +2102,20 @@ def main() -> Int32
         s = s + "abcdefghij"
         i += 1
     print(len(s))
+    collect()
+    collect()
     return 0
 """,
-        env={"THREADON_GC_STATS": "1", "THREADON_GC_THRESHOLD": "1024"},
+        env={"THREADON_GC_STATS": "1"},
     )
     assert result.returncode == 0, result.stderr
-    assert "[gc] collections=" in result.stdout
+    assert "[gc] collections=2 " in result.stdout
     assert "snapshot_max=" in result.stdout
     assert "mark_max=" in result.stdout
     assert "sweep_max=" in result.stdout
 
 
-def test_gc_threshold_zero_disables_collection():
+def test_gc_does_not_collect_automatically():
     result = compile_stdlib_run(
         """
 def main() -> Int32
@@ -2107,7 +2127,7 @@ def main() -> Int32
     print(len(s))
     return 0
 """,
-        env={"THREADON_GC_STATS": "1", "THREADON_GC_THRESHOLD": "0"},
+        env={"THREADON_GC_STATS": "1"},
     )
     assert result.returncode == 0, result.stderr
     assert "[gc] collections=0 " in result.stdout
@@ -2120,10 +2140,12 @@ thread worker() on True:
     xs: List[String] = ["a", "b"]
     xs.append("c")
     print(len(xs))
+    collect()
 
 def main() -> Int32
     ys: List[String] = ["x", "y", "z"]
     print(len(ys))
+    collect()
     return 0
 """
     )

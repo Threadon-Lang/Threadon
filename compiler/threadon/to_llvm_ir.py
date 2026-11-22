@@ -294,7 +294,9 @@ class LLVMIRCompiler:
             if "free" in self.used_c_runtime:
                 self.out.append("declare void @free(i8*)")
             if self.threads_used:
-                # pthread_create is declared by gc_runtime.ll; pthread_join is not.
+                # pthread_self etc. are declared by gc_runtime.ll; thread spawn
+                # and join are emitted here, so declare them explicitly.
+                self.out.append("declare i32 @pthread_create(i64*, i8*, i8* (i8*)*, i8*)")
                 self.out.append("declare i32 @pthread_join(i64, i8**)")
             self.out.append("")
 
@@ -306,7 +308,7 @@ class LLVMIRCompiler:
         return "\n".join(self.out)
 
     def _emit_gc_runtime(self):
-        """Append the precompiled concurrent collector to this module.
+        """Append the precompiled manual collector to this module.
 
         gc_runtime.ll is produced from gc_runtime.c by build_gc_runtime.sh.
         That script removes the ModuleID/source_filename/target lines and
@@ -338,7 +340,7 @@ class LLVMIRCompiler:
         self.out = filtered
 
         self.out.append("")
-        self.out.append("; ---- concurrent garbage collector runtime ----")
+        self.out.append("; ---- manual garbage collector runtime ----")
         self.out.extend(lines)
 
     def _register_union(self, t):
@@ -2121,6 +2123,9 @@ class LLVMIRCompiler:
             return self._emit_dict_key(res, args)
         if fname == "chr":
             return self._emit_chr(res, args[0])
+        if fname == "collect":
+            self.used_gc = True
+            return "call void @__threadon_gc_collect()"
         if fname == "append":
             return self._emit_list_append(res, args)
         if fname == "pop":

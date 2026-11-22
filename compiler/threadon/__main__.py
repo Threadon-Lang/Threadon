@@ -84,62 +84,14 @@ done:
 }
 """
 
-def build_harness(llvm, entry="main"):
-    """Generate a main() wrapper for a non-main entry point.
+def require_main(llvm):
+    """Check that the compiled module has the program entry point.
 
-    A Threadon function named ``main`` is already the program's entry point,
-    so no wrapper is needed and an empty string is returned. For any other
-    entry the result is used as the process exit code (not printed).
+    Threadon always starts at ``main``; the compiler emits it directly, so no
+    extra harness is needed.
     """
-    match = re.search(
-        rf"define\s+([^\s(]+)\s+@{re.escape(entry)}\(", llvm
-    )
-    if not match:
-        raise SystemExit(
-            f"error: no function '{entry}' found in the compiled module"
-        )
-    rtype = match.group(1)
-
-    if entry == "main":
-        return ""
-
-    if re.search(r"define\s+i32\s+@main\(", llvm):
-        raise SystemExit(
-            f"error: the module already defines a 'main' function; "
-            f"cannot use '{entry}' as the entry point"
-        )
-
-    join = (
-        "  call void @__threadon_thread_join_all()\n"
-        if "@__threadon_thread_join_all" in llvm
-        else ""
-    )
-
-    if rtype == "void":
-        return (
-            f"define i32 @main() {{\n"
-            f"  call void @{entry}()\n"
-            + join
-            + "  ret i32 0\n"
-            + "}\n"
-        )
-
-    if rtype == "i32":
-        return (
-            f"define i32 @main() {{\n"
-            f"  %r = call i32 @{entry}()\n"
-            + join
-            + "  ret i32 %r\n"
-            + "}\n"
-        )
-
-    return (
-        f"define i32 @main() {{\n"
-        f"  %r = call {rtype} @{entry}()\n"
-        + join
-        + "  ret i32 0\n"
-        + "}\n"
-    )
+    if not re.search(r"define\s+[^\s(]+\s+@main\(", llvm):
+        raise SystemExit("error: no function 'main' found in the compiled module")
 
 
 def patch_llvm(llvm):
@@ -429,9 +381,8 @@ def run_one_test_file(path, include_paths, inline_threshold, debug_mode, flag_in
         )
     except BaseException as e:
         return None, "", f"{type(e).__name__}: {e}"
-    final = dedupe_decls(
-        patch_llvm(llvm) + "\n" + build_harness(llvm, "main") + "\n"
-    )
+    require_main(llvm)
+    final = dedupe_decls(patch_llvm(llvm))
     mods = native_modules(importer)
     try:
         if mods:
@@ -520,12 +471,6 @@ def main(argv=None):
         help="build a native executable to FILE (via llc + gcc)",
     )
     parser.add_argument(
-        "-e",
-        "--entry",
-        default="main",
-        help="entry function for --run/--exe (default: main)",
-    )
-    parser.add_argument(
         "-I",
         "--include",
         action="append",
@@ -586,9 +531,8 @@ def main(argv=None):
         Path(args.output).write_text(llvm)
 
     if args.run:
-        final = dedupe_decls(
-            patch_llvm(llvm) + "\n" + build_harness(llvm, args.entry) + "\n"
-        )
+        require_main(llvm)
+        final = dedupe_decls(patch_llvm(llvm))
         mods = native_modules(importer)
         if mods:
             with tempfile.TemporaryDirectory() as td:
@@ -599,9 +543,8 @@ def main(argv=None):
         sys.exit(result.returncode)
 
     if args.exe:
-        final = dedupe_decls(
-            patch_llvm(llvm) + "\n" + build_harness(llvm, args.entry) + "\n"
-        )
+        require_main(llvm)
+        final = dedupe_decls(patch_llvm(llvm))
         build_executable(final, args.exe, native=native_modules(importer))
         return 0
 
