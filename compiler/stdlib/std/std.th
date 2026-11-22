@@ -9,32 +9,32 @@
 #   input(prompt) - show `prompt`, then read a line of text as a String
 #  T(x) where T is a type
 
-def abs(x: Int32) -> Int32
+puredef abs(x: Int32) -> Int32
     if x < 0:
         return -x
     return x
 
-def max(a: Int32, b: Int32) -> Int32
+puredef max(a: Int32, b: Int32) -> Int32
     if a > b:
         return a
     return b
 
-def min(a: Int32, b: Int32) -> Int32
+puredef min(a: Int32, b: Int32) -> Int32
     if a < b:
         return a
     return b
 
-def clamp(x: Int32, lo: Int32, hi: Int32) -> Int32
+puredef clamp(x: Int32, lo: Int32, hi: Int32) -> Int32
     if x < lo:
         return lo
     if x > hi:
         return hi
     return x
 
-def is_even(n: Int32) -> Bool
+puredef is_even(n: Int32) -> Bool
     return n % 2 == 0
 
-def is_odd(n: Int32) -> Bool
+puredef is_odd(n: Int32) -> Bool
     return n % 2 != 0
 
 class Iterable:
@@ -43,19 +43,19 @@ class Iterable:
     _stop: Int64
     _done: Bool
 
-    def __init__(self: Iterable, cur: Int64, step: Int64, stop: Int64, done: Bool)
+    puredef __init__(self: Iterable, cur: Int64, step: Int64, stop: Int64, done: Bool)
         self._cur = cur
         self._step = step
         self._stop = stop
         self._done = done
 
-    def done(self: Iterable) -> Bool
+    puredef done(self: Iterable) -> Bool
         return self._done
 
-    def value(self: Iterable) -> Int64
+    puredef value(self: Iterable) -> Int64
         return self._cur
 
-    def advance(self: Iterable) -> Iterable
+    puredef advance(self: Iterable) -> Iterable
         n: Int64 = self._cur + self._step
         d: Bool = False
         if self._step > 0:
@@ -68,7 +68,7 @@ class Iterable:
             d = True
         return Iterable(n, self._step, self._stop, d)
 
-def range(start: Int64, stop: Int64, step: Int64) -> Iterable
+puredef range(start: Int64, stop: Int64, step: Int64) -> Iterable
     d: Bool = False
     if step > 0:
         if start >= stop:

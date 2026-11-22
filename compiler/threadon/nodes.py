@@ -15,12 +15,14 @@ class FunctionDef(Node):
     params: list[tuple[str, str, Expr | None]]
     return_type: str
     body: list[list]
+    pure: bool = False
 
     def __repr__(self):
         return (
             f"FunctionDef(name={self.name}, "
             f"params={self.params}, "
             f"return_type={self.return_type}, "
+            f"pure={self.pure}, "
             f"body_len={len(self.body)}), "
             f"body={self.body}"
         )

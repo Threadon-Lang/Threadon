@@ -25,7 +25,19 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
                 if mod.ast is not None
                 for node in mod.ast
             ]
-            CombinedChecker().run_all(merged)
+            native_functions = set()
+            global_vars = set()
+            for mod in importer.modules():
+                if mod.is_native:
+                    native_functions.update(mod.func_sigs)
+                global_vars.update(
+                    f"{mod.name}.{name}" for name in mod.var_exports
+                )
+            CombinedChecker().run_all(
+                merged,
+                native_functions=native_functions,
+                global_vars=global_vars,
+            )
             native_sigs = {}
             native_exports = []
             native_types = []

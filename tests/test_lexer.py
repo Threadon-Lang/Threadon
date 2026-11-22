@@ -30,6 +30,7 @@ def test_strings():
 
 @pytest.mark.parametrize("kw,token", [
     ("def", TokenType.DEF),
+    ("puredef", TokenType.PUREDEF),
     ("if", TokenType.IF),
     ("elif", TokenType.ELIF),
     ("else", TokenType.ELSE),

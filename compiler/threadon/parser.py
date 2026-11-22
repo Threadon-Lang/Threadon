@@ -396,7 +396,7 @@ class Parser:
         ):
             return self.parse_import()
 
-        if first == TokenType.DEF:
+        if first in (TokenType.DEF, TokenType.PUREDEF):
             return self.parse_function()
 
         if first == TokenType.RETURN:
@@ -1094,7 +1094,7 @@ class Parser:
 
             self.read_line()
 
-            if cleaned[0].type == TokenType.DEF:
+            if cleaned[0].type in (TokenType.DEF, TokenType.PUREDEF):
                 methods.append(self.parse_method())
             elif (
                 len(cleaned) >= 2
@@ -1182,6 +1182,7 @@ class Parser:
 
     def parse_method(self):
         tokens = self.current_line
+        is_pure = tokens[0].type == TokenType.PUREDEF
 
         if len(tokens) < 4:
             self.give_error("Invalid method definition")
@@ -1345,7 +1346,7 @@ class Parser:
                     f"Method '__str__' must return a String, got {return_type}"
                 )
 
-        return FunctionDef(func_name, params, return_type, func_body)
+        return FunctionDef(func_name, params, return_type, func_body, is_pure)
 
     def _validate_params_defaults(self, params, func_name):
         seen_default = False
@@ -1965,6 +1966,7 @@ class Parser:
 
     def parse_function(self):
         tokens = self.current_line
+        is_pure = tokens[0].type == TokenType.PUREDEF
 
         if len(tokens) < 4:
             self.give_error("Invalid function definition")
@@ -2090,7 +2092,7 @@ class Parser:
         if return_type != "NoneType" and not self.all_paths_return(func_body):
             self.give_error("Function must return a value on all code paths")
 
-        return FunctionDef(func_name_q, params, return_type, func_body)
+        return FunctionDef(func_name_q, params, return_type, func_body, is_pure)
 
     def all_paths_return(self, stmts):
         if not stmts:

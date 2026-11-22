@@ -54,6 +54,33 @@ Optimizer inline threshold. Default `0` = no inlining.
 
 Flag infinite (`inf`) and `NaN` float values: non-finite constants are a compile-time error and values that become non-finite at runtime raise a runtime error. Independent of `--debug`. Without it, non-finite values are allowed silently.
 
+Pure functions
+--------------
+
+Use `puredef` instead of `def` to declare that a function has no side effects:
+
+```threadon
+puredef abs(x: Int32) -> Int32
+    if x < 0:
+        return -x
+    return x
+```
+
+The compiler enforces this at compile time. A pure function may only:
+
+- call other `puredef` functions (and the pure builtins `len`, `chr`, `dict_key`);
+- read global variables;
+- change local variables, local containers and local `self` fields.
+
+It may not:
+
+- call a plain `def` function;
+- write a global variable or mutate a global container;
+- call a function or method from a native Python/C/C++/Rust module;
+- print, read input, call `collect()`, start a thread or use `thread_exit`.
+
+`puredef` works for methods too, including `__init__`, as long as the body stays side-effect free.
+
 Entry point
 -----------
 

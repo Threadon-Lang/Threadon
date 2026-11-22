@@ -1912,3 +1912,42 @@ def f() -> Int32
 """,
     ):
         parse_fail(code)
+
+
+def test_puredef_function_sets_pure_flag():
+    ast = parse_ok(
+        """
+puredef twice(x: Int32) -> Int32
+    return x * 2
+"""
+    )
+    assert ast[0].name == "twice"
+    assert ast[0].pure is True
+
+
+def test_plain_def_is_not_pure():
+    ast = parse_ok(
+        """
+def twice(x: Int32) -> Int32
+    return x * 2
+"""
+    )
+    assert ast[0].pure is False
+
+
+def test_puredef_method_sets_pure_flag():
+    ast = parse_ok(
+        """
+class P:
+    x: Int32
+    puredef value(self: P) -> Int32
+        return self.x
+"""
+    )
+    assert ast[0].methods[0].name == "P.value"
+    assert ast[0].methods[0].pure is True
+
+
+def test_puredef_requires_a_valid_signature():
+    parse_fail("puredef f()")
+    parse_fail("puredef f(x: Int32) -> Int32")

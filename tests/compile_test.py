@@ -2151,3 +2151,34 @@ def main() -> Int32
     )
     assert result.returncode == 0, result.stderr
     assert "3" in result.stdout.strip().splitlines()
+
+
+def test_puredef_compiles_and_runs():
+    result = compile_stdlib_run(
+        """
+puredef absolute(x: Int32) -> Int32
+    return abs(x)
+puredef sum_abs(a: Int32, b: Int32) -> Int32
+    return absolute(a) + absolute(b)
+def main() -> Int32
+    print(sum_abs(-3, 4))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "7\n"
+
+
+def test_puredef_rejects_native_calls():
+    with pytest.raises(RuntimeError) as excinfo:
+        compile_source(
+            """
+from time import now
+puredef f() -> Int64
+    return now()
+def main() -> Int64
+    return f()
+""",
+            importer=Importer(),
+        )
+    assert "may not call native function 'time.now'" in str(excinfo.value)

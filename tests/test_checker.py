@@ -6,6 +6,7 @@ from compiler.threadon.checker import (
     DeadStoreChecker,
     DuplicateChecker,
     MissingReturnChecker,
+    PurityChecker,
     ShadowChecker,
     UnreachableChecker,
     UnusedVariableChecker,
@@ -497,4 +498,141 @@ def f(x: Int32) -> Int32
         return 2
     return 0
 """,
+    )
+
+
+def check_pure_ok(source, native_functions=None, global_vars=None):
+    PurityChecker(
+        native_functions=native_functions,
+        global_vars=global_vars,
+    ).check(build(source))
+
+
+def check_pure_error(source, native_functions=None, global_vars=None):
+    with pytest.raises(SystemExit):
+        check_pure_ok(source, native_functions, global_vars)
+
+
+def test_purity_allows_calls_to_pure_functions():
+    check_pure_ok(
+        """
+puredef helper(x: Int32) -> Int32
+    return x + 1
+puredef f(x: Int32) -> Int32
+    return helper(x) * 2
+"""
+    )
+
+
+def test_purity_allows_pure_builtins_and_local_mutation():
+    check_pure_ok(
+        """
+puredef f() -> Int64
+    xs: List[Int32] = []
+    xs.append(1)
+    return len(xs)
+"""
+    )
+
+
+def test_purity_allows_pure_methods():
+    check_pure_ok(
+        """
+class P:
+    x: Int32
+    puredef twice(self: P) -> Int32
+        return self.x * 2
+puredef f(p: P) -> Int32
+    return p.twice()
+"""
+    )
+
+
+def test_purity_rejects_non_pure_calls():
+    check_pure_error(
+        """
+def helper(x: Int32) -> Int32
+    return x + 1
+puredef f(x: Int32) -> Int32
+    return helper(x)
+"""
+    )
+
+
+def test_purity_rejects_non_pure_builtins():
+    check_pure_error(
+        """
+puredef f() -> Int32
+    print("side effect")
+    return 1
+"""
+    )
+
+
+def test_purity_rejects_global_writes():
+    check_pure_error(
+        """
+counter: Int32 = 0
+puredef f() -> Int32
+    counter = 1
+    return counter
+"""
+    )
+
+
+def test_purity_rejects_mutating_global_lists():
+    check_pure_error(
+        """
+items: List[Int32] = []
+puredef f() -> Int64
+    items.append(1)
+    return len(items)
+"""
+    )
+
+
+def test_purity_rejects_non_pure_methods():
+    check_pure_error(
+        """
+class P:
+    x: Int32
+    def twice(self: P) -> Int32
+        return self.x * 2
+puredef f(p: P) -> Int32
+    return p.twice()
+"""
+    )
+
+
+def test_purity_rejects_non_pure_constructors():
+    check_pure_error(
+        """
+class P:
+    x: Int32
+    def __init__(self: P, x: Int32)
+        self.x = x
+puredef f() -> P
+    return P(1)
+"""
+    )
+
+
+def test_purity_rejects_native_functions():
+    check_pure_error(
+        """
+puredef f() -> Int64
+    return now()
+""",
+        native_functions={"time.now"},
+    )
+
+
+def test_purity_rejects_indexing_writes_to_globals():
+    check_pure_error(
+        """
+items: List[Int32] = [1]
+puredef f() -> Int64
+    items[0] = 2
+    return len(items)
+"""
     )

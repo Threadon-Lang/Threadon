@@ -15,6 +15,7 @@ class TokenType(Enum):
     EOF = auto()
 
     DEF = auto()
+    PUREDEF = auto()
     IF = auto()
     ELIF = auto()
     ELSE = auto()
@@ -90,6 +91,7 @@ class Token:
 
 KEYWORDS = {
     "def": TokenType.DEF,
+    "puredef": TokenType.PUREDEF,
     "if": TokenType.IF,
     "elif": TokenType.ELIF,
     "else": TokenType.ELSE,

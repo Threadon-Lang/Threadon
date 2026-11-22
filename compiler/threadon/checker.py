@@ -835,6 +835,236 @@ class AliasChecker:
 
         for v in list(self.aliases.keys()):
             dfs(v)
+
+
+class PurityChecker:
+    """Enforce ``puredef`` rules on functions declared pure.
+
+    A pure function may only call other pure functions, must not write global
+    variables, and must not call functions implemented in native modules.
+    Local variables (including local containers and ``self``) may be changed;
+    with Threadon's value semantics those changes are not visible to the
+    caller.
+    """
+
+    PURE_BUILTINS = {"len", "chr", "dict_key"}
+    LIST_MUTATORS = {"append", "pop", "insert", "remove"}
+
+    def __init__(self, native_functions=None, global_vars=None):
+        self.native_functions = set(native_functions or ())
+        self.global_vars = set(global_vars or ())
+        self.pure_functions = set()
+        self.func_name = None
+        self.locals = set()
+
+    def error(self, msg):
+        print("AST Error:", msg)
+        raise SystemExit(1)
+
+    def check(self, ast):
+        self.global_vars |= {
+            node.name for node in ast if type(node).__name__ == "VarDecl"
+        }
+        self.pure_functions = {
+            func.name for func in iter_functions(ast) if getattr(func, "pure", False)
+        }
+        for func in iter_functions(ast):
+            if func.name in self.pure_functions:
+                self.check_function(func)
+
+    def check_function(self, func):
+        self.func_name = func.name
+        self.locals = {pname for pname, _, _ in func.params}
+        for stmt in func.body:
+            self._collect_locals(stmt)
+        self._check_block(func.body)
+
+    def _collect_locals(self, stmt):
+        t = type(stmt).__name__
+        if t == "VarDecl":
+            self.locals.add(stmt.name)
+        elif t == "IfStmt":
+            for inner in stmt.body:
+                self._collect_locals(inner)
+            for _, body in stmt.elif_blocks:
+                for inner in body:
+                    self._collect_locals(inner)
+            for inner in stmt.else_body or []:
+                self._collect_locals(inner)
+        elif t == "WhileStmt":
+            for inner in stmt.body:
+                self._collect_locals(inner)
+            for inner in stmt.step or []:
+                self._collect_locals(inner)
+        elif t in ("ThreadNode", "ComptimeStmt"):
+            for inner in stmt.body:
+                self._collect_locals(inner)
+
+    def _check_block(self, stmts):
+        for stmt in stmts:
+            t = type(stmt).__name__
+
+            if t == "VarDecl":
+                self._check_expr(stmt.expr)
+
+            elif t == "ReturnStmt":
+                self._check_expr(stmt.value)
+
+            elif t == "Assign":
+                self._check_global_name(stmt.name)
+                self._check_expr(stmt.expr)
+
+            elif t == "FieldAssign":
+                self._check_global_name(stmt.name)
+                self._check_expr(stmt.expr)
+
+            elif t == "IndexAssign":
+                self._check_global_expr(stmt.target)
+                self._check_expr(stmt.target)
+                self._check_expr(stmt.index)
+                self._check_expr(stmt.value)
+
+            elif t == "ExprStmt":
+                self._check_expr(stmt.expr)
+
+            elif t == "IfStmt":
+                self._check_expr(stmt.condition)
+                self._check_block(stmt.body)
+                for _, body in stmt.elif_blocks:
+                    self._check_block(body)
+                self._check_block(stmt.else_body or [])
+
+            elif t == "WhileStmt":
+                self._check_expr(stmt.condition)
+                self._check_block(stmt.body)
+                self._check_block(stmt.step or [])
+
+            elif t == "ThreadNode":
+                self.error(
+                    f"Pure function '{self.func_name}' may not start threads"
+                )
+
+            elif t == "ComptimeStmt":
+                self.error(
+                    f"Pure function '{self.func_name}' may not run compile-time "
+                    "statements with side effects"
+                )
+
+    def _check_global_name(self, name):
+        if name in self.global_vars and name not in self.locals:
+            self.error(
+                f"Pure function '{self.func_name}' may not write global variable "
+                f"'{name}'"
+            )
+
+    def _check_global_expr(self, expr):
+        t = type(expr).__name__
+        if t == "VarExpr":
+            self._check_global_name(expr.name)
+        elif t == "FieldAccessExpr":
+            self._check_global_expr(expr.obj)
+        elif t == "IndexExpr":
+            self._check_global_expr(expr.obj)
+
+    def _check_call_name(self, name):
+        if name in self.native_functions:
+            self.error(
+                f"Pure function '{self.func_name}' may not call native function "
+                f"'{name}': native modules (Python/C/C++/Rust) may have side effects"
+            )
+        if name in self.pure_functions or name in self.PURE_BUILTINS:
+            return
+        self.error(
+            f"Pure function '{self.func_name}' may not call non-pure function "
+            f"'{name}': declare it with puredef if it has no side effects"
+        )
+
+    def _check_expr(self, expr):
+        if expr is None:
+            return
+        t = type(expr).__name__
+
+        if t in ("LiteralExpr", "VarExpr"):
+            return
+
+        if t == "CallExpr":
+            self._check_call_name(expr.func_name)
+            for arg in expr.args:
+                self._check_expr(arg)
+
+        elif t == "MethodCallExpr":
+            obj_type = getattr(expr, "obj_type", None)
+            is_list_mutator = (
+                isinstance(obj_type, str)
+                and obj_type.startswith("List[")
+                and expr.method in self.LIST_MUTATORS
+            )
+            if is_list_mutator:
+                self._check_global_expr(expr.obj)
+            else:
+                name = getattr(expr, "func_name", None)
+                if name is not None:
+                    self._check_call_name(name)
+            self._check_expr(expr.obj)
+            for arg in expr.args:
+                self._check_expr(arg)
+
+        elif t == "ClassInitExpr":
+            init_name = getattr(expr, "init_name", None)
+            if init_name is not None:
+                self._check_call_name(init_name)
+            for arg in expr.args:
+                self._check_expr(arg)
+
+        elif t == "StructInitExpr":
+            for value in expr.fields.values():
+                self._check_expr(value)
+
+        elif t == "BinaryExpr":
+            self._check_expr(expr.left)
+            self._check_expr(expr.right)
+
+        elif t == "UnaryExpr":
+            self._check_expr(expr.expr)
+
+        elif t == "CastExpr":
+            self._check_expr(expr.expr)
+
+        elif t == "FieldAccessExpr":
+            self._check_expr(expr.obj)
+
+        elif t == "IndexExpr":
+            self._check_expr(expr.obj)
+            self._check_expr(expr.index)
+
+        elif t == "SliceExpr":
+            self._check_expr(expr.obj)
+            self._check_expr(expr.start)
+            self._check_expr(expr.end)
+
+        elif t == "ListLiteralExpr":
+            for element in expr.elements:
+                self._check_expr(element)
+
+        elif t == "DictLiteralExpr":
+            for key in expr.keys:
+                self._check_expr(key)
+            for value in expr.values:
+                self._check_expr(value)
+
+        elif t == "InterpolatedStringExpr":
+            for kind, part in expr.parts:
+                if kind == "expr":
+                    self._check_expr(part)
+
+        elif t == "RefExpr":
+            self._check_expr(expr.inner)
+
+        elif isinstance(expr, (list, tuple)):
+            for item in expr:
+                self._check_expr(item)
+
+
 class CombinedChecker:
     def __init__(self):
         self.unreachable_checker = UnreachableChecker()
@@ -844,12 +1074,18 @@ class CombinedChecker:
         self.dead_store_checker = DeadStoreChecker()
         self.missing_return_checker = MissingReturnChecker()
         self.alias_checker = AliasChecker()
+        self.purity_checker = PurityChecker()
 
-    def run_all(self, ast):
+    def run_all(self, ast, native_functions=None, global_vars=None):
         self.duplicate_checker.check(ast)
         self.shadow_checker.check(ast)
         self.unreachable_checker.check(ast)
         self.missing_return_checker.check(ast)
         self.alias_checker.check(ast)
+        self.purity_checker = PurityChecker(
+            native_functions=native_functions,
+            global_vars=global_vars,
+        )
+        self.purity_checker.check(ast)
         self.unused_checker.check(ast)
         self.dead_store_checker.check(ast)
