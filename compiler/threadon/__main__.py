@@ -38,23 +38,6 @@ def _python_includes():
     if include_dir:
         return [f"-I{include_dir}"]
     return []
-def _python_link_flags():
-    """Link flags needed to embed the Python interpreter (Py_Initialize etc.)."""
-    try:
-        out = subprocess.check_output(
-            ["python3-config", "--embed", "--ldflags"], text=True
-        ).strip()
-        return shlex.split(out)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    try:
-        out = subprocess.check_output(
-            ["python3-config", "--ldflags"], text=True
-        ).strip()
-        return shlex.split(out)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return []
-
 POW_I32_IMPL = """
 define i32 @llvm.pow.i32(i32 %base, i32 %exp) {
 entry:

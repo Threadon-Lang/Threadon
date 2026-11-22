@@ -119,7 +119,6 @@ def common_numeric_type(a, b):
             return a if aw > bw else b
         if a.startswith("UInt") or b.startswith("UInt"):
             return "UInt" + str(aw)
-        return a
     if a in FLOAT_TYPES and b in FLOAT_TYPES:
         if a == b:
             return a

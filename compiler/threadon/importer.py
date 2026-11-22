@@ -832,7 +832,10 @@ class Importer:
             out.append("    Py_DECREF(args);")
         out.append(f"    if (!r) {{ PyErr_Clear(); {'*_sret_out = ' + self._zero_c_value(ret_t) + ';' if dict_ret else 'return ' + self._zero_c_value(ret_t) + ';'} }}")
 
-        if ret_t.is_list:
+        if ret_t.kind == "NoneType":
+            out.append("    Py_DECREF(r);")
+            out.append("    return;")
+        elif ret_t.is_list:
             out.append(f"    {self._c_type_for(ret_t)} out;")
             self._emit_py_to_native_list(out, "out", "r", ret_t, fresh)
             out.append("    Py_DECREF(r);")
@@ -947,6 +950,7 @@ class Importer:
             "Int64": "0",
             "Bool": "false",
             "String": "nullptr",
+            "NoneType": "",
         }[t.kind]
 
     def _build_native_module(self, name, man, manifest_path):

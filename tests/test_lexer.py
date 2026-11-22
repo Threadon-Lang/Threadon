@@ -54,6 +54,12 @@ def test_keywords(kw, token):
     assert tokens[0].type == token
 
 
+def test_puredef_prefix_is_an_identifier():
+    tokens = lex("puredefined")
+    assert tokens[0].type == TokenType.IDENT
+    assert tokens[0].value == "puredefined"
+
+
 
 @pytest.mark.parametrize("typ", [
     "Int8", "Int16", "Int32",

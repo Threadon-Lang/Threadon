@@ -1,5 +1,6 @@
 import pytest
 
+from compiler.threadon.importer import Importer
 from compiler.threadon.parser import Parser
 
 
@@ -1951,3 +1952,64 @@ class P:
 def test_puredef_requires_a_valid_signature():
     parse_fail("puredef f()")
     parse_fail("puredef f(x: Int32) -> Int32")
+
+
+def test_puredef_main_sets_pure_flag():
+    ast = parse_ok(
+        """
+puredef main() -> Int32
+    return 0
+"""
+    )
+    assert ast[0].name == "main"
+    assert ast[0].pure is True
+
+
+def test_puredef_init_sets_pure_flag():
+    ast = parse_ok(
+        """
+class P:
+    x: Int32
+    puredef __init__(self: P, x: Int32)
+        self.x = x
+"""
+    )
+    method = ast[0].methods[0]
+    assert method.name == "P.__init__"
+    assert method.pure is True
+    assert method.return_type == "P"
+
+
+def test_puredef_default_params_parsed():
+    ast = parse_ok(
+        """
+puredef f(a: Int32, b: Int32 = 5) -> Int32
+    return a + b
+"""
+    )
+    assert ast[0].pure is True
+    assert ast[0].params[0] == ("a", "Int32", None)
+    assert ast[0].params[1][0:2] == ("b", "Int32")
+    assert ast[0].params[1][2].value.value == "5"
+
+
+def test_puredef_in_registered_module_is_pure():
+    importer = Importer()
+    importer.register_source(
+        "puremath",
+        """
+puredef double(x: Int32) -> Int32
+    return x * 2
+""",
+    )
+    parser = Parser(importer=importer)
+    ast = parser.parse(
+        """
+from puremath import double
+puredef f(x: Int32) -> Int32
+    return double(x)
+"""
+    )
+    assert importer.load("puremath").ast[0].pure is True
+    assert ast[-1].name == "f"
+    assert ast[-1].pure is True

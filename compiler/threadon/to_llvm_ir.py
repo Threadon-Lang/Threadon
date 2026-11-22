@@ -261,8 +261,6 @@ class LLVMIRCompiler:
                 self.out.append("declare i32 @printf(i8*, ...)")
             if "fprintf" in self.used_c_runtime:
                 self.out.append("declare i32 @fprintf(i8*, i8*, ...)")
-            if "scanf" in self.used_c_runtime:
-                self.out.append("declare i32 @scanf(i8*, ...)")
             if "fflush" in self.used_c_runtime:
                 self.out.append("declare i32 @fflush(i8*)")
                 self.out.append("@stdout = external global i8*")
@@ -289,10 +287,6 @@ class LLVMIRCompiler:
                 self.out.append("declare i32 @snprintf(i8*, i64, i8*, ...)")
             if "strlen" in self.used_c_runtime:
                 self.out.append("declare i64 @strlen(i8*)")
-            if "malloc" in self.used_c_runtime:
-                self.out.append("declare i8* @malloc(i64)")
-            if "free" in self.used_c_runtime:
-                self.out.append("declare void @free(i8*)")
             if self.threads_used:
                 # pthread_self etc. are declared by gc_runtime.ll; thread spawn
                 # and join are emitted here, so declare them explicitly.
@@ -593,8 +587,6 @@ class LLVMIRCompiler:
             if instr.op == "param":
                 continue
             lines = self.emit_instr(instr)
-            if lines is None:
-                continue
             if isinstance(lines, str):
                 lines = [lines]
             for line in lines:
@@ -1881,7 +1873,6 @@ class LLVMIRCompiler:
         if isinstance(val, str):
             if '.' in val:
                 return f"{res} = fadd {rtype} 0.0, 0x{self._f64_hex(float(val))}"
-            return f"{res} = add {rtype} 0, {val}"
         return f"{res} = add {rtype} 0, 0"
     def _emit_string_const(self, res, val):
         gname = self._string_global(val)
@@ -2099,14 +2090,14 @@ class LLVMIRCompiler:
             call = f"call void @{real_fname}({args_str})"
             load = f"{res} = load {self.to_llvm_type(native_info[1])}, {self.to_llvm_type(native_info[1])}* {sret_ptr}"
             return prefix_lines + [call, load] if prefix_lines else [call, load]
-        ret_type = self.to_llvm_type(instr.result.type)
         if native_info:
             real_fname = native_info[0]
-        if instr.result.type == "NoneType":
+        if instr.result is None or instr.result.type == "NoneType":
             call = f"call void @{real_fname}({args_str})"
             if res is None:
                 return prefix_lines + [call] if prefix_lines else call
             return prefix_lines + [call, f"{res} = add i8 0, 0"]
+        ret_type = self.to_llvm_type(instr.result.type)
         line = f"{res} = call {ret_type} @{real_fname}({args_str})"
         return prefix_lines + [line] if prefix_lines else line
 
@@ -2339,11 +2330,8 @@ class LLVMIRCompiler:
                 sub_specs = []
                 sub_call = []
                 pr_base = self._fresh_reg("pr")
-                for k, (arg, mtype) in enumerate(selections):
-                    a = arg
-                    if mtype is not None:
-                        a = SSAValue(self._fresh_reg("pv"), mtype)
-                    spec, call_arg = self._print_arg_lines(pr_base, a, k, sub_lines)
+                for k, arg in enumerate(selections):
+                    spec, call_arg = self._print_arg_lines(pr_base, arg, k, sub_lines)
                     sub_specs.append(spec)
                     sub_call.append(call_arg)
                 out.extend(sub_lines)
@@ -2375,13 +2363,11 @@ class LLVMIRCompiler:
                 mty = self.to_llvm_type(m)
                 vr = self._fresh_reg("mv")
                 out.append(f"  {vr} = extractvalue {uty} {val}, {j + 1}")
-                next_selections = [
-                    (a, mtype) for a, mtype in selections
-                ]
-                next_selections[arg_idx] = (SSAValue(vr, m), None)
+                next_selections = list(selections)
+                next_selections[arg_idx] = SSAValue(vr, m)
                 recurse(depth + 1, next_selections, out)
 
-        recurse(0, [(arg, None) for arg in args], lines)
+        recurse(0, list(args), lines)
 
         lines.append("")
         lines.append(f"{base}_merge:")
@@ -2668,7 +2654,34 @@ class LLVMIRCompiler:
 
         for width in sorted(self.used_pow_widths):
             self._emit_pow_helper(width)
-            self.out.append("")
+
+    def _emit_pow_helper(self, width):
+        """Emit the wrapping integer power helper used outside debug mode."""
+        t = f"i{width}"
+        self.out.append(f"define {t} @__threadon_pow_i{width}({t} %base, {t} %exp) {{")
+        self.out.append("entry:")
+        self.out.append(f"  %res = alloca {t}")
+        self.out.append(f"  store {t} 1, {t}* %res")
+        self.out.append(f"  %cnt = alloca {t}")
+        self.out.append(f"  store {t} 0, {t}* %cnt")
+        self.out.append("  br label %loop")
+        self.out.append("loop:")
+        self.out.append(f"  %c = load {t}, {t}* %cnt")
+        self.out.append(f"  %go = icmp ult {t} %c, %exp")
+        self.out.append("  br i1 %go, label %body, label %done")
+        self.out.append("body:")
+        self.out.append(f"  %r = load {t}, {t}* %res")
+        self.out.append(f"  %next = mul {t} %r, %base")
+        self.out.append(f"  store {t} %next, {t}* %res")
+        self.out.append(f"  %inc = add {t} %c, 1")
+        self.out.append(f"  store {t} %inc, {t}* %cnt")
+        self.out.append("  br label %loop")
+        self.out.append("done:")
+        self.out.append(f"  %final = load {t}, {t}* %res")
+        self.out.append(f"  ret {t} %final")
+        self.out.append("}")
+        self.out.append("")
+
     def _emit_to_string_u256(self):
         self.out.append("define i8* @__threadon_to_string_u256(i256 %v, i8* %buf) {")
         self.out.append("entry:")
@@ -2762,6 +2775,7 @@ class LLVMIRCompiler:
         self.out.append("}")
         if width != 256:
             self.used_intrinsics.add(f"llvm.{'umul' if unsigned else 'smul'}.with.overflow.{t}")
+
     def _emit_tailcall(self, res, instr):
         fname = instr.args[0]
         args = instr.args[1:]
@@ -4384,12 +4398,13 @@ class LLVMIRCompiler:
         lines.append(f"{v1} = insertvalue {llvm_type} {v0}, {key_llvm}* {new_keys}, 1")
         lines.append(f"{res} = insertvalue {llvm_type} {v1}, {val_llvm}* {new_vals}, 2")
         return lines
+
+    def _emit_select(self, res, instr):
         cond = self.operand(instr.args[0])
         tval = self.operand(instr.args[1], materialize=False)
         fval = self.operand(instr.args[2], materialize=False)
         ttype = self.to_llvm_type(instr.args[1].type)
         return f"{res} = select i1 {cond}, {ttype} {tval}, {ttype} {fval}"
-
 
     def emit_terminator(self, term):
         op = term.op

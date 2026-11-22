@@ -8,7 +8,6 @@ from .builtins import (
     builtin_return_type,
     common_numeric_type,
     dict_kv_types,
-    expand_type,
     group_members,
     is_dict_type,
     is_group,
@@ -494,7 +493,6 @@ class Parser:
                 return ExprStmt(expr)
 
         self.give_error("What for random things where you doing there")
-        return None
 
     def qualify(self, name):
         return f"{self.module_name}.{name}" if self.module_name else name
@@ -905,7 +903,6 @@ class Parser:
                 f"Module '{module_path}' has no function or type '{member}'"
             )
         self.give_error(f"Module '{module_path}' has no member '{member}'")
-        return None, None
 
     def resolve_qualified(self, parts):
         bound = parts[0]
@@ -937,7 +934,6 @@ class Parser:
                 line_num = int(m.group(2))
                 col = int(m.group(3))
                 self.give_error(f"Lexical error: {m.group(1)}", line_num=line_num, col=col)
-            self.give_error(f"Lexical error: {e}")
 
         if not self.module_name:
             self._auto_import_stdlib()
@@ -1410,8 +1406,6 @@ class Parser:
 
         if expr is not None:
             detected = self.detect_expr_type(expr)
-            if not self._is_valid_type(ftype):
-                self.give_error(f"Unknown type '{ftype}'")
             if detected != ftype:
                 if not self._try_adapt_literal(expr, detected, ftype):
                     self.give_error(
@@ -1495,10 +1489,6 @@ class Parser:
                 break
 
             indent, dedent, cleaned = peeked
-
-            if not cleaned:
-                self.read_line()
-                continue
 
             if cleaned[0].type != TokenType.ELIF:
                 break
@@ -1652,9 +1642,6 @@ class Parser:
         self._loop_depth = 0
         body = self.parse_block(parent_indent)
         self._loop_depth = saved_loop_depth
-
-        if self.current_function is not None:
-            self.pop_scope()
 
         return ThreadNode(
             name=name,
@@ -2209,28 +2196,6 @@ class Parser:
                         idx = k
             return idx
 
-        def parse_field_access(ts):
-            if len(ts) < 3:
-                return None
-
-            if ts[0].value in self.module_aliases:
-                return None
-
-            for i in range(0, len(ts), 2):
-                if ts[i].type != TokenType.IDENT:
-                    return None
-                if i + 1 < len(ts) and ts[i+1].type != TokenType.DOT:
-                    return None
-
-            expr = VarExpr(ts[0].value)
-
-            i = 2
-            while i < len(ts):
-                field = ts[i].value
-                expr = FieldAccessExpr(expr, field)
-                i += 2
-
-            return expr
         def parse_qualified_call(ts):
             if len(ts) < 5:
                 return None
@@ -2263,10 +2228,6 @@ class Parser:
             return CallExpr(qname, args)
 
         def factor(ts):
-            fa = parse_field_access(ts)
-            if fa is not None:
-                return fa
-
             qualified = parse_qualified_call(ts)
             if qualified is not None:
                 return qualified
@@ -2551,8 +2512,6 @@ class Parser:
                     rest = rest[end + 1:]
                     continue
 
-                if not rest:
-                    break
                 self.give_error("Unexpected tokens after index expression")
             return base
 
@@ -2701,6 +2660,7 @@ class Parser:
                     key_expected = bracket_content[:comma_idx].strip()
                     val_type = bracket_content[comma_idx + 1:].strip()
                 else:
+                    key_expected = None
                     val_type = bracket_content.strip()
                 if index_type != key_expected:
                     self.give_error(
@@ -2847,7 +2807,7 @@ class Parser:
             for (arg_expr, (param_name, param_type, _)) in zip(expr.args, params):
                 arg_type = self.detect_expr_type(arg_expr)
                 if not self._is_valid_type(param_type):
-                    self.give_error(f"Unknown type '{var_type}'")
+                    self.give_error(f"Unknown type '{param_type}'")
                 if arg_type != param_type:
                     if not self._check_assign(arg_expr, arg_type, param_type,
                                               f"Argument '{param_name}'"):
@@ -2884,7 +2844,7 @@ class Parser:
                     return "Bool"
 
                 if expr.op == "+" and "String" in lms and "String" in rms:
-                    other = (lms | rms) - {"String"}
+                    other = (set(lms) | set(rms)) - {"String"}
                     if not other:
                         return "String"
 
@@ -2892,9 +2852,6 @@ class Parser:
                     result_members = set()
                     for lm in lms:
                         for rm in rms:
-                            if expr.op == "+" and lm == "String" and rm == "String":
-                                result_members.add("String")
-                                continue
                             common = common_numeric_type(lm, rm)
                             if common is None:
                                 self.give_error(
@@ -3246,8 +3203,6 @@ class Parser:
 
         detected = self.detect_expr_type(expr)
 
-        if not self._is_valid_type(var_type):
-            self.give_error(f"Unknown type '{var_type}'")
         if detected != var_type:
             if self._check_assign(expr, detected, var_type,
                                   f"Variable '{name}'"):
@@ -3518,12 +3473,7 @@ class Parser:
                         return False
                 vt = self.detect_expr_type(node.values[i])
                 if vt != wk_val:
-                    if is_group(wk_val) and is_union_type(
-                        expand_type(wk_val)
-                    ):
-                        if vt not in union_members(expand_type(wk_val)):
-                            return False
-                    elif not self._try_adapt_literal_inner(node.values[i], vt, wk_val, promote_num=True):
+                    if not self._try_adapt_literal_inner(node.values[i], vt, wk_val, promote_num=True):
                         return False
             node.type = want_type
             return True

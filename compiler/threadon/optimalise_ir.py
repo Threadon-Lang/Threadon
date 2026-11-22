@@ -14,10 +14,16 @@ class IROptimizer:
         self.unroll_factor = unroll_factor
         self._temp_counter = 0
         self.debug_mode = debug_mode
+        self._original_sizes = {}
 
 
     def optimize(self, module):
         self.module = module
+        # Inlining thresholds are based on the size of the function as written,
+        # not on how much earlier optimization passes happen to shrink it.
+        self._original_sizes = {
+            func: self._count_instructions(func) for func in module.funcs
+        }
         for func in list(module.funcs):
             self._optimize_function(func)
         self._inline_module(module)
@@ -344,19 +350,16 @@ class IROptimizer:
                     return set()
                 if v is None:
                     return None
-                try:
-                    n = self._to_number(v)
-                    if n is None:
-                        return set()
-                    if op == "neg":
-                        res = -n
-                        if self.debug_mode and not self._fits(res, instr.result.type):
-                            return set()
-                        return res
-                    if op == "pos": return n
-                    if op == "not": return not n
-                except (TypeError, ValueError):
+                n = self._to_number(v)
+                if n is None:
                     return set()
+                if op == "neg":
+                    res = -n
+                    if self.debug_mode and not self._fits(res, instr.result.type):
+                        return set()
+                    return res
+                if op == "pos": return n
+                if op == "not": return not n
             if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow",
                       "cmp_lt", "cmp_gt", "cmp_le", "cmp_ge", "cmp_eq", "cmp_ne"):
                 l = get_lat(instr.args[0].name) if isinstance(instr.args[0], SSAValue) else instr.args[0]
@@ -365,25 +368,22 @@ class IROptimizer:
                     return set()
                 if l is None or r is None:
                     return None
-                try:
-                    ln = self._to_number(l)
-                    rn = self._to_number(r)
-                    if ln is None or rn is None:
-                        return set()
-                    rtype = instr.result.type
-                    if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow"):
-                        res = self._fold_number(op, ln, rn, rtype)
-                        if res is None:
-                            return set()
-                        return res
-                    if op == "cmp_lt": return ln < rn
-                    if op == "cmp_gt": return ln > rn
-                    if op == "cmp_le": return ln <= rn
-                    if op == "cmp_ge": return ln >= rn
-                    if op == "cmp_eq": return ln == rn
-                    if op == "cmp_ne": return ln != rn
-                except (TypeError, ValueError):
+                ln = self._to_number(l)
+                rn = self._to_number(r)
+                if ln is None or rn is None:
                     return set()
+                rtype = instr.result.type
+                if op in ("add", "sub", "mul", "div", "floordiv", "mod", "pow"):
+                    res = self._fold_number(op, ln, rn, rtype)
+                    if res is None:
+                        return set()
+                    return res
+                if op == "cmp_lt": return ln < rn
+                if op == "cmp_gt": return ln > rn
+                if op == "cmp_le": return ln <= rn
+                if op == "cmp_ge": return ln >= rn
+                if op == "cmp_eq": return ln == rn
+                if op == "cmp_ne": return ln != rn
             if op == "select":
                 c = get_lat(instr.args[0].name) if isinstance(instr.args[0], SSAValue) else instr.args[0]
                 if isinstance(c, set):
@@ -471,10 +471,8 @@ class IROptimizer:
                                 elif instr.op == "cmp_le": res = ln <= rn
                                 elif instr.op == "cmp_ge": res = ln >= rn
                                 elif instr.op == "cmp_eq": res = ln == rn
-                                elif instr.op == "cmp_ne": res = ln != rn
                                 else:
-                                    i += 1
-                                    continue
+                                    res = ln != rn
                                 old_args = instr.args
                                 instr.op = "const"
                                 instr.args = [res]
@@ -810,10 +808,12 @@ class IROptimizer:
                                 c1 + c2 if instr.op == "add" else c1 * c2,
                                 lr.type, block, i)
                             instr.args = [ll, new_c]
-                            if left in left.users:
-                                left.users.remove(instr)
+                            for old in (left, right):
+                                while instr in old.users:
+                                    old.users.remove(instr)
                             if isinstance(ll, SSAValue):
                                 ll.users.append(instr)
+                            new_c.users.append(instr)
                             changed = True
                             continue
                 i += 1
@@ -917,12 +917,13 @@ class IROptimizer:
             if idom:
                 children[idom].append(label)
 
+        def_block = {}
+        for block in self.func.blocks:
+            for instr in block.instructions:
+                def_block[instr] = block.label
+
         vn_table = {}
         def hash_instr(instr):
-            if isinstance(instr, IRPhi):
-                inc = tuple(sorted((blk, v.name if isinstance(v, SSAValue) else v)
-                                   for blk, v in instr.incoming))
-                return ("phi", inc)
             args = []
             for a in instr.args:
                 if isinstance(a, SSAValue):
@@ -944,12 +945,16 @@ class IROptimizer:
             for idx, instr in enumerate(block.instructions):
                 if not self._is_pure(instr.op) or isinstance(instr, IRPhi):
                     continue
-                if instr.op == "call":
-                    continue
                 h = hash_instr(instr)
                 if h in vn_table:
                     other = vn_table[h]
-                    if other is not instr.result and other.name in dom[label]:
+                    other_label = (def_block.get(other.def_instr)
+                                   if isinstance(other, SSAValue) else None)
+                    # Within one block, leave duplicate elimination to CSE so
+                    # that only expressions from a strictly dominating block
+                    # are reused here.
+                    if (isinstance(other, SSAValue) and other is not instr.result
+                            and other_label != label and other_label in dom[label]):
                         self._replace_value(instr.result, other)
                         to_remove.append(idx)
                         changed = True
@@ -992,7 +997,7 @@ class IROptimizer:
                             self._replace_value(user.result, field_values[field_name])
                             for b in self.func.blocks:
                                 if user in b.instructions:
-                                    b.instructions.remove(user)
+                                    self._remove_instr(b, b.instructions.index(user))
                                     break
                             changed = True
 
@@ -1113,7 +1118,7 @@ class IROptimizer:
                 if t_instr.result is t_val and f_instr.result is f_val:
                     sel = IRInstr("select", [cond, t_val, f_val], result=phi.result)
                     idx = merge.instructions.index(phi)
-                    merge.instructions[idx] = sel
+                    merge.instructions[idx:idx + 1] = [t_instr, f_instr, sel]
                     for _, v in phi.incoming:
                         if phi in v.users:
                             v.users.remove(phi)
@@ -1249,20 +1254,12 @@ class IROptimizer:
             target_label = block.terminator.args[0]
             if target_label == block.label:
                 continue
-            target = self.func.block_map.get(target_label)
-            if not target:
-                continue
+            target = self.func.block_map[target_label]
             duplicate = False
             for pred_label in list(block.predecessors):
                 pred = self.func.block_map[pred_label]
                 t = pred.terminator
-                if not t:
-                    continue
-                if t.op == "br":
-                    if t.args[0] == target_label:
-                        duplicate = True
-                        break
-                elif t.op == "cond_br" and target_label in (t.args[1], t.args[2]):
+                if t.op == "cond_br" and target_label in (t.args[1], t.args[2]):
                     duplicate = True
                     break
             if duplicate:
@@ -1314,10 +1311,7 @@ class IROptimizer:
                 i += 1
                 continue
             target_label = block.terminator.args[0]
-            target = self.func.block_map.get(target_label)
-            if not target:
-                i += 1
-                continue
+            target = self.func.block_map[target_label]
             if len(target.predecessors) == 1 and target.predecessors[0] == block.label:
                 block.instructions.extend(target.instructions)
                 block.terminator = target.terminator
@@ -1370,12 +1364,6 @@ class IROptimizer:
                         instr.incoming = [
                             (blk, val) for blk, val in instr.incoming if blk != block.label
                         ]
-                if b.terminator and b.terminator.op == "cond_br":
-                    _cond, t1, t2 = b.terminator.args
-                    if t1 == block.label:
-                        b.terminator = IRInstr("br", [t2])
-                    elif t2 == block.label:
-                        b.terminator = IRInstr("br", [t1])
         return True
 
 
@@ -1413,9 +1401,6 @@ class IROptimizer:
                 while i < len(block.instructions):
                     instr = block.instructions[i]
                     if not self._is_pure(instr.op) or isinstance(instr, IRPhi):
-                        i += 1
-                        continue
-                    if instr.op in ("call", "struct_init"):
                         i += 1
                         continue
                     invariant = True
@@ -1574,7 +1559,10 @@ class IROptimizer:
                         if not callee or callee is func:
                             i += 1
                             continue
-                        if self._count_instructions(callee) > self.inline_threshold:
+                        callee_size = self._original_sizes.get(
+                            callee, self._count_instructions(callee)
+                        )
+                        if callee_size > self.inline_threshold:
                             i += 1
                             continue
                         self._inline_call(func, block, i, instr, callee)
@@ -1713,9 +1701,7 @@ class IROptimizer:
             elif term.op == "cond_br":
                 succ_labels = [term.args[1], term.args[2]]
         for succ_label in succ_labels:
-            succ_block = caller.block_map.get(succ_label)
-            if not succ_block:
-                continue
+            succ_block = caller.block_map[succ_label]
             for instr in succ_block.instructions:
                 if isinstance(instr, IRPhi):
                     instr.incoming = [

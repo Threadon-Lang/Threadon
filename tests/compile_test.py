@@ -2182,3 +2182,165 @@ def main() -> Int64
             importer=Importer(),
         )
     assert "may not call native function 'time.now'" in str(excinfo.value)
+
+
+def test_puredef_loop_with_std_range_runs():
+    result = compile_stdlib_run(
+        """
+puredef total() -> Int64
+    sum: Int64 = 0
+    for i in range(5):
+        sum += i
+    return sum
+def main() -> Int32
+    print(total())
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "10\n"
+
+
+def test_puredef_math_abs_runs():
+    result = compile_stdlib_run(
+        """
+import math
+puredef distance(x: Int32) -> Int32
+    return math.abs(x)
+def main() -> Int32
+    print(distance(-7))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "7\n"
+
+
+def test_puredef_methods_and_constructor_run():
+    result = compile_stdlib_run(
+        """
+class P:
+    x: Int32
+    puredef __init__(self: P, x: Int32)
+        self.x = x
+    puredef twice(self: P) -> Int32
+        return self.x * 2
+puredef combo(p: P) -> Int32
+    return p.twice() + p.twice()
+def main() -> Int32
+    p: P = P(3)
+    print(combo(p))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "12\n"
+
+
+def test_puredef_imported_from_registered_source_runs():
+    importer = Importer()
+    importer.register_source(
+        "puremath",
+        """
+puredef double(x: Int32) -> Int32
+    return x * 2
+""",
+    )
+    result = run_llvm(
+        compile_source(
+            """
+from puremath import double
+puredef f(x: Int32) -> Int32
+    return double(x)
+def main() -> Int32
+    print(f(21))
+    return 0
+""",
+            importer=importer,
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"
+
+
+def test_puredef_rejects_global_writes():
+    _expect_compile_error(
+        """
+counter: Int32 = 0
+puredef f() -> Int32
+    counter = 1
+    return counter
+def main() -> Int32
+    return f()
+""",
+        "may not write global variable 'counter'",
+    )
+
+
+def test_puredef_rejects_print():
+    _expect_compile_error(
+        """
+puredef f() -> Int32
+    print("side effect")
+    return 1
+def main() -> Int32
+    return f()
+""",
+        "may not call non-pure function 'print'",
+    )
+
+
+def test_puredef_rejects_native_method_calls():
+    with pytest.raises(RuntimeError) as excinfo:
+        compile_source(
+            """
+from torch import Tensor
+puredef f(t: Tensor) -> Float64
+    return t.sum()
+def main() -> Float64
+    return f(Tensor([]))
+""",
+            importer=Importer(),
+        )
+    assert "may not call native function 'torch.Tensor___sum'" in str(excinfo.value)
+
+
+def test_puredef_rejects_imported_non_pure_function():
+    importer = Importer()
+    importer.register_source(
+        "helper",
+        """
+def impure() -> Int32
+    return 1
+""",
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        compile_source(
+            """
+from helper import impure
+puredef f() -> Int32
+    return impure()
+def main() -> Int32
+    return f()
+""",
+            importer=importer,
+        )
+    assert "may not call non-pure function 'helper.impure'" in str(excinfo.value)
+
+
+def test_puredef_can_call_every_std_and_math_helper():
+    result = compile_stdlib_run(
+        """
+import math
+puredef std_helpers(x: Int32) -> Int32
+    return abs(x) + max(x, 1) + min(x, 10) + clamp(x, 0, 5) + Int32(is_even(x)) + Int32(is_odd(x))
+puredef math_helpers(x: Int32) -> Int64
+    return Int64(math.abs(x)) + Int64(math.iabs(x)) + Int64(math.pow_int(2, 3)) + math.factorial(5) + Int64(math.gcd(12, 8)) + math.lcm(3, 4) + Int64(math.sign(x)) + Int64(math.is_prime(7)) + Int64(math.integer_sqrt(20)) + math.trunc_f(3.9) + math.floor_f(-1.2) + math.ceil_f(1.2) + math.round_f(2.5) + Int64(math.sqrt_f(9.0)) + Int64(math.hypot_f(3.0, 4.0)) + Int64(math.pi()) + Int64(math.e()) + Int64(math.to_radians(180.0)) + Int64(math.to_degrees(3.141592653589793)) + Int64(math.clamp_f(5.0, 0.0, 3.0)) + Int64(math.lerp_f(0.0, 10.0, 0.5))
+def main() -> Int32
+    print(std_helpers(-3))
+    print(math_helpers(-2))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2\n362\n"

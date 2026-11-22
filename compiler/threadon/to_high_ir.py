@@ -2534,8 +2534,14 @@ class SSABuilder:
 
             phi = IRPhi(
                 res,
-                incoming,
+                [],
             )
+
+            phi.incoming = incoming
+            phi.args = [
+                value
+                for _, value in incoming
+            ]
 
             latch_block.add_instr(phi)
 

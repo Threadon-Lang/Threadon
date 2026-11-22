@@ -1,3 +1,6 @@
+import io
+from contextlib import redirect_stdout
+
 import pytest
 
 from compiler.threadon.checker import (
@@ -635,4 +638,149 @@ puredef f() -> Int64
     items[0] = 2
     return len(items)
 """
+    )
+
+
+def check_pure_error_message(source, needle, native_functions=None, global_vars=None):
+    output = io.StringIO()
+    with redirect_stdout(output):
+        with pytest.raises(SystemExit):
+            check_pure_ok(source, native_functions, global_vars)
+    assert needle in output.getvalue()
+
+
+def test_purity_allows_transitive_pure_calls_and_recursion():
+    check_pure_ok(
+        """
+puredef leaf(x: Int32) -> Int32
+    return x + 1
+puredef middle(x: Int32) -> Int32
+    return leaf(x) * 2
+puredef top(x: Int32) -> Int32
+    return middle(x) - 1
+puredef countdown(n: Int32) -> Int32
+    if n <= 0:
+        return 0
+    return countdown(n - 1)
+"""
+    )
+
+
+def test_purity_allows_pure_init_and_pure_constructor_call():
+    check_pure_ok(
+        """
+class Point:
+    x: Int32
+    puredef __init__(self: Point, x: Int32)
+        self.x = x
+    puredef value(self: Point) -> Int32
+        return self.x
+puredef make(x: Int32) -> Point
+    return Point(x)
+"""
+    )
+
+
+def test_purity_rejects_field_writes_to_globals():
+    check_pure_error_message(
+        """
+struct P:
+    x: Int32
+p: P = P(x=1)
+puredef f() -> Int32
+    p.x = 2
+    return 1
+""",
+        "may not write global variable 'p'",
+    )
+
+
+def test_purity_rejects_nested_index_writes_to_globals():
+    check_pure_error_message(
+        """
+items: List[List[Int32]] = [[1]]
+puredef f() -> Int64
+    items[0][0] = 2
+    return len(items)
+""",
+        "may not write global variable 'items'",
+    )
+
+
+def test_purity_rejects_mutating_nested_global_lists():
+    check_pure_error_message(
+        """
+items: List[List[Int32]] = [[1]]
+puredef f() -> Int64
+    items[0].append(2)
+    return len(items)
+""",
+        "may not write global variable 'items'",
+    )
+
+
+@pytest.mark.parametrize(
+    "call", ['print(1)', 'input("x")', "collect()", "thread_exit()"]
+)
+def test_purity_rejects_io_and_gc_builtins(call):
+    builtin = call.split("(", 1)[0]
+    check_pure_error_message(
+        f"puredef f() -> NoneType\n    {call}\n",
+        f"may not call non-pure function '{builtin}'",
+    )
+
+
+def test_purity_allows_pure_builtins_in_expressions():
+    check_pure_ok(
+        """
+puredef f(d: Dict[Int64, Int32]) -> Int64
+    return len(chr(65)) + dict_key(d, Int64(0))
+"""
+    )
+
+
+@pytest.mark.parametrize(
+    "decl",
+    [
+        'x: String = f"value={impure()}"',
+        "x: List[Int32] = [impure()]",
+        'x: Dict[String, Int32] = {"a": impure()}',
+        "x: String = s[impure_index():1]",
+        "x: Box = Box(value=impure())",
+        "x: Int32 = (impure())",
+        "x: Int32 = -impure()",
+    ],
+)
+def test_purity_checks_calls_nested_in_expressions(decl):
+    source = f"""
+struct Box:
+    value: Int32
+def impure() -> Int32
+    return 1
+def impure_index() -> Int64
+    return 0
+puredef f(s: String) -> Int32
+    {decl}
+    return 0
+"""
+    expected = "impure_index" if "impure_index()" in decl else "impure"
+    check_pure_error_message(
+        source,
+        f"may not call non-pure function '{expected}'",
+    )
+
+
+def test_purity_checks_calls_in_conditions():
+    check_pure_error_message(
+        """
+def impure() -> Bool
+    return True
+puredef f() -> Int32
+    if impure():
+        return 1
+    while impure():
+        return 2
+    return 0
+""",
+        "may not call non-pure function 'impure'",
     )

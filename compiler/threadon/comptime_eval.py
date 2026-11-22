@@ -338,6 +338,9 @@ class ComptimeInterpreter:
                 return len(obj)
         raise ComptimeError(f"Method '{node.method}' not available at compile time")
 
+    def eval_RefExpr(self, node):
+        return self.eval(node.inner)
+
 
 class ComptimeListIterator:
     """Wrapper for lists to support iterator protocol (done, value, advance)"""
@@ -390,9 +393,6 @@ class ComptimeListIterator:
         if key == "_idx":
             return self._idx
         return default
-
-    def eval_RefExpr(self, node):
-        return self.eval(node.inner)
 
 class ReturnSignal(Exception):
     def __init__(self, value):
