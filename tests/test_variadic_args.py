@@ -243,6 +243,45 @@ def main() -> Int32
     parse_fail(source, expected)
 
 
+def test_rechecking_normalized_variadic_call_is_idempotent():
+    source = """def total(a: Int32, *xs: List[Int32]) -> Int32
+    return a
+
+def main() -> Int32
+    return total(1, 2, 3)
+"""
+    p = Parser()
+    p.parse(source)
+    main = next(node for node in p.ast if getattr(node, "name", None) == "main")
+    call = main.body[0].value
+
+    assert getattr(call, "_args_bound", False)
+    args_before = list(call.args)
+    assert len(args_before) == 2
+    assert p.detect_expr_type(call) == "Int32"
+    assert call.args == args_before
+
+
+def test_too_many_positional_args_with_keyword_keeps_arity_error():
+    source = """def f(a: Int32) -> Int32
+    return a
+
+def main() -> Int32
+    return f(1, 2, a=3)
+"""
+    parse_fail(source, "Function 'f' expects 1 arguments, got 2")
+
+
+def test_variadic_call_missing_required_fixed_arg_keeps_arity_error():
+    source = """def f(a: Int32, *xs: List[Int32]) -> Int32
+    return a
+
+def main() -> Int32
+    return f()
+"""
+    parse_fail(source, "Function 'f' expects 2 arguments, got 0")
+
+
 def test_builtin_spread_arguments_are_rejected():
     parse_fail("def main() -> NoneType\n    print(*[1])\n    return\n",
                "Builtin 'print' does not accept keyword or spread arguments")
