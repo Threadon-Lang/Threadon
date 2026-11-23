@@ -1,0 +1,24 @@
+# Sieve of Eratosthenes prime count. Keep in sync with sieve.cpp / .py.
+def main() -> Int32
+    limit: Int32 = 10000
+    is_prime: List[Bool] = []
+    i: Int32 = 0
+    while i <= limit:
+        is_prime.append(True)
+        i += 1
+    is_prime[0] = False
+    is_prime[1] = False
+    p: Int32 = 2
+    while p * p <= limit:
+        if is_prime[p]:
+            m: Int32 = p * p
+            while m <= limit:
+                is_prime[m] = False
+                m += p
+        p += 1
+    count: Int32 = 0
+    for v in is_prime:
+        if v:
+            count += 1
+    print(count)
+    return 0

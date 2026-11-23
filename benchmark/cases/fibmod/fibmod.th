@@ -1,0 +1,14 @@
+# Iterative Fibonacci mod checksum. Keep in sync with fibmod.cpp / .py.
+def main() -> Int32
+    n: Int64 = 2000000
+    modv: Int64 = 1000000007
+    a: Int64 = 0
+    b: Int64 = 1
+    i: Int64 = 0
+    while i < n:
+        t: Int64 = (a + b) % modv
+        a = b
+        b = t
+        i += 1
+    print(a)
+    return 0

@@ -426,6 +426,19 @@ class IROptimizer:
                         res = eval_instr(user)
                         if meet_lat(user.result.name, res):
                             add_ssa(user.result)
+                    elif isinstance(user, IRInstr) and user.op == "cond_br":
+                        for b in self.func.blocks:
+                            if b.terminator is user:
+                                cond = user.args[0]
+                                c = get_lat(cond.name) if isinstance(cond, SSAValue) else cond
+                                if isinstance(c, set) or c is None:
+                                    add_edge(b.label, user.args[1])
+                                    add_edge(b.label, user.args[2])
+                                elif c:
+                                    add_edge(b.label, user.args[1])
+                                else:
+                                    add_edge(b.label, user.args[2])
+                                break
 
         for block in self.func.blocks:
             for instr in list(block.instructions):

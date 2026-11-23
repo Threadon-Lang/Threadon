@@ -1,0 +1,18 @@
+# Sum of Collatz stopping times for 1..N. Keep in sync with collatz.cpp / .py.
+def main() -> Int32
+    limit: Int64 = 200000
+    total: Int64 = 0
+    i: Int64 = 1
+    while i <= limit:
+        n: Int64 = i
+        steps: Int64 = 0
+        while n != 1:
+            if n % 2 == 0:
+                n = n / 2
+            else:
+                n = 3 * n + 1
+            steps += 1
+        total += steps
+        i += 1
+    print(total)
+    return 0

@@ -1,0 +1,32 @@
+# 64x64 integer matrix multiply checksum. Keep in sync with matmul.cpp / .py.
+def main() -> Int32
+    n: Int32 = 32
+    a: List[Int64] = []
+    b: List[Int64] = []
+    c: List[Int64] = []
+    i: Int32 = 0
+    while i < n:
+        j: Int32 = 0
+        while j < n:
+            a.append(Int64((i + j) % 100))
+            b.append(Int64((i * 3 + j * 7) % 100))
+            c.append(Int64(0))
+            j += 1
+        i += 1
+    i = 0
+    while i < n:
+        k: Int32 = 0
+        while k < n:
+            aik: Int64 = a[i * n + k]
+            j: Int32 = 0
+            while j < n:
+                idx: Int32 = i * n + j
+                c[idx] = c[idx] + aik * b[k * n + j]
+                j += 1
+            k += 1
+        i += 1
+    checksum: Int64 = 0
+    for v in c:
+        checksum += v
+    print(checksum)
+    return 0

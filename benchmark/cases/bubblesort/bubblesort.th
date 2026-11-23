@@ -1,0 +1,28 @@
+# Bubble sort checksum. Keep in sync with bubblesort.cpp / .py.
+def main() -> Int32
+    n: Int32 = 512
+    reps: Int32 = 200
+    checksum: Int64 = 0
+    r: Int32 = 0
+    while r < reps:
+        arr: List[Int32] = []
+        i: Int32 = 0
+        while i < n:
+            arr.append((i * 17 + r * 3) % 10000)
+            i += 1
+        i = 0
+        while i < n:
+            j: Int32 = 0
+            limit: Int32 = n - i - 1
+            while j < limit:
+                j1: Int32 = j + 1
+                if arr[j] > arr[j1]:
+                    tmp: Int32 = arr[j]
+                    arr[j] = arr[j1]
+                    arr[j1] = tmp
+                j += 1
+            i += 1
+        checksum += Int64(arr[0]) + Int64(arr[n / 2]) + Int64(arr[n - 1])
+        r += 1
+    print(checksum)
+    return 0

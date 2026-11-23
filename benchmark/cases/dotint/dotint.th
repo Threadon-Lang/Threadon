@@ -1,0 +1,23 @@
+# Integer dot product checksum. Keep in sync with dotint.cpp / .py.
+def main() -> Int32
+    n: Int32 = 4096
+    reps: Int32 = 500
+    a: List[Int64] = []
+    b: List[Int64] = []
+    i: Int32 = 0
+    while i < n:
+        a.append(Int64((i * 3 + 7) % 1000))
+        b.append(Int64((i * 11 + 13) % 1000))
+        i += 1
+    checksum: Int64 = 0
+    r: Int32 = 0
+    while r < reps:
+        s: Int64 = 0
+        j: Int32 = 0
+        while j < n:
+            s += a[j] * b[j]
+            j += 1
+        checksum += s + Int64(r)
+        r += 1
+    print(checksum)
+    return 0
