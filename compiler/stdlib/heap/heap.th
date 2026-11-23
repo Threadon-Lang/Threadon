@@ -1,0 +1,111 @@
+# Threadon functional min-heap
+#
+# A Heap is a struct holding a List[Int32] in binary-heap order: the smallest
+# item is always at index 0. All operations return a NEW Heap, so the original
+# value is never changed. Lists themselves are copied on assignment, and the
+# helpers below also make explicit copies before mutating indexes.
+#
+#   import heap
+#   h: heap.Heap = heap.empty()
+#   h = heap.push(h, 3)
+#   h = heap.push(h, 1)
+#   print(heap.peek(h))       # 1
+#   h = heap.pop(h)
+#   print(heap.peek(h))       # 3
+
+struct Heap:
+    items: List[Int32]
+
+def copy_ints(xs: List[Int32]) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        out.append(xs[i])
+        i += 1
+    return out
+
+# Restore heap order upwards from `start`. Mutates the local `items` and
+# returns it. Parent of i is (i - 1) // 2.
+def sift_up(items: List[Int32], start: Int32) -> List[Int32]
+    i: Int32 = start
+    while i > 0:
+        parent: Int32 = (i - 1) // 2
+        if items[parent] <= items[i]:
+            break
+        tmp: Int32 = items[i]
+        items[i] = items[parent]
+        items[parent] = tmp
+        i = parent
+    return items
+
+# Restore heap order downwards in items[0:n]. Children of i are 2*i+1 and
+# 2*i+2. `start` is the (possible) out-of-place index.
+def sift_down(items: List[Int32], start: Int32, n: Int32) -> List[Int32]
+    i: Int32 = start
+    while True:
+        left: Int32 = 2 * i + 1
+        if left >= n:
+            break
+        smallest: Int32 = left
+        right: Int32 = left + 1
+        if right < n:
+            if items[right] < items[left]:
+                smallest = right
+        if items[i] <= items[smallest]:
+            break
+        tmp: Int32 = items[i]
+        items[i] = items[smallest]
+        items[smallest] = tmp
+        i = smallest
+    return items
+
+def empty() -> Heap
+    data: List[Int32] = []
+    return Heap(items=data)
+
+# Bottom-up heapify: the last parent is at index n // 2 - 1.
+def from_list(xs: List[Int32]) -> Heap
+    items: List[Int32] = copy_ints(xs)
+    n: Int32 = Int32(len(items))
+    i: Int32 = n // 2 - 1
+    while i >= 0:
+        items = sift_down(items, i, n)
+        i -= 1
+    return Heap(items=items)
+
+puredef size(h: Heap) -> Int32
+    return Int32(len(h.items))
+
+# 0 for an empty heap.
+puredef peek(h: Heap) -> Int32
+    if len(h.items) == 0:
+        return 0
+    return h.items[0]
+
+def push(h: Heap, v: Int32) -> Heap
+    items: List[Int32] = copy_ints(h.items)
+    items.append(v)
+    items = sift_up(items, Int32(len(items)) - 1)
+    return Heap(items=items)
+
+# Remove the minimum. An empty heap is returned unchanged.
+def pop(h: Heap) -> Heap
+    n: Int32 = Int32(len(h.items))
+    if n == 0:
+        return h
+    items: List[Int32] = copy_ints(h.items)
+    last: Int32 = items[n - 1]
+    items = items.pop()
+    if n > 1:
+        items[0] = last
+        items = sift_down(items, 0, n - 1)
+    return Heap(items=items)
+
+# Heapsort, ascending. The input list is not modified.
+def sort(xs: List[Int32]) -> List[Int32]
+    h: Heap = from_list(xs)
+    out: List[Int32] = []
+    while size(h) > 0:
+        out.append(peek(h))
+        h = pop(h)
+    return out

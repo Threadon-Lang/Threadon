@@ -127,3 +127,24 @@ def assert_ends_with(s: String, suffix: String) -> Bool
         return True
     print("    FAIL assert_ends_with:", s, "!~", suffix)
     return False
+
+# Equality helpers for the types assert_eq cannot express. Comparing whole
+# List values with `==` produces invalid IR, so lists are compared element by
+# element here.
+def assert_str_eq(actual: String, expected: String, msg: String = "assert_str_eq") -> Bool
+    if actual == expected:
+        return True
+    print("    FAIL", msg, ": expected", expected, "got", actual)
+    return False
+
+def assert_ints_eq(actual: List[Int32], expected: List[Int32], msg: String = "assert_ints_eq") -> Bool
+    if len(actual) != len(expected):
+        print("    FAIL", msg, ": different lengths")
+        return False
+    i: Int32 = 0
+    while i < Int32(len(actual)):
+        if actual[i] != expected[i]:
+            print("    FAIL", msg, ": first difference at", i)
+            return False
+        i += 1
+    return True

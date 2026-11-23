@@ -1,0 +1,105 @@
+# Threadon color helpers
+#
+# An RGB value is three Int32 channels with value semantics. `make` and
+# `from_hex` clamp every channel into 0..255, and `to_hex` clamps again so a
+# directly constructed RGB with out-of-range fields still formats sanely.
+# `mix` clamps its interpolation factor into 0..1 and rounds each channel to
+# the nearest integer.
+
+from math import round_f
+from math import clamp_f
+
+struct RGB:
+    r: Int32
+    g: Int32
+    b: Int32
+
+# Restrict an integer channel to 0..255.
+puredef clamp_byte(x: Int32) -> Int32
+    if x < 0:
+        return 0
+    if x > 255:
+        return 255
+    return x
+
+# Build a clamped RGB triple.
+puredef make(r: Int32, g: Int32, b: Int32) -> RGB
+    return RGB(r=clamp_byte(r), g=clamp_byte(g), b=clamp_byte(b))
+
+# Lowercase hexadecimal digit for 0..15.
+puredef hex_char(n: Int32) -> String
+    if n < 10:
+        return chr(48 + n)
+    return chr(87 + n)
+
+# Uppercase hexadecimal digit for 0..15.
+puredef hex_upper_char(n: Int32) -> String
+    if n < 10:
+        return chr(48 + n)
+    return chr(55 + n)
+
+# Value of one hex digit, or -1 when `c` is not a single hex digit.
+puredef hex_value(c: String) -> Int32
+    if len(c) != 1:
+        return -1
+    i: Int32 = 0
+    while i < 16:
+        if c == hex_char(i):
+            return i
+        if c == hex_upper_char(i):
+            return i
+        i += 1
+    return -1
+
+# Parse `#RRGGBB` or `RRGGBB`; anything else is black.
+puredef from_hex(s: String) -> RGB
+    start: Int64 = 0
+    if len(s) == 7:
+        if s[0:1] != "#":
+            return make(0, 0, 0)
+        start = 1
+    elif len(s) == 6:
+        start = 0
+    else:
+        return make(0, 0, 0)
+    rh: Int32 = hex_value(s[start:start + 1])
+    rl: Int32 = hex_value(s[start + 1:start + 2])
+    gh: Int32 = hex_value(s[start + 2:start + 3])
+    gl: Int32 = hex_value(s[start + 3:start + 4])
+    bh: Int32 = hex_value(s[start + 4:start + 5])
+    bl: Int32 = hex_value(s[start + 5:start + 6])
+    if rh < 0 or rl < 0 or gh < 0 or gl < 0 or bh < 0 or bl < 0:
+        return make(0, 0, 0)
+    return make(rh * 16 + rl, gh * 16 + gl, bh * 16 + bl)
+
+# Lowercase `#rrggbb`; fields are clamped before rendering.
+puredef to_hex(c: RGB) -> String
+    rr: Int32 = clamp_byte(c.r)
+    gg: Int32 = clamp_byte(c.g)
+    bb: Int32 = clamp_byte(c.b)
+    return "#" + hex_char(rr // 16) + hex_char(rr % 16) + hex_char(gg // 16) + hex_char(gg % 16) + hex_char(bb // 16) + hex_char(bb % 16)
+
+# Perceived brightness with the common 299/587/114 weights, clamped to 0..255.
+puredef brightness(c: RGB) -> Int32
+    rr: Int32 = clamp_byte(c.r)
+    gg: Int32 = clamp_byte(c.g)
+    bb: Int32 = clamp_byte(c.b)
+    return clamp_byte((299 * rr + 587 * gg + 114 * bb) // 1000)
+
+# Linear interpolation; t is clamped to 0..1 and channels are rounded.
+def mix(a: RGB, b: RGB, t: Float64) -> RGB
+    f: Float64 = clamp_f(t, 0.0, 1.0)
+    ar: Float64 = Float64(clamp_byte(a.r))
+    ag: Float64 = Float64(clamp_byte(a.g))
+    ab: Float64 = Float64(clamp_byte(a.b))
+    br: Float64 = Float64(clamp_byte(b.r))
+    bg: Float64 = Float64(clamp_byte(b.g))
+    bb: Float64 = Float64(clamp_byte(b.b))
+    r: Int32 = Int32(round_f(ar + (br - ar) * f))
+    g: Int32 = Int32(round_f(ag + (bg - ag) * f))
+    bl: Int32 = Int32(round_f(ab + (bb - ab) * f))
+    return make(r, g, bl)
+
+# True when perceived brightness is below 128.
+puredef is_dark(c: RGB) -> Bool
+    return brightness(c) < 128

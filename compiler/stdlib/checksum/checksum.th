@@ -1,0 +1,113 @@
+# Threadon checksums
+#
+# Small, deterministic, NON-CRYPTOGRAPHIC checksums. FNV-1a is reduced to
+# 32 bits, Adler-32 uses mod 65521, and CRC-8 uses polynomial 0x07 with
+# initial value 0 (no reflection, no final xor). All arithmetic stays in
+# Int64 / Int32 with explicit modulo reduction, so nothing overflows.
+#
+# Threadon has no bitwise operators; xor_bits implements XOR by peeling off
+# one bit at a time. No imports are required.
+
+# Byte value (0..255) of a one-byte String, or -1 when it is not a byte.
+# Empty strings compare equal to chr(0) under strcmp and map to 0; callers
+# only pass non-empty slices.
+puredef ascii_code(c: String) -> Int32
+    lo: Int32 = 0
+    hi: Int32 = 255
+    while lo <= hi:
+        mid: Int32 = (lo + hi) // 2
+        probe: String = chr(mid)
+        if c == probe:
+            return mid
+        if c < probe:
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    return -1
+
+# XOR of the lowest `bits` bits of a and b, returned as a non-negative value.
+puredef xor_bits(a: Int64, b: Int64, bits: Int32) -> Int64
+    out: Int64 = 0
+    place: Int64 = 1
+    x: Int64 = a
+    y: Int64 = b
+    i: Int32 = 0
+    while i < bits:
+        xb: Int64 = x % 2
+        yb: Int64 = y % 2
+        if xb != yb:
+            out = out + place
+        x = x // 2
+        y = y // 2
+        place = place * 2
+        i += 1
+    return out
+
+# XOR of two byte values, as Int32.
+puredef xor8(a: Int32, b: Int32) -> Int32
+    return Int32(xor_bits(Int64(a), Int64(b), 8))
+
+# Byte value of a character as Int64 (0..255, invalid mapped to 0).
+puredef byte_of(c: String) -> Int64
+    n: Int32 = ascii_code(c)
+    if n < 0:
+        return 0
+    return Int64(n)
+
+# One FNV-1a step: xor the byte into the low 32 bits, then multiply by the
+# FNV prime modulo 2**32.
+puredef fnv_step(h: Int64, byte: Int64) -> Int64
+    mixed: Int64 = xor_bits(h, byte, 32)
+    return (mixed * 16777619) % 4294967296
+
+# 32-bit FNV-1a of a String's bytes: 0..4294967295.
+puredef fnv1a(s: String) -> Int64
+    h: Int64 = 2166136261
+    i: Int64 = 0
+    while i < len(s):
+        h = fnv_step(h, byte_of(s[i:i + 1]))
+        i += 1
+    return h
+
+# 32-bit FNV-1a over a list of byte values (negative values are reduced
+# modulo 256 first).
+puredef checksum_bytes(xs: List[Int32]) -> Int64
+    h: Int64 = 2166136261
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        b: Int64 = Int64(xs[i]) % 256
+        if b < 0:
+            b += 256
+        h = fnv_step(h, b)
+        i += 1
+    return h
+
+# Adler-32 of a String's bytes: s1 starts at 1, s2 at 0, both mod 65521.
+puredef adler32(s: String) -> Int64
+    s1: Int64 = 1
+    s2: Int64 = 0
+    i: Int64 = 0
+    while i < len(s):
+        b: Int64 = byte_of(s[i:i + 1])
+        s1 = (s1 + b) % 65521
+        s2 = (s2 + s1) % 65521
+        i += 1
+    return (s2 * 65536 + s1) % 4294967296
+
+# CRC-8 with polynomial 0x07, initial value 0, no reflection and no final
+# xor. The result is 0..255.
+puredef crc8(s: String) -> Int32
+    crc: Int32 = 0
+    i: Int64 = 0
+    while i < len(s):
+        b: Int32 = Int32(byte_of(s[i:i + 1]))
+        crc = xor8(crc, b)
+        bitpos: Int32 = 0
+        while bitpos < 8:
+            top: Bool = crc >= 128
+            crc = (crc * 2) % 256
+            if top:
+                crc = xor8(crc, 7)
+            bitpos += 1
+        i += 1
+    return crc

@@ -1,0 +1,64 @@
+# Threadon complex numbers
+#
+# A Complex is a pair of Float64 fields with value semantics, so every
+# operation returns a NEW value and never changes its arguments.
+#
+#   import complex
+#   a: complex.Complex = complex.make(1.0, 2.0)
+#   b: complex.Complex = complex.make(3.0, -4.0)
+#   print(complex.to_string(complex.mul(a, b)))  # 11.0+2.0i
+#
+# `abs` here is the complex magnitude; `norm` is its square.
+
+from math import sqrt_f
+
+struct Complex:
+    re: Float64
+    im: Float64
+
+def make(re: Float64, im: Float64) -> Complex
+    return Complex(re=re, im=im)
+
+def add(a: Complex, b: Complex) -> Complex
+    return Complex(re=a.re + b.re, im=a.im + b.im)
+
+def sub(a: Complex, b: Complex) -> Complex
+    return Complex(re=a.re - b.re, im=a.im - b.im)
+
+def mul(a: Complex, b: Complex) -> Complex
+    real: Float64 = a.re * b.re - a.im * b.im
+    imag: Float64 = a.re * b.im + a.im * b.re
+    return Complex(re=real, im=imag)
+
+def scale(a: Complex, k: Float64) -> Complex
+    return Complex(re=a.re * k, im=a.im * k)
+
+def conj(a: Complex) -> Complex
+    return Complex(re=a.re, im=-a.im)
+
+# Squared magnitude. Kept as a pure helper so `abs` only needs sqrt.
+puredef norm(a: Complex) -> Float64
+    return a.re * a.re + a.im * a.im
+
+def abs(a: Complex) -> Float64
+    return sqrt_f(norm(a))
+
+# Casting a float to String uses "%f" (six decimals). Trim the trailing
+# zeroes but keep one digit after the decimal point: 3.000000 -> "3.0".
+def float_text(x: Float64) -> String
+    text: String = String(x) + ""
+    while len(text) > 2:
+        if text[len(text) - 1:len(text)] != "0":
+            break
+        if text[len(text) - 2:len(text) - 1] == ".":
+            break
+        text = text[:len(text) - 1]
+    return text
+
+def to_string(a: Complex) -> String
+    real: String = float_text(a.re)
+    imag: String = float_text(a.im)
+    if len(imag) > 0:
+        if imag[0:1] == "-":
+            return real + "-" + imag[1:] + "i"
+    return real + "+" + imag + "i"

@@ -1,0 +1,151 @@
+# Threadon validation helpers
+#
+# Small, dependency-light checks for strings that arrive from input(), a
+# native module or a file-like source. Everything returns Bool; nothing here
+# throws, casts or mutates its argument. These are format checks, not proof
+# that a value can actually be used (an email address is not verified, and a
+# valid IPv4 string does not mean the host exists).
+
+from strings import split, is_digit, lower_char, index_of
+
+def is_sign(c: String) -> Bool
+    if c == "+":
+        return True
+    if c == "-":
+        return True
+    return False
+
+# Optional leading +/-, then at least one decimal digit, nothing else.
+def is_int_string(s: String) -> Bool
+    n: Int64 = len(s)
+    if n == 0:
+        return False
+    start: Int64 = 0
+    if is_sign(s[0:1]):
+        start = 1
+    if start >= n:
+        return False
+    i: Int64 = start
+    while i < n:
+        if not is_digit(s[i:i + 1]):
+            return False
+        i += 1
+    return True
+
+# Optional sign, at most one dot, and at least one digit before the dot.
+# "1.", "-2.75" and "10" are valid; ".5", "1.2.3" and "1e3" are not.
+def is_float_string(s: String) -> Bool
+    n: Int64 = len(s)
+    if n == 0:
+        return False
+    start: Int64 = 0
+    if is_sign(s[0:1]):
+        start = 1
+    if start >= n:
+        return False
+    dots: Int32 = 0
+    digits_before: Int32 = 0
+    i: Int64 = start
+    while i < n:
+        c: String = s[i:i + 1]
+        if c == ".":
+            if dots == 1:
+                return False
+            dots = 1
+        else:
+            if not is_digit(c):
+                return False
+            if dots == 0:
+                digits_before += 1
+        i += 1
+    return digits_before > 0
+
+# Four dot-separated octets, each 0..255, without leading zeros.
+def is_ipv4(s: String) -> Bool
+    parts: List[String] = split(s, ".")
+    if Int32(len(parts)) != 4:
+        return False
+    i: Int32 = 0
+    while i < 4:
+        part: String = parts[i]
+        if len(part) == 0:
+            return False
+        if not is_digit(part):
+            return False
+        if len(part) > 1 and part[0:1] == "0":
+            return False
+        value: Int32 = 0
+        j: Int64 = 0
+        while j < len(part):
+            value = value * 10 + Int32(part[j:j + 1])
+            if value > 255:
+                return False
+            j += 1
+        i += 1
+    return True
+
+def is_hex_digit(c: String) -> Bool
+    if is_digit(c):
+        return True
+    low: String = lower_char(c)
+    if low >= "a" and low <= "f":
+        return True
+    return False
+
+# #RRGGBB (the leading # is required).
+def is_hex_color(s: String) -> Bool
+    if len(s) != 7:
+        return False
+    if s[0:1] != "#":
+        return False
+    i: Int64 = 1
+    while i < 7:
+        if not is_hex_digit(s[i:i + 1]):
+            return False
+        i += 1
+    return True
+
+# Deliberately permissive: one @, non-empty sides, a dot in the domain,
+# no whitespace. It does not check DNS or RFC 5322.
+def is_email_like(s: String) -> Bool
+    if len(s) == 0:
+        return False
+    at: Int32 = index_of(s, "@")
+    if at <= 0:
+        return False
+    domain: String = s[Int64(at) + 1:]
+    if len(domain) == 0:
+        return False
+    if index_of(domain, ".") < 0:
+        return False
+    if index_of(domain, "@") >= 0:
+        return False
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        if c == " " or c == "\t" or c == "\n":
+            return False
+        i += 1
+    return True
+
+# Luhn check digit algorithm, used by credit-card and many account numbers.
+def luhn(s: String) -> Bool
+    n: Int64 = len(s)
+    if n < 2:
+        return False
+    i: Int64 = 0
+    while i < n:
+        if not is_digit(s[i:i + 1]):
+            return False
+        i += 1
+    total: Int32 = 0
+    i = n - 1
+    while i >= 0:
+        digit: Int32 = Int32(s[i:i + 1])
+        if (n - 1 - i) % 2 == 1:
+            digit = digit * 2
+            if digit > 9:
+                digit = digit - 9
+        total += digit
+        i -= 1
+    return total % 10 == 0

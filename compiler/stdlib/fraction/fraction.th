@@ -1,0 +1,70 @@
+# Threadon rational numbers
+#
+# A Fraction is a pair of Int64 fields with value semantics. `make` reduces
+# each value to lowest terms, keeps the sign in the numerator and guarantees a
+# positive, nonzero denominator. Operations are free functions that return new
+# Fractions; they never modify their arguments.
+#
+#   import fraction
+#   a: fraction.Fraction = fraction.make(1, 2)
+#   b: fraction.Fraction = fraction.make(1, 3)
+#   print(fraction.to_string(fraction.add(a, b)))  # 5/6
+
+struct Fraction:
+    num: Int64
+    den: Int64
+
+puredef abs64(n: Int64) -> Int64
+    if n < 0:
+        return -n
+    return n
+
+# Euclid's algorithm, always non-negative. gcd64(0, 0) is 0.
+puredef gcd64(a: Int64, b: Int64) -> Int64
+    x: Int64 = abs64(a)
+    y: Int64 = abs64(b)
+    while y != 0:
+        t: Int64 = x % y
+        x = y
+        y = t
+    return x
+
+puredef make(n: Int64, d: Int64) -> Fraction
+    if d == 0:
+        return Fraction(num=n, den=1)
+    num: Int64 = n
+    den: Int64 = d
+    if den < 0:
+        num = -num
+        den = -den
+    g: Int64 = gcd64(num, den)
+    if g > 1:
+        num = num // g
+        den = den // g
+    return Fraction(num=num, den=den)
+
+puredef add(a: Fraction, b: Fraction) -> Fraction
+    return make(a.num * b.den + b.num * a.den, a.den * b.den)
+
+puredef sub(a: Fraction, b: Fraction) -> Fraction
+    return make(a.num * b.den - b.num * a.den, a.den * b.den)
+
+puredef mul(a: Fraction, b: Fraction) -> Fraction
+    return make(a.num * b.num, a.den * b.den)
+
+# Division by zero returns 0/1 instead of an invalid Fraction.
+puredef div(a: Fraction, b: Fraction) -> Fraction
+    if b.num == 0:
+        return make(0, 1)
+    return make(a.num * b.den, a.den * b.num)
+
+puredef to_float(a: Fraction) -> Float64
+    if a.den == 0:
+        return 0.0
+    return Float64(a.num) / Float64(a.den)
+
+def to_string(a: Fraction) -> String
+    text: String = String(a.num) + ""
+    if a.den == 1 or a.den == 0:
+        return text
+    return text + "/" + (String(a.den) + "")

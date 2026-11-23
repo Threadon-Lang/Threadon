@@ -1,0 +1,161 @@
+# Threadon Gregorian calendar helpers
+#
+# Pure Threadon, no external libraries. Dates are proleptic Gregorian with
+# years >= 1, written as ISO `YYYY-MM-DD`. Day counts are Int64 numbers of
+# days since 1970-01-01 (the Unix epoch), so dates before 1970 are negative.
+#
+# The conversions use Howard Hinnant's civil calendar algorithms. Integer
+# division in Threadon truncates toward zero, so the era calculations below
+# bias negative values by one full era (400 years, or 146097 days) to get
+# floor division; all later divisions operate on non-negative values.
+#
+#   import date
+#   print(date.is_leap(2024))                       # True
+#   print(date.add_days("2024-02-28", 1))           # 2024-02-29
+#   print(date.weekday(2024, 1, 1))                 # 0 (Monday)
+
+from strings import split, is_digit
+
+# Gregorian leap year rule. Years < 1 are never leap.
+puredef is_leap(year: Int32) -> Bool
+    if year < 1:
+        return False
+    if year % 400 == 0:
+        return True
+    if year % 100 == 0:
+        return False
+    return year % 4 == 0
+
+# Number of days in a month (0 for an invalid month number).
+puredef days_in_month(year: Int32, month: Int32) -> Int32
+    if month == 1:
+        return 31
+    if month == 2:
+        if is_leap(year):
+            return 29
+        return 28
+    if month == 3:
+        return 31
+    if month == 4:
+        return 30
+    if month == 5:
+        return 31
+    if month == 6:
+        return 30
+    if month == 7:
+        return 31
+    if month == 8:
+        return 31
+    if month == 9:
+        return 30
+    if month == 10:
+        return 31
+    if month == 11:
+        return 30
+    if month == 12:
+        return 31
+    return 0
+
+# Days since 1970-01-01 for a valid proleptic Gregorian date.
+puredef days_from_civil(year: Int32, month: Int32, day: Int32) -> Int64
+    y: Int64 = Int64(year)
+    m: Int64 = Int64(month)
+    d: Int64 = Int64(day)
+    if m <= 2:
+        y = y - 1
+    era: Int64 = y // 400
+    if y < 0:
+        era = (y - 399) // 400
+    yoe: Int64 = y - era * 400
+    mp: Int64 = m - 3
+    if m <= 2:
+        mp = m + 9
+    doy: Int64 = (153 * mp + 2) // 5 + d - 1
+    doe: Int64 = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+# Zero-pad a non-negative number to at least `width` characters.
+puredef pad_number(value: Int64, width: Int32) -> String
+    text: String = String(value) + ""
+    while Int32(len(text)) < width:
+        text = "0" + text
+    return text
+
+# ISO `YYYY-MM-DD` for a day count. Years 1..9999 are padded to four digits;
+# larger years simply use more digits.
+puredef civil_from_days(z: Int64) -> String
+    t: Int64 = z + 719468
+    era: Int64 = t // 146097
+    if t < 0:
+        era = (t - 146096) // 146097
+    doe: Int64 = t - era * 146097
+    yoe: Int64 = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    y: Int64 = yoe + era * 400
+    doy: Int64 = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp: Int64 = (5 * doy + 2) // 153
+    d: Int64 = doy - (153 * mp + 2) // 5 + 1
+    m: Int64 = mp + 3
+    if mp >= 10:
+        m = mp - 9
+    if m <= 2:
+        y = y + 1
+    return pad_number(y, 4) + "-" + pad_number(m, 2) + "-" + pad_number(d, 2)
+
+# Weekday with 0 = Monday ... 6 = Sunday. 1970-01-01 was a Thursday (+3).
+puredef weekday(year: Int32, month: Int32, day: Int32) -> Int32
+    r: Int64 = (days_from_civil(year, month, day) + 3) % 7
+    if r < 0:
+        r = r + 7
+    return Int32(r)
+
+# Split an ISO date into [year, month, day]; invalid text yields [-1, -1, -1].
+def parse_iso(date: String) -> List[Int32]
+    parts: List[String] = split(date, "-")
+    out: List[Int32] = [-1, -1, -1]
+    if len(parts) != 3:
+        return out
+    i: Int32 = 0
+    part: String = ""
+    while i < 3:
+        part = parts[i]
+        if not is_digit(part):
+            return out
+        if i == 0:
+            if len(part) != 4:
+                return out
+        if i > 0:
+            if len(part) != 2:
+                return out
+        out[i] = Int32(part)
+        i += 1
+    return out
+
+def valid_date_parts(parts: List[Int32]) -> Bool
+    if parts[0] < 1:
+        return False
+    if parts[1] < 1 or parts[1] > 12:
+        return False
+    if parts[2] < 1:
+        return False
+    if parts[2] > days_in_month(parts[0], parts[1]):
+        return False
+    return True
+
+# Day count of an ISO date. Malformed or impossible dates return 0.
+def to_days(date: String) -> Int64
+    parts: List[Int32] = parse_iso(date)
+    if not valid_date_parts(parts):
+        return 0
+    return days_from_civil(parts[0], parts[1], parts[2])
+
+# Shift an ISO date by `delta` days. Invalid input returns "".
+def add_days(date: String, delta: Int32) -> String
+    parts: List[Int32] = parse_iso(date)
+    if not valid_date_parts(parts):
+        return ""
+    z: Int64 = days_from_civil(parts[0], parts[1], parts[2]) + Int64(delta)
+    return civil_from_days(z)
+
+# Signed day count from `a` to `b` (b - a). Invalid input contributes 0.
+def days_between(a: String, b: String) -> Int64
+    return to_days(b) - to_days(a)

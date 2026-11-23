@@ -250,3 +250,108 @@ def is_alnum(s: String) -> Bool
                 return False
         i += 1
     return True
+
+# More everyday string helpers. As above, every result is a new String and
+# indexes are byte offsets.
+
+# Uppercase the first letter of each word, lowercase the rest. Word breaks
+# are spaces only (tabs and newlines are left alone).
+def title(s: String) -> String
+    out: String = ""
+    new_word: Bool = True
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        if new_word:
+            out = out + upper_char(c)
+        else:
+            out = out + lower_char(c)
+        if c == " ":
+            new_word = True
+        else:
+            new_word = False
+        i += 1
+    return out
+
+def swap_case(s: String) -> String
+    out: String = ""
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        lower: String = lower_char(c)
+        if lower != c:
+            out = out + lower
+        else:
+            out = out + upper_char(c)
+        i += 1
+    return out
+
+# Non-letters are ignored; the empty string is neither upper nor lower case.
+def is_upper(s: String) -> Bool
+    if len(s) == 0:
+        return False
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        if c >= "a" and c <= "z":
+            return False
+        i += 1
+    return True
+
+def is_lower(s: String) -> Bool
+    if len(s) == 0:
+        return False
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        if c >= "A" and c <= "Z":
+            return False
+        i += 1
+    return True
+
+# Remove a prefix/suffix only when it is actually present.
+def remove_prefix(s: String, prefix: String) -> String
+    if starts_with(s, prefix):
+        return s[len(prefix):]
+    return s
+
+def remove_suffix(s: String, suffix: String) -> String
+    if ends_with(s, suffix):
+        return s[:len(s) - len(suffix)]
+    return s
+
+# Split on newlines and drop a trailing carriage return from each line.
+def lines(s: String) -> List[String]
+    raw: List[String] = split(s, "\n")
+    out: List[String] = []
+    cr: String = chr(13)
+    i: Int32 = 0
+    while i < Int32(len(raw)):
+        out.append(remove_suffix(raw[i], cr))
+        i += 1
+    return out
+
+# Keep at most `width` bytes; longer strings get a ".." suffix.
+def truncate(s: String, width: Int32) -> String
+    if width <= 0:
+        return ""
+    if Int32(len(s)) <= width:
+        return s
+    if width <= 2:
+        return "."
+    return s[:Int64(width - 2)] + ".."
+
+# Count words separated by runs of whitespace.
+def word_count(s: String) -> Int32
+    count: Int32 = 0
+    in_word: Bool = False
+    i: Int64 = 0
+    while i < len(s):
+        if is_space(s[i:i + 1]):
+            in_word = False
+        else:
+            if not in_word:
+                count += 1
+                in_word = True
+        i += 1
+    return count

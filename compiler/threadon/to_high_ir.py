@@ -566,6 +566,15 @@ class SSABuilder:
             f"Unknown variable {name}"
         )
 
+    def _is_local_var(self, name):
+        name = self._resolve_alias(name)
+        if name in self.ptr_vars:
+            return True
+        for env in reversed(self.env_stack):
+            if name in env:
+                return True
+        return False
+
     def _effective_env(self):
         """Return the variable mapping for the current block, merging all
         inherited scopes (the innermost frame wins)."""
@@ -1525,6 +1534,8 @@ class SSABuilder:
 
         Returns True if an atomic RMW was emitted.
         """
+        if self._is_local_var(node.name):
+            return False
         if (
             not hasattr(self, 'module_var_names')
             or node.name not in self.module_var_names
@@ -1569,7 +1580,7 @@ class SSABuilder:
 
         rhs = self.emit_expr(node.expr)
 
-        if hasattr(self, 'module_var_names') and node.name in self.module_var_names:
+        if not self._is_local_var(node.name) and hasattr(self, 'module_var_names') and node.name in self.module_var_names:
             # module-level variable: atomic store
             self.current_block.add_instr(
                 IRInstr(
@@ -3210,6 +3221,8 @@ class SSABuilder:
             return self.emit_interpolated_string(expr)
 
         if isinstance(expr, VarExpr):
+            if self._is_local_var(expr.name):
+                return self.get_var(expr.name)
             if hasattr(self, 'module_var_names') and expr.name in self.module_var_names:
                 v = self.new_temp(self._type_of_module_var(expr.name))
                 self.current_block.add_instr(

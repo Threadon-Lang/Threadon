@@ -1,0 +1,58 @@
+# Threadon unit conversion helpers
+#
+# Pure Threadon, no external libraries. Distance, mass and temperature
+# conversions work on Float64 values; time formatting takes an Int32 number
+# of seconds. No `std` auto-import is used: every helper is defined here.
+
+# Exact international mile: 1 mi = 1.609344 km.
+puredef km_to_miles(v: Float64) -> Float64
+    return v / 1.609344
+
+puredef miles_to_km(v: Float64) -> Float64
+    return v * 1.609344
+
+# Exact inch: 1 in = 2.54 cm.
+puredef cm_to_inches(v: Float64) -> Float64
+    return v / 2.54
+
+# Exact pound: 1 lb = 0.45359237 kg.
+puredef kg_to_pounds(v: Float64) -> Float64
+    return v / 0.45359237
+
+puredef pounds_to_kg(v: Float64) -> Float64
+    return v * 0.45359237
+
+puredef c_to_f(v: Float64) -> Float64
+    return v * 9.0 / 5.0 + 32.0
+
+puredef f_to_c(v: Float64) -> Float64
+    return (v - 32.0) * 5.0 / 9.0
+
+# Two-digit rendering for minutes and seconds.
+puredef pad2(n: Int32) -> String
+    text: String = String(n) + ""
+    if n < 10:
+        text = "0" + text
+    return text
+
+puredef positive_hms(seconds: Int32) -> String
+    hours: Int32 = seconds // 3600
+    rest: Int32 = seconds % 3600
+    minutes: Int32 = rest // 60
+    secs: Int32 = rest % 60
+    return (String(hours) + "") + ":" + pad2(minutes) + ":" + pad2(secs)
+
+# Format a non-negative duration as "H:MM:SS"; a leading '-' is kept for
+# negative input. Hours are not padded.
+puredef seconds_to_hms(seconds: Int32) -> String
+    if seconds < 0:
+        return "-" + positive_hms(-seconds)
+    return positive_hms(seconds)
+
+# Floating-point Mebibytes to whole bytes, truncating toward zero.
+puredef mib_to_bytes(v: Float64) -> Int64
+    return Int64(v * 1048576.0)
+
+# Whole bytes to Mebibytes (1 MiB = 1048576 bytes).
+puredef bytes_to_mib(v: Int64) -> Float64
+    return Float64(v) / 1048576.0

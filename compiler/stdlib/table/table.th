@@ -1,0 +1,125 @@
+# Threadon text-table helpers
+#
+# All functions return new Strings. `row` renders `| a | b |`, `separator`
+# renders `+---+---+`, and `table` lays out a grid of rows. A separator is
+# inserted directly after row 0. Lists are copied where needed; no argument
+# is mutated.
+
+from strings import repeat
+
+puredef min_i32(a: Int32, b: Int32) -> Int32
+    if a < b:
+        return a
+    return b
+
+puredef max_i32(a: Int32, b: Int32) -> Int32
+    if a > b:
+        return a
+    return b
+
+# Left-align a cell in `width` bytes. Cells that are too long are truncated
+# to `width - 2` bytes and get a ".." suffix; widths 0, 1 and 2 give "", "."
+# and "..".
+def pad_cell(s: String, width: Int32) -> String
+    if width <= 0:
+        return ""
+    n: Int32 = Int32(len(s))
+    if n <= width:
+        return s + repeat(" ", width - n)
+    if width == 1:
+        return "."
+    if width == 2:
+        return ".."
+    return s[:Int64(width - 2)] + ".."
+
+# One table row. Extra cells or widths are ignored, so a short `widths` list
+# simply renders fewer columns.
+def row(cells: List[String], widths: List[Int32]) -> String
+    count: Int32 = min_i32(Int32(len(cells)), Int32(len(widths)))
+    out: String = "|"
+    i: Int32 = 0
+    while i < count:
+        out = out + " " + pad_cell(cells[i], widths[i]) + " |"
+        i += 1
+    return out
+
+# Horizontal rule with the same column layout as `row`: each width is padded
+# by one space on both sides.
+def separator(widths: List[Int32]) -> String
+    out: String = "+"
+    i: Int32 = 0
+    while i < Int32(len(widths)):
+        out = out + repeat("-", widths[i] + 2) + "+"
+        i += 1
+    return out
+
+# A fixed-width bar. `value` is clamped to 0..maximum and the filled part is
+# `floor(value * width / maximum)`; an empty `ch` defaults to "#". Only the
+# first byte of `ch` is used.
+def bar(value: Int32, maximum: Int32, width: Int32, ch: String) -> String
+    if width <= 0:
+        return ""
+    unit: String = "#"
+    if len(ch) > 0:
+        unit = ch[:1]
+    filled: Int32 = 0
+    if maximum > 0:
+        v: Int64 = Int64(value)
+        if v < 0:
+            v = 0
+        if v > Int64(maximum):
+            v = Int64(maximum)
+        filled = Int32(v * Int64(width) / Int64(maximum))
+    if filled < 0:
+        filled = 0
+    if filled > width:
+        filled = width
+    return repeat(unit, filled) + repeat(" ", width - filled)
+
+# Widest cell in each column. Short rows are treated as having empty cells.
+def measure_widths(rows: List[List[String]]) -> List[Int32]
+    widths: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(rows)):
+        cells: List[String] = rows[i]
+        j: Int32 = 0
+        while j < Int32(len(cells)):
+            if j >= Int32(len(widths)):
+                widths.append(0)
+            w: Int32 = Int32(len(cells[j]))
+            if w > widths[j]:
+                widths[j] = w
+            j += 1
+        i += 1
+    return widths
+
+# Render one row with already-computed column widths. `ncols` is len(widths).
+def render_row(cells: List[String], widths: List[Int32], ncols: Int32) -> String
+    out: String = "|"
+    j: Int32 = 0
+    while j < ncols:
+        cell: String = ""
+        if j < Int32(len(cells)):
+            cell = cells[j]
+        out = out + " " + pad_cell(cell, widths[j]) + " |"
+        j += 1
+    return out
+
+# Lay out a grid of rows. Rows are joined with "\n" and a separator follows
+# the first row. An empty row list yields an empty String.
+def table(rows: List[List[String]]) -> String
+    nrows: Int32 = Int32(len(rows))
+    if nrows == 0:
+        return ""
+    widths: List[Int32] = measure_widths(rows)
+    ncols: Int32 = Int32(len(widths))
+    out: String = ""
+    i: Int32 = 0
+    while i < nrows:
+        if i == 1:
+            out = out + "\n" + separator(widths) + "\n"
+        if i > 1:
+            out = out + "\n"
+        out = out + render_row(rows[i], widths, ncols)
+        i += 1
+    return out

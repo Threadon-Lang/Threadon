@@ -9,10 +9,10 @@
 #   input(prompt) - show `prompt`, then read a line of text as a String
 #  T(x) where T is a type
 
-puredef abs(x: Int32) -> Int32
-    if x < 0:
-        return -x
-    return x
+puredef abs(v: Int32) -> Int32
+    if v < 0:
+        return -v
+    return v
 
 puredef max(a: Int32, b: Int32) -> Int32
     if a > b:
@@ -24,12 +24,12 @@ puredef min(a: Int32, b: Int32) -> Int32
         return a
     return b
 
-puredef clamp(x: Int32, lo: Int32, hi: Int32) -> Int32
-    if x < lo:
+puredef clamp(v: Int32, lo: Int32, hi: Int32) -> Int32
+    if v < lo:
         return lo
-    if x > hi:
+    if v > hi:
         return hi
-    return x
+    return v
 
 puredef is_even(n: Int32) -> Bool
     return n % 2 == 0
@@ -79,3 +79,50 @@ puredef range(start: Int64, stop: Int64, step: Int64) -> Iterable
     if step == 0:
         d = True
     return Iterable(start, step, stop, d)
+
+# Int64 variants of the small numeric helpers above. The suffixes keep these
+# names from colliding with functions in the opt-in modules.
+puredef abs_i64(v: Int64) -> Int64
+    if v < 0:
+        return -v
+    return v
+
+puredef max_i64(a: Int64, b: Int64) -> Int64
+    if a > b:
+        return a
+    return b
+
+puredef min_i64(a: Int64, b: Int64) -> Int64
+    if a < b:
+        return a
+    return b
+
+puredef clamp_i64(v: Int64, lo: Int64, hi: Int64) -> Int64
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+# Inclusive range check and divisibility (k == 0 is never a multiple).
+puredef between(v: Int32, lo: Int32, hi: Int32) -> Bool
+    if v < lo:
+        return False
+    if v > hi:
+        return False
+    return True
+
+puredef is_multiple(n: Int32, k: Int32) -> Bool
+    if k == 0:
+        return False
+    return n % k == 0
+
+# Integer square and absolute difference. square returns Int64 to give the
+# result a little more headroom before wrapping.
+puredef square_int(v: Int32) -> Int64
+    return Int64(v) * Int64(v)
+
+puredef diff_int(a: Int32, b: Int32) -> Int32
+    if a < b:
+        return b - a
+    return a - b

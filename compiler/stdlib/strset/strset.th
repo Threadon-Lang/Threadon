@@ -1,0 +1,91 @@
+# Threadon set for String values
+#
+# Like the `intset` module, this uses a functional API: every operation
+# returns a new StringSet. Threadon classes and lists are passed by value,
+# and a method call gets a copy of self, so functions are the reliable way
+# to build an updated value.
+#
+#   s: strset.StringSet = strset.empty_set()
+#   s = strset.add(s, "hello")
+#   print(strset.contains(s, "hello"))   # True
+
+class StringSet:
+    items: List[String]
+
+    def __init__(self: StringSet, items: List[String])
+        self.items = items
+
+def empty_set() -> StringSet
+    items: List[String] = []
+    return StringSet(items)
+
+def to_list(s: StringSet) -> List[String]
+    out: List[String] = []
+    i: Int32 = 0
+    while i < Int32(len(s.items)):
+        out.append(s.items[i])
+        i += 1
+    return out
+
+def size(s: StringSet) -> Int32
+    return Int32(len(s.items))
+
+def contains(s: StringSet, value: String) -> Bool
+    i: Int32 = 0
+    while i < Int32(len(s.items)):
+        if s.items[i] == value:
+            return True
+        i += 1
+    return False
+
+# Return a new set with `value` added (unchanged if it was already there).
+def add(s: StringSet, value: String) -> StringSet
+    if contains(s, value):
+        return s
+    items: List[String] = to_list(s)
+    items.append(value)
+    return StringSet(items)
+
+def from_list(xs: List[String]) -> StringSet
+    s: StringSet = empty_set()
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        s = add(s, xs[i])
+        i += 1
+    return s
+
+# Return a new set with `value` removed (unchanged if it was not there).
+def remove(s: StringSet, value: String) -> StringSet
+    items: List[String] = []
+    i: Int32 = 0
+    while i < Int32(len(s.items)):
+        if s.items[i] != value:
+            items.append(s.items[i])
+        i += 1
+    return StringSet(items)
+
+def union(a: StringSet, b: StringSet) -> StringSet
+    out: StringSet = a
+    i: Int32 = 0
+    while i < Int32(len(b.items)):
+        out = add(out, b.items[i])
+        i += 1
+    return out
+
+def intersection(a: StringSet, b: StringSet) -> StringSet
+    out: StringSet = empty_set()
+    i: Int32 = 0
+    while i < Int32(len(a.items)):
+        if contains(b, a.items[i]):
+            out = add(out, a.items[i])
+        i += 1
+    return out
+
+def difference(a: StringSet, b: StringSet) -> StringSet
+    out: StringSet = empty_set()
+    i: Int32 = 0
+    while i < Int32(len(a.items)):
+        if not contains(b, a.items[i]):
+            out = add(out, a.items[i])
+        i += 1
+    return out

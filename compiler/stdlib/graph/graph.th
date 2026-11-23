@@ -1,0 +1,140 @@
+# Threadon directed graph helpers
+#
+# A Graph is a fixed number of nodes (0 .. n-1) plus a list of directed edges.
+# Edges are stored as two parallel flat lists (from, to) instead of nested
+# lists: the compiler handles flat lists far more reliably. Nodes are Int32
+# indices. Out-of-range endpoints are ignored and unreachable distances are -1.
+#
+# Graph has value semantics: add_edge and remove_edge return a NEW graph and
+# leave their argument unchanged. Traversal uses an explicit queue, so deep
+# graphs do not exhaust the call stack.
+
+class Graph:
+    n: Int32
+    froms: List[Int32]
+    tos: List[Int32]
+
+    def __init__(self: Graph, n: Int32, froms: List[Int32], tos: List[Int32])
+        self.n = n
+        self.froms = froms
+        self.tos = tos
+
+def in_range(g: Graph, u: Int32) -> Bool
+    if u < 0:
+        return False
+    if u >= g.n:
+        return False
+    return True
+
+# A graph with `n` nodes and no edges. n < 0 is treated as 0.
+def empty(n: Int32) -> Graph
+    count: Int32 = n
+    if count < 0:
+        count = 0
+    froms: List[Int32] = []
+    tos: List[Int32] = []
+    return Graph(count, froms, tos)
+
+def neighbors(g: Graph, u: Int32) -> List[Int32]
+    out: List[Int32] = []
+    if not in_range(g, u):
+        return out
+    i: Int32 = 0
+    while i < Int32(len(g.froms)):
+        if g.froms[i] == u:
+            out.append(g.tos[i])
+        i += 1
+    return out
+
+def has_edge(g: Graph, u: Int32, v: Int32) -> Bool
+    if not in_range(g, u):
+        return False
+    if not in_range(g, v):
+        return False
+    i: Int32 = 0
+    while i < Int32(len(g.froms)):
+        if g.froms[i] == u:
+            if g.tos[i] == v:
+                return True
+        i += 1
+    return False
+
+# Add one directed edge. Unknown endpoints and duplicate edges are ignored.
+def add_edge(g: Graph, u: Int32, v: Int32) -> Graph
+    if not in_range(g, u):
+        return g
+    if not in_range(g, v):
+        return g
+    if has_edge(g, u, v):
+        return g
+    froms: List[Int32] = []
+    tos: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(g.froms)):
+        froms.append(g.froms[i])
+        tos.append(g.tos[i])
+        i += 1
+    froms.append(u)
+    tos.append(v)
+    return Graph(g.n, froms, tos)
+
+# Remove one directed edge, if it is present.
+def remove_edge(g: Graph, u: Int32, v: Int32) -> Graph
+    if not has_edge(g, u, v):
+        return g
+    froms: List[Int32] = []
+    tos: List[Int32] = []
+    i: Int32 = 0
+    while i < Int32(len(g.froms)):
+        if g.froms[i] != u or g.tos[i] != v:
+            froms.append(g.froms[i])
+            tos.append(g.tos[i])
+        i += 1
+    return Graph(g.n, froms, tos)
+
+# Shortest path length in edges from `start`; -1 for every unreachable node.
+def bfs(g: Graph, start: Int32) -> List[Int32]
+    dist: List[Int32] = []
+    i: Int32 = 0
+    while i < g.n:
+        dist.append(-1)
+        i += 1
+    if not in_range(g, start):
+        return dist
+    queue: List[Int32] = []
+    queue.append(start)
+    dist[start] = 0
+    head: Int32 = 0
+    while head < Int32(len(queue)):
+        u: Int32 = queue[head]
+        head += 1
+        adj: List[Int32] = neighbors(g, u)
+        j: Int32 = 0
+        while j < Int32(len(adj)):
+            v: Int32 = adj[j]
+            if dist[v] < 0:
+                dist[v] = dist[u] + 1
+                queue.append(v)
+            j += 1
+    return dist
+
+def has_path(g: Graph, start: Int32, goal: Int32) -> Bool
+    if not in_range(g, start):
+        return False
+    if not in_range(g, goal):
+        return False
+    dist: List[Int32] = bfs(g, start)
+    if dist[goal] >= 0:
+        return True
+    return False
+
+# Reachable nodes, in ascending index order.
+def reachable(g: Graph, start: Int32) -> List[Int32]
+    dist: List[Int32] = bfs(g, start)
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < g.n:
+        if dist[i] >= 0:
+            out.append(i)
+        i += 1
+    return out

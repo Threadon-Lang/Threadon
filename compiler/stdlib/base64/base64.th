@@ -1,0 +1,172 @@
+# Threadon base64 (RFC 4648)
+#
+# Standard alphabet (A-Z a-z 0-9 + /) with '=' padding. Encoding works on
+# byte values 0..255; `encode` treats a String as a byte string, while
+# `encode_bytes`/`decode_bytes` use List[Int32] so byte 0 is preserved.
+#
+# Decoding skips ASCII whitespace, stops at the first '=' and maps every
+# other non-alphabet character to the value 0. Incomplete trailing groups
+# are ignored. No imports are needed: `chr` is a builtin and the small
+# ASCII helper below is a binary search over the 256 byte values.
+
+# Byte value (0..255) of a one-byte String, or -1 when it is not a byte.
+# chr(0) is indistinguishable from the empty String under strcmp, so the
+# empty String maps to 0 as well; callers only pass non-empty slices.
+puredef ascii_code(c: String) -> Int32
+    lo: Int32 = 0
+    hi: Int32 = 255
+    while lo <= hi:
+        mid: Int32 = (lo + hi) // 2
+        probe: String = chr(mid)
+        if c == probe:
+            return mid
+        if c < probe:
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    return -1
+
+# Byte value of a character, clamped into 0..255.
+puredef byte_of(c: String) -> Int32
+    n: Int32 = ascii_code(c)
+    if n < 0:
+        return 0
+    return n
+
+# Character for a 6-bit base64 value (0..63).
+puredef b64_char(v: Int32) -> String
+    alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    i: Int64 = Int64(v)
+    return alphabet[i:i + 1]
+
+# 6-bit value of a base64 character. Invalid characters map to 0.
+puredef b64_value(c: String) -> Int32
+    n: Int32 = ascii_code(c)
+    if n >= 65 and n <= 90:
+        return n - 65
+    if n >= 97 and n <= 122:
+        return n - 97 + 26
+    if n >= 48 and n <= 57:
+        return n - 48 + 52
+    if n == 43:
+        return 62
+    if n == 47:
+        return 63
+    return 0
+
+# ASCII whitespace that decode ignores.
+puredef is_space(c: String) -> Bool
+    n: Int32 = ascii_code(c)
+    if n == 32:
+        return True
+    if n == 9:
+        return True
+    if n == 10:
+        return True
+    if n == 13:
+        return True
+    if n == 11:
+        return True
+    if n == 12:
+        return True
+    return False
+
+# Encode a list of byte values (0..255) as padded base64 text.
+puredef encode_bytes(xs: List[Int32]) -> String
+    out: String = ""
+    n: Int32 = Int32(len(xs))
+    i: Int32 = 0
+    while i + 3 <= n:
+        b0: Int32 = xs[i] % 256
+        b1: Int32 = xs[i + 1] % 256
+        b2: Int32 = xs[i + 2] % 256
+        if b0 < 0:
+            b0 += 256
+        if b1 < 0:
+            b1 += 256
+        if b2 < 0:
+            b2 += 256
+        out = out + b64_char(b0 // 4)
+        out = out + b64_char((b0 % 4) * 16 + b1 // 16)
+        out = out + b64_char((b1 % 16) * 4 + b2 // 64)
+        out = out + b64_char(b2 % 64)
+        i += 3
+    rem: Int32 = n - i
+    if rem == 1:
+        r0: Int32 = xs[i] % 256
+        if r0 < 0:
+            r0 += 256
+        out = out + b64_char(r0 // 4)
+        out = out + b64_char((r0 % 4) * 16)
+        out = out + "=="
+    if rem == 2:
+        s0: Int32 = xs[i] % 256
+        s1: Int32 = xs[i + 1] % 256
+        if s0 < 0:
+            s0 += 256
+        if s1 < 0:
+            s1 += 256
+        out = out + b64_char(s0 // 4)
+        out = out + b64_char((s0 % 4) * 16 + s1 // 16)
+        out = out + b64_char((s1 % 16) * 4)
+        out = out + "="
+    return String(out) + ""
+
+# Encode the bytes of a String as padded base64 text.
+puredef encode(s: String) -> String
+    xs: List[Int32] = []
+    i: Int64 = 0
+    while i < len(s):
+        xs.append(byte_of(s[i:i + 1]))
+        i += 1
+    return encode_bytes(xs)
+
+# Strip whitespace and everything from the first '=' onwards.
+puredef clean_b64(s: String) -> String
+    out: String = ""
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        if c == "=":
+            break
+        if not is_space(c):
+            out = out + c
+        i += 1
+    return String(out) + ""
+
+# Decode base64 text into byte values (0..255).
+puredef decode_bytes(s: String) -> List[Int32]
+    out: List[Int32] = []
+    data: String = clean_b64(s)
+    j: Int64 = 0
+    while j + 3 < len(data):
+        v0: Int32 = b64_value(data[j:j + 1])
+        v1: Int32 = b64_value(data[j + 1:j + 2])
+        v2: Int32 = b64_value(data[j + 2:j + 3])
+        v3: Int32 = b64_value(data[j + 3:j + 4])
+        out.append(v0 * 4 + v1 // 16)
+        out.append((v1 % 16) * 16 + v2 // 4)
+        out.append((v2 % 4) * 64 + v3)
+        j += 4
+    rem: Int64 = len(data) - j
+    if rem == 2:
+        w0: Int32 = b64_value(data[j:j + 1])
+        w1: Int32 = b64_value(data[j + 1:j + 2])
+        out.append(w0 * 4 + w1 // 16)
+    if rem == 3:
+        z0: Int32 = b64_value(data[j:j + 1])
+        z1: Int32 = b64_value(data[j + 1:j + 2])
+        z2: Int32 = b64_value(data[j + 2:j + 3])
+        out.append(z0 * 4 + z1 // 16)
+        out.append((z1 % 16) * 16 + z2 // 4)
+    return out
+
+# Decode base64 text back into a byte String.
+puredef decode(s: String) -> String
+    xs: List[Int32] = decode_bytes(s)
+    out: String = ""
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        out = out + chr(xs[i])
+        i += 1
+    return String(out) + ""

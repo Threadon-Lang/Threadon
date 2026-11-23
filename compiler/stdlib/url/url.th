@@ -1,0 +1,116 @@
+# Threadon URL helpers
+#
+# Percent-encoding (RFC 3986 unreserved set), percent-decoding and
+# application/x-www-form-urlencoded query strings. `+` is left untouched by
+# unquote (it is only a space in form bodies, and this module keeps the two
+# layers separate). Character codes come from strings.ord; split and index_of
+# are imported explicitly.
+
+from strings import split, index_of, ord
+
+# Upper-case hexadecimal for a nibble (0..15).
+def hex_upper(n: Int32) -> String
+    if n < 10:
+        return chr(48 + n)
+    return chr(55 + n)
+
+# RFC 3986 unreserved: ALPHA / DIGIT / "-" / "." / "_" / "~".
+def is_unreserved(n: Int32) -> Bool
+    if n >= 65 and n <= 90:
+        return True
+    if n >= 97 and n <= 122:
+        return True
+    if n >= 48 and n <= 57:
+        return True
+    if n == 45:
+        return True
+    if n == 46:
+        return True
+    if n == 95:
+        return True
+    if n == 126:
+        return True
+    return False
+
+# Percent-encode every byte that is not unreserved. Upper-case hex digits.
+def quote(s: String) -> String
+    out: String = ""
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        n: Int32 = ord(c)
+        if n < 0:
+            n = 0
+        if is_unreserved(n):
+            out = out + c
+        else:
+            out = out + "%"
+            out = out + hex_upper(n // 16)
+            out = out + hex_upper(n % 16)
+        i += 1
+    return String(out) + ""
+
+# Value of a hexadecimal digit, or -1 when c is not one.
+def hex_value(c: String) -> Int32
+    n: Int32 = ord(c)
+    if n >= 48 and n <= 57:
+        return n - 48
+    if n >= 65 and n <= 70:
+        return n - 55
+    if n >= 97 and n <= 102:
+        return n - 87
+    return -1
+
+# Decode %HH escapes. A malformed escape is kept literally, and '+' stays '+'.
+def unquote(s: String) -> String
+    out: String = ""
+    i: Int64 = 0
+    while i < len(s):
+        c: String = s[i:i + 1]
+        if c == "%" and i + 2 < len(s):
+            hi: Int32 = hex_value(s[i + 1:i + 2])
+            lo: Int32 = hex_value(s[i + 2:i + 3])
+            if hi >= 0 and lo >= 0:
+                out = out + chr(hi * 16 + lo)
+                i += 3
+                continue
+        out = out + c
+        i += 1
+    return String(out) + ""
+
+# Form-encode a Dict[String, String] as key=value&key=value. Keys are visited
+# in dict_key insertion order; no sorting is performed.
+def encode_form(d: Dict[String, String]) -> String
+    out: String = ""
+    i: Int64 = 0
+    while i < len(d):
+        k: String = dict_key(d, i)
+        if len(out) > 0:
+            out = out + "&"
+        out = out + quote(k)
+        out = out + "="
+        out = out + quote(d[k])
+        i += 1
+    return String(out) + ""
+
+# Parse a query string into a Dict[String, String]. Splits on '&', then at
+# the first '='; both halves are unquoted. Empty keys are skipped; a part with
+# no '=' gets the empty String as its value.
+def parse_query(q: String) -> Dict[String, String]
+    out: Dict[String, String] = {}
+    parts: List[String] = split(q, "&")
+    i: Int32 = 0
+    while i < Int32(len(parts)):
+        part: String = parts[i]
+        pos: Int32 = index_of(part, "=")
+        key: String = ""
+        val: String = ""
+        if pos < 0:
+            key = unquote(part)
+        else:
+            key = unquote(part[0:Int64(pos)])
+            val = unquote(part[Int64(pos) + 1:])
+        if len(key) > 0:
+            out[key] = val
+        i += 1
+    return out

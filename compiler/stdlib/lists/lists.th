@@ -174,3 +174,86 @@ def sort_str(xs: List[String]) -> List[String]
         out.insert(pos + 1, value)
         i += 1
     return out
+
+# More list helpers. All of them return a new list or a scalar; none mutates
+# the argument. Empty lists give 0 / 0.0 for the reductions.
+
+def product_int(xs: List[Int32]) -> Int64
+    result: Int64 = 1
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        result = result * Int64(xs[i])
+        i += 1
+    return result
+
+def average_int(xs: List[Int32]) -> Float64
+    if len(xs) == 0:
+        return 0.0
+    return Float64(sum_int(xs)) / Float64(len(xs))
+
+# First n elements (or the whole list when n is larger).
+def take_int(xs: List[Int32], n: Int32) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < n and i < Int32(len(xs)):
+        out.append(xs[i])
+        i += 1
+    return out
+
+# Everything except the first n elements.
+def drop_int(xs: List[Int32], n: Int32) -> List[Int32]
+    out: List[Int32] = []
+    i: Int32 = n
+    if i < 0:
+        i = 0
+    while i < Int32(len(xs)):
+        out.append(xs[i])
+        i += 1
+    return out
+
+# Rotate left by k places; negative k rotates right.
+def rotate_int(xs: List[Int32], k: Int32) -> List[Int32]
+    n: Int32 = Int32(len(xs))
+    if n == 0:
+        return []
+    shift: Int32 = k % n
+    if shift < 0:
+        shift = shift + n
+    out: List[Int32] = []
+    i: Int32 = 0
+    while i < n:
+        out.append(xs[(i + shift) % n])
+        i += 1
+    return out
+
+# Index of the minimum/maximum, or -1 for an empty list. Ties pick the
+# first occurrence.
+def min_index_int(xs: List[Int32]) -> Int32
+    if len(xs) == 0:
+        return -1
+    best: Int32 = 0
+    i: Int32 = 1
+    while i < Int32(len(xs)):
+        if xs[i] < xs[best]:
+            best = i
+        i += 1
+    return best
+
+def max_index_int(xs: List[Int32]) -> Int32
+    if len(xs) == 0:
+        return -1
+    best: Int32 = 0
+    i: Int32 = 1
+    while i < Int32(len(xs)):
+        if xs[i] > xs[best]:
+            best = i
+        i += 1
+    return best
+
+def all_positive_int(xs: List[Int32]) -> Bool
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        if xs[i] <= 0:
+            return False
+        i += 1
+    return True
