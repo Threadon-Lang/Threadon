@@ -2344,3 +2344,159 @@ def main() -> Int32
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "2\n362\n"
+
+
+def test_list_equality_gives_clear_error():
+    with pytest.raises(RuntimeError) as excinfo:
+        compile_source(
+            """
+def main() -> Int32
+    a: List[Int32] = [1]
+    b: List[Int32] = [1]
+    if a == b:
+        return 1
+    return 0
+""",
+            importer=Importer(),
+        )
+    assert "Equality comparison is not supported for type 'List[Int32]'" in str(excinfo.value)
+
+
+def test_dict_equality_gives_clear_error():
+    with pytest.raises(RuntimeError) as excinfo:
+        compile_source(
+            """
+def main() -> Int32
+    a: Dict[String, Int32] = {"k": 1}
+    b: Dict[String, Int32] = {"k": 1}
+    if a != b:
+        return 1
+    return 0
+""",
+            importer=Importer(),
+        )
+    assert "Equality comparison is not supported for type 'Dict[String,Int32]'" in str(excinfo.value)
+
+
+def test_nested_list_function_roundtrip():
+    result = compile_stdlib_run(
+        """
+def build(n: Int32) -> List[List[Int32]]
+    out: List[List[Int32]] = []
+    i: Int32 = 0
+    while i < n:
+        row: List[Int32] = []
+        j: Int32 = 0
+        while j < n:
+            row.append(i * n + j)
+            j += 1
+        out.append(row)
+        i += 1
+    return out
+
+def sum_grid(xs: List[List[Int32]]) -> Int32
+    total: Int32 = 0
+    i: Int32 = 0
+    while i < Int32(len(xs)):
+        row: List[Int32] = xs[i]
+        j: Int32 = 0
+        while j < Int32(len(row)):
+            total += row[j]
+            j += 1
+        i += 1
+    return total
+
+def main() -> Int32
+    g: List[List[Int32]] = build(3)
+    print(len(g))
+    print(g[2][2])
+    print(sum_grid(g))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3\n8\n36\n"
+
+
+def test_nested_string_list_functions():
+    result = compile_stdlib_run(
+        """
+def join_rows(rows: List[List[String]]) -> String
+    out: String = ""
+    i: Int32 = 0
+    while i < Int32(len(rows)):
+        row: List[String] = rows[i]
+        j: Int32 = 0
+        while j < Int32(len(row)):
+            if j > 0:
+                out = out + ","
+            out = out + row[j]
+            j += 1
+        if i + 1 < Int32(len(rows)):
+            out = out + ";"
+        i += 1
+    return out
+
+def main() -> Int32
+    rows: List[List[String]] = [["a", "bb"], ["c"]]
+    print(join_rows(rows))
+    rows[1].append("d")
+    print(join_rows(rows))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "a,bb;c\na,bb;c,d\n"
+
+
+def test_list_of_dicts_and_dict_of_lists():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    xs: List[Dict[String, Int32]] = []
+    a: Dict[String, Int32] = {"x": 1}
+    b: Dict[String, Int32] = {"x": 2}
+    xs.append(a)
+    xs.append(b)
+    print(len(xs))
+    print(xs[0]["x"])
+    print(xs[1]["x"])
+
+    m: Dict[String, List[Int32]] = {}
+    m["nums"] = [1, 2, 3]
+    nums: List[Int32] = m["nums"]
+    nums.append(4)
+    m["nums"] = nums
+    out: List[Int32] = m["nums"]
+    print(len(out))
+    print(out[3])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2\n1\n2\n4\n4\n"
+
+
+def test_nested_list_in_class_field():
+    result = compile_stdlib_run(
+        """
+class Grid:
+    rows: List[List[Int32]]
+
+    def __init__(self: Grid, rows: List[List[Int32]])
+        self.rows = rows
+
+    def get(self: Grid, r: Int32, c: Int32) -> Int32
+        row: List[Int32] = self.rows[r]
+        return row[c]
+
+def main() -> Int32
+    g: Grid = Grid([[1, 2], [3, 4]])
+    print(g.get(1, 0))
+    g.rows[0][1] = 9
+    print(g.rows[0][1])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3\n9\n"

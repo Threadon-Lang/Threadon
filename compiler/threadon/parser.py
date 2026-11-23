@@ -3302,6 +3302,16 @@ class Parser:
             if expr.op in ("<", ">", "<=", ">=", "==", "!="):
                 if left != right:
                     self.give_error(f"Type mismatch in comparison: {left} vs {right}")
+                if expr.op in ("==", "!="):
+                    if left not in NUMERIC_TYPES and left not in ("Bool", "String"):
+                        self.give_error(
+                            f"Equality comparison is not supported for type '{left}'"
+                        )
+                else:
+                    if left not in NUMERIC_TYPES and left not in ("String", "Bool"):
+                        self.give_error(
+                            f"Ordering comparison is not supported for type '{left}'"
+                        )
                 return "Bool"
 
             if expr.op in ("and", "or"):

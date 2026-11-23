@@ -2057,6 +2057,8 @@ class LLVMIRCompiler:
             "cmp_ne": "one" if is_float else "ne",
         }
         pred = pred_map[op]
+        if not is_float and ltype not in ("i1", "i8", "i16", "i32", "i64", "i128", "i256"):
+            raise Exception(f"Comparison '{op}' is not supported for LLVM type {ltype}")
         cmp_op = "fcmp" if is_float else "icmp"
         return f"{res} = {cmp_op} {pred} {ltype} {l}, {r}"
     def _emit_call(self, res, instr):
