@@ -105,9 +105,10 @@ def test_auto_import_registers_std_structs():
     imp = Importer()
     imp.register_source("std", "struct Vec:\n    x: Int32\n")
     p = Parser(importer=imp)
-    ast = p.parse("def main() -> Int32\n    return 0\n")
+    ast = p.parse("def main() -> Int32\n    v: Vec\n    return v.x\n")
     assert ast
     assert p.struct_import_aliases["Vec"] == "std.Vec"
+    assert p.resolve_type("Vec") == "std.Vec"
     assert "std.Vec" in p.struct_defs
 
 

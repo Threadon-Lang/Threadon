@@ -242,6 +242,9 @@ class Parser:
         self.func_import_aliases = {}
         self.struct_import_aliases = {}
         self.class_import_aliases = {}
+        self.auto_func_aliases = set()
+        self.auto_struct_aliases = set()
+        self.auto_class_aliases = set()
         self.module_aliases = {}
         self.lazy_imports = {}
         self.current_class = None
@@ -562,13 +565,16 @@ class Parser:
 
         if name in mod.func_exports:
             self.func_import_aliases[bound] = qmember
+            self.auto_func_aliases.discard(bound)
             self.func_sigs[qmember] = mod.func_sigs[qmember]
             self.func_var_sigs[qmember] = mod.func_var_sigs.get(qmember, (None, None))
         elif name in mod.struct_exports:
             self.struct_import_aliases[bound] = qmember
+            self.auto_struct_aliases.discard(bound)
             self.struct_defs[qmember] = mod.struct_defs[qmember]
         elif name in mod.class_exports:
             self.class_import_aliases[bound] = qmember
+            self.auto_class_aliases.discard(bound)
             self._copy_class_recursive(qmember, mod)
         elif name in mod.var_exports:
             self.give_error(
@@ -726,7 +732,7 @@ class Parser:
     def resolve_func_name(self, name):
         if name in self.qfunc:
             return self.qfunc[name]
-        if name in self.func_import_aliases:
+        if name in self.func_import_aliases and name not in self.auto_func_aliases:
             return self.func_import_aliases[name]
         if name in self.lazy_imports:
             module_path, member = self.lazy_imports[name]
@@ -735,6 +741,7 @@ class Parser:
 
             if member in mod.func_exports:
                 self.func_import_aliases[name] = qmember
+                self.auto_func_aliases.discard(name)
                 self.func_sigs[qmember] = mod.func_sigs[qmember]
                 self.func_var_sigs[qmember] = mod.func_var_sigs.get(qmember, (None, None))
                 del self.lazy_imports[name]
@@ -742,16 +749,18 @@ class Parser:
             if member in mod.struct_exports:
                 self.give_error(f"'{name}' is a type, not a function")
             self.give_error(f"Module '{module_path}' has no member '{member}'")
+        if name in self.func_import_aliases:
+            return self.func_import_aliases[name]
         return name
 
     def resolve_type(self, name, strict=True):
         if name in self.qclass:
             return self.qclass[name]
-        if name in self.class_import_aliases:
+        if name in self.class_import_aliases and name not in self.auto_class_aliases:
             return self.class_import_aliases[name]
         if name in self.qstruct:
             return self.qstruct[name]
-        if name in self.struct_import_aliases:
+        if name in self.struct_import_aliases and name not in self.auto_struct_aliases:
             return self.struct_import_aliases[name]
         if name in self.lazy_imports:
             module_path, member = self.lazy_imports[name]
@@ -760,11 +769,13 @@ class Parser:
 
             if member in mod.struct_exports:
                 self.struct_import_aliases[name] = qmember
+                self.auto_struct_aliases.discard(name)
                 self.struct_defs[qmember] = mod.struct_defs[qmember]
                 del self.lazy_imports[name]
                 return qmember
             if member in mod.class_exports:
                 self.class_import_aliases[name] = qmember
+                self.auto_class_aliases.discard(name)
                 self._copy_class_recursive(qmember, mod)
                 del self.lazy_imports[name]
                 return qmember
@@ -774,6 +785,10 @@ class Parser:
                 return name
             self.give_error(f"Module '{module_path}' has no member '{member}'")
 
+        if name in self.class_import_aliases:
+            return self.class_import_aliases[name]
+        if name in self.struct_import_aliases:
+            return self.struct_import_aliases[name]
         if "." in name:
             segments = name.split(".")
             if segments[0] in self.module_aliases:
@@ -1024,15 +1039,18 @@ class Parser:
         for name in sorted(mod.func_exports):
             qname = f"std.{name}"
             self.func_import_aliases[name] = qname
+            self.auto_func_aliases.add(name)
             self.func_sigs[qname] = mod.func_sigs[qname]
             self.func_var_sigs[qname] = mod.func_var_sigs.get(qname, (None, None))
         for name in sorted(mod.struct_exports):
             qname = f"std.{name}"
             self.struct_import_aliases[name] = qname
+            self.auto_struct_aliases.add(name)
             self.struct_defs[qname] = mod.struct_defs[qname]
         for name in sorted(mod.class_exports):
             qname = f"std.{name}"
             self.class_import_aliases[name] = qname
+            self.auto_class_aliases.add(name)
             self._copy_class_recursive(qname, mod)
     def parse_struct(self):
         if self.return_type is not None:

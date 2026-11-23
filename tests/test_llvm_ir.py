@@ -756,6 +756,22 @@ def test_lazy_import_loaded_when_used():
     imp.register_source("std.math", MATH_SOURCE)
     llvm = compile_source(source, importer=imp)
     assert "define i32 @std.math.abs(i32" in llvm
+    assert "call i32 @std.math.abs(i32" in llvm
+
+
+def test_lazy_import_beats_auto_imported_stdlib_at_runtime():
+    local_math = MATH_SOURCE.replace(
+        "    result: Int32 = x\n",
+        "    print(\"aaaah\")\n    result: Int32 = x\n",
+    )
+    llvm = compile_imported(
+        "lazyfrom math import abs\ndef run() -> Int32\n    return abs(-7)\n",
+        {"math": local_math},
+    )
+    patched = patch_for_execution(llvm, INT_HARNESS)
+    result = ct.run_llvm(patched)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "aaaah\n7\n"
 
 
 def test_import_qualified_function_emitted():

@@ -71,6 +71,29 @@ def test_lazy_from_import_resolves_function_on_use():
     assert "double" not in p.lazy_imports
 
 
+def test_lazy_from_import_wins_over_auto_imported_stdlib_function():
+    p = make_parser(modules={
+        "std": "def abs(x: Int32) -> Int32\n    return x\n",
+        "math": "def abs(x: Int32) -> Int32\n    return x + 1\n",
+    })
+    p.parse("lazyfrom math import abs\ndef main() -> Int32\n    return abs(-7)\n")
+    assert p.func_import_aliases["abs"] == "math.abs"
+    assert "abs" not in p.lazy_imports
+    assert "abs" not in p.auto_func_aliases
+
+
+def test_lazy_from_import_wins_over_auto_imported_stdlib_type():
+    p = make_parser(modules={
+        "std": "struct Vec:\n    x: Int32\n",
+        "geom": "struct Vec:\n    x: Int32\n",
+    })
+    p.parse("lazyfrom geom import Vec\ndef main() -> Int32\n"
+            "    v: Vec\n    return v.x\n")
+    assert p.struct_import_aliases["Vec"] == "geom.Vec"
+    assert "Vec" not in p.lazy_imports
+    assert "Vec" not in p.auto_struct_aliases
+
+
 def test_lazy_from_import_resolves_struct_as_type():
     p = make_parser(modules={"lib": LIB_SOURCE})
     p.parse("lazyfrom lib import Point\ndef main() -> Int32\n"
