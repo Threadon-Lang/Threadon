@@ -18,7 +18,7 @@ class UnreachableChecker:
         self.errors = []
 
     def error(self, msg):
-        print("AST Error:", msg)
+        print(f"\033[91m\033[1mError:\033[0m {msg}")
         raise SystemExit(1)
 
     def check(self, ast):
@@ -201,7 +201,7 @@ class ShadowChecker:
         self.errors = []
 
     def error(self, msg):
-        print("AST Error:", msg)
+        print(f"\033[91m\033[1mError:\033[0m {msg}")
         raise SystemExit(1)
 
     def check(self, ast):
@@ -249,7 +249,7 @@ class DuplicateChecker:
         self.global_vars = {}
 
     def error(self, msg):
-        print("AST Error:", msg)
+        print(f"\033[91m\033[1mError:\033[0m {msg}")
         raise SystemExit(1)
 
     def check(self, ast):
@@ -709,7 +709,7 @@ class MissingReturnChecker:
         pass
 
     def error(self, msg):
-        print("AST Error:", msg)
+        print(f"\033[91m\033[1mError:\033[0m {msg}")
         raise SystemExit(1)
 
     def check(self, ast):
@@ -753,7 +753,7 @@ class AliasChecker:
         self.aliases = {}
 
     def error(self, msg):
-        print("AST Error:", msg)
+        print(f"\033[91m\033[1mError:\033[0m {msg}")
         raise SystemExit(1)
 
     def check(self, ast):
@@ -858,7 +858,7 @@ class PurityChecker:
         self.locals = set()
 
     def error(self, msg):
-        print("AST Error:", msg)
+        print(f"\033[91m\033[1mError:\033[0m {msg}")
         raise SystemExit(1)
 
     def check(self, ast):
