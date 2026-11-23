@@ -536,6 +536,21 @@ class Parser:
                 self.detect_expr_type(expr)
                 return ExprStmt(expr)
 
+        if first == TokenType.IDENT:
+            depth = 0
+            assign_idx = None
+            for k in range(1, len(self.current_line)):
+                tok = self.current_line[k]
+                if tok.type in (TokenType.LBRACKET, TokenType.LPAREN):
+                    depth += 1
+                elif tok.type in (TokenType.RBRACKET, TokenType.RPAREN):
+                    depth -= 1
+                elif tok.type == TokenType.ASSIGN and depth == 0:
+                    assign_idx = k
+                    break
+            if assign_idx is not None:
+                return self.parse_index_assign()
+
         self.give_error("What for random things where you doing there")
 
     def qualify(self, name):
@@ -1662,6 +1677,27 @@ class Parser:
         elif type(target).__name__ == "IndexExpr":
             obj, index = target.obj, target.index
             base_type = self.detect_expr_type(obj)
+        elif type(target).__name__ == "FieldAccessExpr":
+            base_type = self.detect_expr_type(target.obj)
+            if not isinstance(base_type, str) or base_type not in self.class_defs and base_type not in self.struct_defs:
+                self.give_error(f"Cannot assign to field on type '{base_type}'")
+            fields = self._fields_of(base_type)
+            ftype = None
+            for decl in fields:
+                if decl.name == target.field:
+                    ftype = decl.var_type
+                    break
+            if ftype is None:
+                self.give_error(f"'{base_type}' has no field '{target.field}'")
+            value_type = self.detect_expr_type(value)
+            if not self._is_valid_type(value_type):
+                self.give_error(f"Unknown type '{value_type}'")
+            if ftype != value_type:
+                if not self._try_adapt_literal(value, value_type, ftype):
+                    self.give_error(
+                        f"Field '{target.field}' expects type {ftype}, got {value_type}"
+                    )
+            return IndexAssign(target, None, value)
         else:
             self.give_error("Invalid index assignment target")
 
@@ -4125,7 +4161,7 @@ class Parser:
             elif tok.type == TokenType.ASSIGN and depth == 0:
                 assign_idx = k
                 break
-        if assign_idx is None or last_rb is None or last_rb + 1 != assign_idx:
+        if assign_idx is None:
             self.give_error("Expected '=' after index expression")
 
         target = self.parse_expr(tokens[:assign_idx])
@@ -4149,7 +4185,7 @@ class Parser:
             elif tok.type == TokenType.ASSIGN and depth == 0:
                 assign_idx = k
                 break
-        if assign_idx is None or last_rb is None or last_rb + 1 != assign_idx:
+        if assign_idx is None:
             self.give_error("Expected '=' after index expression")
 
         target = self.parse_expr(tokens[:assign_idx])

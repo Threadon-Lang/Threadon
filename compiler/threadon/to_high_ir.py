@@ -903,7 +903,8 @@ class SSABuilder:
 
             elif t == "IndexAssign":
                 walk_expr(stmt.target)
-                walk_expr(stmt.index)
+                if stmt.index is not None:
+                    walk_expr(stmt.index)
                 walk_expr(stmt.value)
 
             elif t == "ReturnStmt":
@@ -1169,7 +1170,8 @@ class SSABuilder:
 
         elif t == "IndexAssign":
             self._walk_expr_reads(stmt.target, reads, defs)
-            self._walk_expr_reads(stmt.index, reads, defs)
+            if stmt.index is not None:
+                self._walk_expr_reads(stmt.index, reads, defs)
             self._walk_expr_reads(stmt.value, reads, defs)
 
         elif t == "ExprStmt":
@@ -1654,8 +1656,8 @@ class SSABuilder:
             )
 
         if isinstance(target, FieldAccessExpr):
-            base = self.get_var(
-                target.obj.name
+            base = self.emit_expr(
+                target.obj
             )
 
             fres = self.new_temp(
@@ -1674,12 +1676,10 @@ class SSABuilder:
                 )
             )
 
-            self.set_var(
-                target.obj.name,
+            return self.assign_into(
+                target.obj,
                 fres,
             )
-
-            return value
 
         if isinstance(target, VarExpr):
             self.set_var(

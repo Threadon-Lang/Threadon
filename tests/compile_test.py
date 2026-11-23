@@ -2500,3 +2500,123 @@ def main() -> Int32
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "3\n9\n"
+
+
+def test_list_set_is_cow():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    a: List[Int32] = [1, 2, 3]
+    b: List[Int32] = a
+    b[0] = 99
+    print(a[0])
+    print(b[0])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\n99\n"
+
+
+def test_nested_list_element_alias_is_cow():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    rows: List[List[Int32]] = [[1, 2], [3, 4]]
+    row: List[Int32] = rows[0]
+    row[0] = 99
+    print(rows[0][0])
+    print(row[0])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\n99\n"
+
+
+def test_nested_list_returned_element_alias_is_cow():
+    result = compile_stdlib_run(
+        """
+def get_row(xs: List[List[Int32]]) -> List[Int32]
+    return xs[0]
+
+def main() -> Int32
+    xs: List[List[Int32]] = [[1, 2], [3, 4]]
+    r: List[Int32] = get_row(xs)
+    r[0] = 99
+    print(xs[0][0])
+    print(r[0])
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\n99\n"
+
+
+def test_dict_get_missing_list_value_is_keyerror_in_debug():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    m: Dict[String, List[Int32]] = {}
+    xs: List[Int32] = m["missing"]
+    print(len(xs))
+    return 0
+"""
+    )
+    assert result.returncode != 0
+    assert "KeyError" in result.stderr
+
+
+def test_dict_list_value_mutation_cow():
+    result = compile_stdlib_run(
+        """
+def main() -> Int32
+    m: Dict[String, List[Int32]] = {}
+    m["a"] = [1, 2]
+    xs: List[Int32] = m["a"]
+    xs.append(3)
+    print(len(m["a"]))
+    print(len(xs))
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2\n3\n"
+
+
+def test_field_assign_through_index():
+    result = compile_stdlib_run(
+        """
+struct Item:
+    name: String
+
+def main() -> Int32
+    xs: List[Item] = [Item(name="a"), Item(name="b")]
+    xs[0].name = "z"
+    print(xs[0].name)
+    print(xs[1].name)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "z\nb\n"
+
+
+def test_nested_field_assign():
+    result = compile_stdlib_run(
+        """
+struct Inner:
+    v: Int32
+
+struct Outer:
+    i: Inner
+
+def main() -> Int32
+    o: Outer = Outer(i=Inner(v=1))
+    o.i.v = 2
+    print(o.i.v)
+    return 0
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2\n"

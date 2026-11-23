@@ -3507,6 +3507,7 @@ class LLVMIRCompiler:
             )
             lines.append("  unreachable")
             lines.append(f"{ok}:")
+            self._advance_label(ok)
 
         return lines, elem_llvm, lenv, data
 
@@ -3525,13 +3526,29 @@ class LLVMIRCompiler:
         lines, elem_llvm, lenv, data = self._emit_list_access_lines(res, instr)
         idx64 = f"{res}_idx64"
         llvm_type = self.to_llvm_type(obj.type)
+        self.used_gc = True
+
+        size = self._llvm_sizeof(elem_llvm)
+        total = f"{res}_tot"
+        lines.append(f"{total} = mul i64 {lenv}, {size}")
+        raw = f"{res}_raw"
+        lines.append(f"{raw} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
+        new_data = f"{res}_ndata"
+        lines.append(f"{new_data} = bitcast i8* {raw} to {elem_llvm}*")
+
+        pred = self._current_label()
+        copy_lines, _ = self._emit_copy_range_lines(
+            res, "setcp", pred, data, new_data, lenv, elem_llvm
+        )
+        lines.extend(copy_lines)
+
         gep = f"{res}_gep"
-        lines.append(f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {idx64}")
+        lines.append(f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {new_data}, i64 {idx64}")
         lines.append(f"store {elem_llvm} {self.operand(val, materialize=False)}, {elem_llvm}* {gep}")
         lines.extend(self._gc_barrier_lines(gep, elem_llvm, "gcbls"))
         v0 = f"{res}_v0"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {lenv}, 0")
-        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {data}, 1")
+        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {new_data}, 1")
         return lines
 
     def _emit_slice_bound_lines(self, res, tag, lines, idx, len_reg):
@@ -4219,18 +4236,13 @@ class LLVMIRCompiler:
                 f"call void @__threadon_debug_error(i8* {nf_msg}, i8* {ctx})"
             )
             lines.append("unreachable")
-        else:
-            if val_llvm.endswith("*"):
-                lines.append(f"{res}_nfval = bitcast i8* null to {val_llvm}")
-            else:
-                lines.append(f"{res}_nfval = add {val_llvm} 0, 0")
-            lines.append(f"br label %{merge_label}")
-        lines.append(f"{merge_label}:")
-        if self.debug_mode:
+            lines.append(f"{merge_label}:")
             lines.append(f"{res} = phi {val_llvm} [ {found_val}, %{found_label} ]")
         else:
+            lines.append(f"br label %{merge_label}")
+            lines.append(f"{merge_label}:")
             lines.append(
-                f"{res} = phi {val_llvm} [ {found_val}, %{found_label} ], [ {res}_nfval, %{notfound_label} ]"
+                f"{res} = phi {val_llvm} [ {found_val}, %{found_label} ], [ zeroinitializer, %{notfound_label} ]"
             )
 
         return lines
