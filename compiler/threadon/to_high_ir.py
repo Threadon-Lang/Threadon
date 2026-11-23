@@ -1130,6 +1130,11 @@ class SSABuilder:
         if self._is_list_mutator(expr):
             new_val = self.emit_expr(expr)
             return self.assign_into(expr.obj, new_val)
+        if isinstance(expr, MethodCallExpr) and expr.method == "__setitem__":
+            # Classes have value semantics: the method returns the modified
+            # object, which must be written back into the indexed receiver.
+            new_val = self.emit_expr(expr)
+            return self.assign_into(expr.obj, new_val)
         return self.emit_expr(expr)
 
     def _walk_stmt_reads(self, stmt, reads, defs):

@@ -24,6 +24,46 @@ int_types = ALL_INT_TYPES
 
 VALID_PRIMITIVE_TYPES = ALL_INT_TYPES + FLOAT_TYPES + ("Bool", "String", "NoneType")
 
+# Operators that a class may overload, mapped to the method implementing them.
+# The syntax is Threadon's; the names follow Python's dunder convention.
+DUNDER_BINARY_OPS = {
+    "==": "__eq__", "!=": "__ne__", "<": "__lt__", ">": "__gt__",
+    "<=": "__le__", ">=": "__ge__",
+    "+": "__add__", "-": "__sub__", "*": "__mul__",
+    "/": "__truediv__", "//": "__floordiv__", "%": "__mod__",
+    "**": "__pow__",
+}
+DUNDER_UNARY_OPS = {"-": "__neg__", "not": "__bool__"}
+
+# These overloads must return exactly the class that declares/receives them.
+DUNDER_SAME_CLASS = {
+    "__add__", "__sub__", "__mul__", "__truediv__", "__floordiv__",
+    "__mod__", "__pow__", "__neg__", "__setitem__",
+}
+DUNDER_BINARY = set(DUNDER_BINARY_OPS.values())
+
+# Signature rules used when a dunder method is declared.
+DUNDER_RULES = {
+    "__eq__": (2, "Bool", True),
+    "__ne__": (2, "Bool", False),
+    "__lt__": (2, "Bool", False),
+    "__gt__": (2, "Bool", False),
+    "__le__": (2, "Bool", False),
+    "__ge__": (2, "Bool", False),
+    "__bool__": (1, "Bool", False),
+    "__add__": (2, "same", False),
+    "__sub__": (2, "same", False),
+    "__mul__": (2, "same", False),
+    "__truediv__": (2, "same", False),
+    "__floordiv__": (2, "same", False),
+    "__mod__": (2, "same", False),
+    "__pow__": (2, "same", False),
+    "__neg__": (1, "same", False),
+    "__getitem__": (2, "any", False),
+    "__setitem__": (3, "same", False),
+}
+
+
 def strip_indent_tokens(line_tokens):
     indent = 0
     dedent = 0
@@ -1408,6 +1448,34 @@ class Parser:
                     f"Method '__str__' must return a String, got {return_type}"
                 )
 
+        rule = DUNDER_RULES.get(method_name)
+        if rule is not None:
+            arity, expected_return, must_be_pure = rule
+            if len(params) != arity:
+                self.give_error(
+                    f"Method '{method_name}' must take {arity - 1} parameter(s) "
+                    f"besides 'self', got {len(params) - 1}"
+                )
+            if must_be_pure and not is_pure:
+                self.give_error(
+                    f"Method '{method_name}' must be declared with puredef "
+                    f"so it cannot have side effects"
+                )
+            if expected_return == "same":
+                expected_return = self.current_class
+            if expected_return != "any" and return_type != expected_return:
+                self.give_error(
+                    f"Method '{method_name}' must return {expected_return}, "
+                    f"got {return_type}"
+                )
+            if method_name in DUNDER_BINARY:
+                operand_type = params[1][1]
+                if operand_type != self.current_class:
+                    self.give_error(
+                        f"Method '{method_name}' operand must be "
+                        f"{self.current_class}, got {operand_type}"
+                    )
+
         return FunctionDef(func_name, params, return_type, func_body, is_pure,
                            var_arg, kw_arg)
 
@@ -1516,6 +1584,93 @@ class Parser:
                 return cls
             cls = self._base_of(cls)
         return None
+
+    def _overload_call(self, obj, method, args):
+        """Create a method call for an operator and annotate it for later passes."""
+        call = MethodCallExpr(obj, method, args)
+        self.detect_expr_type(call)
+        return call
+
+    def _desugar_operator(self, expr):
+        """Rewrite an operator on a class value into a dunder method call.
+
+        Parsing keeps the ordinary operator node until the receiver's static
+        type is known. If that class implements the matching method, the node
+        becomes a MethodCallExpr, so typing, purity checking and IR lowering
+        all reuse the existing method-call path.
+        """
+        name = type(expr).__name__
+        if name == "BinaryExpr":
+            method = DUNDER_BINARY_OPS.get(expr.op)
+            if method is None:
+                return expr
+            obj, args = expr.left, [expr.right]
+        elif name == "UnaryExpr":
+            method = DUNDER_UNARY_OPS.get(expr.op)
+            if method is None:
+                return expr
+            obj, args = expr.expr, []
+        elif name == "IndexExpr":
+            method = "__getitem__"
+            obj, args = expr.obj, [expr.index]
+        else:
+            return expr
+
+        obj_type = self.detect_expr_type(obj)
+        if not isinstance(obj_type, str) or obj_type not in self.class_defs:
+            return expr
+        owner = self._resolve_method_owner(obj_type, method)
+        if owner is None:
+            return expr
+        if method in DUNDER_BINARY and owner != obj_type:
+            self.give_error(
+                f"Class '{obj_type}' inherits '{method}' from '{owner}', but "
+                f"binary overloads must be declared on the receiver's class"
+            )
+
+        call = self._overload_call(obj, method, args)
+        if method in DUNDER_SAME_CLASS and call.ret_type != obj_type:
+            self.give_error(
+                f"Overloaded '{method}' on class '{obj_type}' must return "
+                f"'{obj_type}', got '{call.ret_type}'"
+            )
+        return call
+
+    def _desugar_index_assign(self, target, value):
+        """Rewrite ``target[index] = value`` into ``__setitem__`` when needed."""
+        if type(target).__name__ == "MethodCallExpr" and target.method == "__getitem__":
+            obj, index = target.obj, target.args[0]
+            base_type = target.obj_type
+        elif type(target).__name__ == "IndexExpr":
+            obj, index = target.obj, target.index
+            base_type = self.detect_expr_type(obj)
+        else:
+            self.give_error("Invalid index assignment target")
+
+        if not isinstance(base_type, str) or base_type not in self.class_defs:
+            target_type = self.detect_expr_type(target)
+            value_type = self.detect_expr_type(value)
+            if base_type == "String":
+                self.give_error("Cannot assign to a character of a String")
+            if not self._is_valid_type(target_type):
+                self.give_error(f"Unknown type '{target_type}'")
+            if value_type != target_type:
+                if not self._try_adapt_literal(value, value_type, target_type):
+                    self.give_error(
+                        f"List element expects type {target_type}, got {value_type}"
+                    )
+            return IndexAssign(target, index, value)
+
+        owner = self._resolve_method_owner(base_type, "__setitem__")
+        if owner is None:
+            self.give_error(f"Class '{base_type}' has no method '__setitem__'")
+        if owner != base_type:
+            self.give_error(
+                f"Class '{base_type}' inherits '__setitem__' from '{owner}', but "
+                f"index assignment must be declared on the receiver's class"
+            )
+        call = self._overload_call(obj, "__setitem__", [index, value])
+        return ExprStmt(call)
 
     def parse_class_init(self, class_name, tokens):
         args, star_args, star_kwargs, kwargs = self._split_call_args(tokens, 0)
@@ -2639,8 +2794,11 @@ class Parser:
                         rest = rest[end + 1:]
                         continue
                     index = self.parse_expr(index_tokens)
-                    base = IndexExpr(base, index)
+                    new_base = IndexExpr(base, index)
                     rest = rest[end + 1:]
+                    if rest and rest[0].type not in (TokenType.DOT, TokenType.LBRACKET):
+                        self.give_error("Unexpected tokens after index expression")
+                    base = self._desugar_operator(new_base)
                     continue
 
                 self.give_error("Unexpected tokens after index expression")
@@ -2648,7 +2806,7 @@ class Parser:
 
         def unary(ts):
             if ts and ts[0].type == TokenType.MINUS:
-                return UnaryExpr("-", unary(ts[1:]))
+                return self._desugar_operator(UnaryExpr("-", unary(ts[1:])))
             if ts and ts[0].type == TokenType.PLUS:
                 self.give_error("Unary plus does not exist. What did you expect. Reconsider your life choices.")
             return power(ts)
@@ -2666,12 +2824,12 @@ class Parser:
             if i is not None:
                 left = add_sub(ts[:i])
                 right = add_sub(ts[i+1:])
-                return BinaryExpr(left, ops[ts[i].type], right)
+                return self._desugar_operator(BinaryExpr(left, ops[ts[i].type], right))
             return add_sub(ts)
 
         def not_expr(ts):
             if ts and ts[0].type == TokenType.NOT:
-                return UnaryExpr("not", not_expr(ts[1:]))
+                return self._desugar_operator(UnaryExpr("not", not_expr(ts[1:])))
             return comparison(ts)
 
         def add_sub(ts):
@@ -2679,7 +2837,7 @@ class Parser:
             if i is not None:
                 left = add_sub(ts[:i])
                 right = mul_div(ts[i+1:])
-                return BinaryExpr(left, ts[i].value, right)
+                return self._desugar_operator(BinaryExpr(left, ts[i].value, right))
             return mul_div(ts)
 
         def power(ts):
@@ -2689,7 +2847,7 @@ class Parser:
                 right = power(ts[i+1:])
                 if type(right).__name__ == "BinaryExpr" and right.op == "**":
                     self.give_error("Chained '**' is not allowed")
-                return BinaryExpr(left, "**", right)
+                return self._desugar_operator(BinaryExpr(left, "**", right))
             return index_postfix(ts)
 
         def mul_div(ts):
@@ -2697,7 +2855,7 @@ class Parser:
             if i is not None:
                 left = mul_div(ts[:i])
                 right = unary(ts[i+1:])
-                return BinaryExpr(left, ts[i].value, right)
+                return self._desugar_operator(BinaryExpr(left, ts[i].value, right))
             return unary(ts)
 
         def bool_ops(ts):
@@ -3459,7 +3617,9 @@ class Parser:
             TokenType.FLOORDIV_ASSIGN,
         ):
             op = tokens[i].value[:-1]
-            expr = BinaryExpr(VarExpr(name), op, self.parse_expr(expr_tokens))
+            expr = self._desugar_operator(
+                BinaryExpr(VarExpr(name), op, self.parse_expr(expr_tokens))
+            )
         else:
             expr = self.parse_expr(expr_tokens)
 
@@ -3824,7 +3984,7 @@ class Parser:
                         f"Variable '{name}' expects type {var_type}, got {rhs_type}"
                     )
 
-        full_expr = BinaryExpr(VarExpr(name), op, rhs)
+        full_expr = self._desugar_operator(BinaryExpr(VarExpr(name), op, rhs))
 
         result_type = self.detect_expr_type(full_expr)
 
@@ -3941,25 +4101,8 @@ class Parser:
             self.give_error("Expected '=' after index expression")
 
         target = self.parse_expr(tokens[:assign_idx])
-        if type(target).__name__ != "IndexExpr":
-            self.give_error("Invalid index assignment target")
-
         value = self.parse_expr(tokens[assign_idx + 1:])
-
-        target_type = self.detect_expr_type(target)
-        base_type = self.detect_expr_type(target.obj)
-        value_type = self.detect_expr_type(value)
-        if base_type == "String":
-            self.give_error("Cannot assign to a character of a String")
-        if not self._is_valid_type(target_type):
-            self.give_error(f"Unknown type '{target_type}'")
-        if value_type != target_type:
-            if not self._try_adapt_literal(value, value_type, target_type):
-                self.give_error(
-                    f"List element expects type {target_type}, got {value_type}"
-                )
-
-        return IndexAssign(target, target.index, value)
+        return self._desugar_index_assign(target, value)
 
     def parse_field_index_assign(self):
         tokens = self.current_line
@@ -3982,25 +4125,8 @@ class Parser:
             self.give_error("Expected '=' after index expression")
 
         target = self.parse_expr(tokens[:assign_idx])
-        if type(target).__name__ != "IndexExpr":
-            self.give_error("Invalid index assignment target")
-
         value = self.parse_expr(tokens[assign_idx + 1:])
-
-        target_type = self.detect_expr_type(target)
-        base_type = self.detect_expr_type(target.obj)
-        value_type = self.detect_expr_type(value)
-        if base_type == "String":
-            self.give_error("Cannot assign to a character of a String")
-        if not self._is_valid_type(target_type):
-            self.give_error(f"Unknown type '{target_type}'")
-        if value_type != target_type:
-            if not self._try_adapt_literal(value, value_type, target_type):
-                self.give_error(
-                    f"List element expects type {target_type}, got {value_type}"
-                )
-
-        return IndexAssign(target, target.index, value)
+        return self._desugar_index_assign(target, value)
 
 if __name__ == "__main__":
     code = """

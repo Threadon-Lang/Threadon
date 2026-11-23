@@ -325,6 +325,8 @@ def test_postfix_error_paths():
     fails(p.parse_expr, lex_lines("x[1:2:3]")[0], expected="Slice step is not supported")
     fails(p.parse_expr, lex_lines("x[0] y")[0],
           expected="Unexpected tokens after index expression")
+    fails(p.parse_expr, lex_lines("x.m() y")[0],
+          expected="Unexpected tokens after index expression")
 
 
 def test_nested_index_depth_is_tracked():
