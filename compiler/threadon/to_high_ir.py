@@ -1504,6 +1504,15 @@ class SSABuilder:
         ):
             rhs = self._wrap_union(rhs, node.var_type)
 
+        if (
+            isinstance(rhs, SSAValue)
+            and (rhs.type.startswith("List[") or rhs.type.startswith("Dict["))
+            and any(v is rhs for env in self.env_stack for v in env.values())
+        ):
+            dest = self.new_temp(rhs.type)
+            self.current_block.add_instr(IRInstr("ref_copy", [rhs], result=dest))
+            rhs = dest
+
         if node.name in self.ref_vars:
             self._promote_to_alloca(
                 node.name,
@@ -1600,6 +1609,15 @@ class SSABuilder:
             and rhs.type != var_type
         ):
             rhs = self._wrap_union(rhs, var_type)
+
+        if (
+            isinstance(rhs, SSAValue)
+            and (rhs.type.startswith("List[") or rhs.type.startswith("Dict["))
+            and any(v is rhs for env in self.env_stack for v in env.values())
+        ):
+            dest = self.new_temp(rhs.type)
+            self.current_block.add_instr(IRInstr("ref_copy", [rhs], result=dest))
+            rhs = dest
 
         self.set_var(
             node.name,

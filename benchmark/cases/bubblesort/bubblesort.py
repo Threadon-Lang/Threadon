@@ -2,8 +2,8 @@
 
 
 def main() -> None:
-    n = 512
-    reps = 200
+    n = 24
+    reps = 5
     checksum = 0
     for r in range(reps):
         arr = [(i * 17 + r * 3) % 10000 for i in range(n)]

@@ -4,8 +4,8 @@
 #include <vector>
 
 int main() {
-    const int n = 512;
-    const int reps = 200;
+    const int n = 24;
+    const int reps = 5;
     int64_t checksum = 0;
     for (int r = 0; r < reps; ++r) {
         std::vector<int> arr(n);

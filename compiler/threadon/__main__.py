@@ -19,6 +19,7 @@ Examples::
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -108,16 +109,27 @@ def dedupe_decls(llvm):
 
 
 def run_llvm(llvm, capture=False, loads=None, library_dirs=None):
-    with tempfile.NamedTemporaryFile("w", suffix=".ll", delete=False) as f:
-        f.write(llvm)
-        path = f.name
-    try:
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        ir_path = td / "main.ll"
+        ir_path.write_text(llvm)
+        opt_cmd = shutil.which("opt") or shutil.which("opt-19")
+        run_path = ir_path
+        if opt_cmd:
+            opt_path = td / "main.opt.ll"
+            r = subprocess.run(
+                [opt_cmd, "-O2", "-S", str(ir_path), "-o", str(opt_path)],
+                capture_output=True,
+                text=True,
+            )
+            if r.returncode == 0 and opt_path.exists():
+                run_path = opt_path
         kwargs = {"capture_output": True, "text": True} if capture else {}
         env = os.environ.copy()
         if library_dirs:
             prev = env.get("LD_LIBRARY_PATH", "")
             env["LD_LIBRARY_PATH"] = ":".join(library_dirs) + (f":{prev}" if prev else "")
-        cmd = ["lli"]
+        cmd = ["lli", "-O2"]
         for so in (loads or []):
             cmd.append("-load")
             cmd.append(str(so))
@@ -127,10 +139,8 @@ def run_llvm(llvm, capture=False, loads=None, library_dirs=None):
         if libatomic:
             cmd.append("-load")
             cmd.append(libatomic)
-        cmd.append(path)
+        cmd.append(str(run_path))
         return subprocess.run(cmd, env=env, **kwargs)
-    finally:
-        Path(path).unlink(missing_ok=True)
 
 
 def native_library_dirs(modules):
@@ -202,10 +212,20 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         ir = td / "main.ll"
+        opt_ir = td / "main.opt.ll"
         obj = td / "main.o"
         ir.write_text(llvm)
+        opt_cmd = shutil.which("opt") or shutil.which("opt-19")
+        if opt_cmd:
+            result = subprocess.run(
+                [opt_cmd, "-O2", "-S", str(ir), "-o", str(opt_ir)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0 and opt_ir.exists():
+                ir = opt_ir
         result = subprocess.run(
-            [llc, "-filetype=obj", "-o", str(obj), str(ir)],
+            [llc, "-O2", "-filetype=obj", "-o", str(obj), str(ir)],
             capture_output=True,
             text=True,
         )

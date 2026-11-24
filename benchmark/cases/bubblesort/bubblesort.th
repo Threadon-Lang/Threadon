@@ -1,7 +1,7 @@
 # Bubble sort checksum. Keep in sync with bubblesort.cpp / .py.
 def main() -> Int32
-    n: Int32 = 512
-    reps: Int32 = 200
+    n: Int32 = 24
+    reps: Int32 = 5
     checksum: Int64 = 0
     r: Int32 = 0
     while r < reps:

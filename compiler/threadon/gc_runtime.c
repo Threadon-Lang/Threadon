@@ -46,7 +46,7 @@ typedef struct GCBlock {
     uint64_t size;      /* total bytes, header included */
     uint64_t mark;      /* epoch of last mark */
     uint64_t next;      /* heap list, typed as uintptr_t */
-    uint64_t work_next; /* unused placeholder, keeps header 8-byte aligned */
+    uint64_t refcount;  /* optimization hint; may over-approximate */
     uint64_t pad;
 } GCBlock;
 
@@ -284,7 +284,7 @@ void *__threadon_gc_alloc(uint64_t size, uint64_t kind) {
     gc_lock_acquire();
     b->magic = GC_MAGIC;
     b->size = total;
-    b->work_next = 0;
+    b->refcount = 1;
     b->pad = 0;
     uint64_t collecting = __atomic_load_n(&gc_collecting, __ATOMIC_SEQ_CST);
     b->mark = collecting ? __atomic_load_n(&gc_epoch, __ATOMIC_SEQ_CST) : 0;
@@ -374,6 +374,34 @@ void __threadon_gc_collect(void) {
     gc_lock_acquire();
     __atomic_store_n(&gc_collecting, 0, __ATOMIC_SEQ_CST);
     gc_lock_release();
+}
+
+uint64_t __threadon_gc_is_unique(void *payload) {
+    if (!payload) return 1;
+    uint64_t p = (uint64_t)(uintptr_t)payload;
+    if (p < gc_min || p > gc_max || p < GC_HEADER_SIZE) return 0;
+    GCBlock *b = (GCBlock *)((char *)payload - GC_HEADER_SIZE);
+    if (b->magic != GC_MAGIC) return 0;
+    return __atomic_load_n(&b->refcount, __ATOMIC_SEQ_CST) <= 1 ? 1 : 0;
+}
+
+void __threadon_gc_retain(void *payload) {
+    if (!payload) return;
+    uint64_t p = (uint64_t)(uintptr_t)payload;
+    if (p < gc_min || p > gc_max || p < GC_HEADER_SIZE) return;
+    GCBlock *b = (GCBlock *)((char *)payload - GC_HEADER_SIZE);
+    if (b->magic != GC_MAGIC) return;
+    __atomic_fetch_add(&b->refcount, 1, __ATOMIC_SEQ_CST);
+}
+
+void __threadon_gc_release(void *payload) {
+    if (!payload) return;
+    uint64_t p = (uint64_t)(uintptr_t)payload;
+    if (p < gc_min || p > gc_max || p < GC_HEADER_SIZE) return;
+    GCBlock *b = (GCBlock *)((char *)payload - GC_HEADER_SIZE);
+    if (b->magic != GC_MAGIC) return;
+    uint64_t old = __atomic_fetch_sub(&b->refcount, 1, __ATOMIC_SEQ_CST);
+    if (old == 0) __atomic_store_n(&b->refcount, 0, __ATOMIC_SEQ_CST);
 }
 
 void __threadon_gc_shutdown(void) {

@@ -82,7 +82,7 @@ def threadon_env(use_installed: bool) -> dict[str, str]:
 
 
 def lli_command(ir_path: Path) -> list[str]:
-    cmd = ["lli"]
+    cmd = ["lli", "-O2"]
     libatomic = ctypes.util.find_library("atomic")
     if libatomic:
         cmd += ["-load", libatomic]
@@ -116,11 +116,14 @@ def build_plan(
 
     if impl.key == "threadon-jit":
         ir = build_dir / f"{case}.ll"
-        return (
-            [threadon_cmd + [str(base) + ".th", "-o", str(ir)]],
-            lli_command(ir),
-            env,
-        )
+        opt_ir = build_dir / f"{case}.opt.ll"
+        build_cmds = [threadon_cmd + [str(base) + ".th", "-o", str(ir)]]
+        opt_cmd = shutil.which("opt") or shutil.which("opt-19")
+        run_ir = ir
+        if opt_cmd:
+            build_cmds.append([opt_cmd, "-O2", "-S", str(ir), "-o", str(opt_ir)])
+            run_ir = opt_ir
+        return (build_cmds, lli_command(run_ir), env)
 
     if impl.key == "threadon-native":
         exe = build_dir / f"{case}_threadon"
@@ -134,16 +137,26 @@ def build_plan(
 
 
 def run_command(cmd: list[str], env: dict[str, str] | None) -> subprocess.CompletedProcess[str]:
+    def _no_core():
+        try:
+            import resource
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        except Exception:
+            pass
+
     try:
         return subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             env=env,
-            timeout=120,
+            timeout=300,
+            preexec_fn=_no_core,
         )
     except FileNotFoundError as exc:
         raise BenchmarkError(f"missing executable: {cmd[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise BenchmarkError(f"timeout after {exc.timeout}s: {' '.join(cmd)}") from exc
 
 
 def measure(

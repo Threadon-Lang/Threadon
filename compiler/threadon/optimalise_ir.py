@@ -71,7 +71,11 @@ class IROptimizer:
         return SSAValue(name, type_)
 
 
-    def _is_pure(self, op):
+    def _is_pure(self, op, result_type=None):
+        if op == "ref_copy" and isinstance(result_type, str) and (
+            result_type.startswith("List[") or result_type.startswith("Dict[")
+        ):
+            return False
         return op in {
             "const", "neg", "pos", "not",
             "cmp_lt", "cmp_gt", "cmp_le", "cmp_ge", "cmp_eq", "cmp_ne",
@@ -875,6 +879,8 @@ class IROptimizer:
         for block in self.func.blocks:
             for instr in list(block.instructions):
                 if instr.op == "ref_copy" and isinstance(instr.result, SSAValue):
+                    if instr.result.type.startswith("List[") or instr.result.type.startswith("Dict["):
+                        continue
                     src = instr.args[0]
                     if isinstance(src, SSAValue):
                         self._replace_value(instr.result, src)
@@ -890,7 +896,7 @@ class IROptimizer:
             seen = {}
             to_remove = []
             for idx, instr in enumerate(block.instructions):
-                if not self._is_pure(instr.op):
+                if not self._is_pure(instr.op, instr.result.type if isinstance(instr.result, SSAValue) else None):
                     continue
                 if isinstance(instr, IRPhi) or instr.op == "call":
                     continue
@@ -956,7 +962,7 @@ class IROptimizer:
             block = self.func.block_map[label]
             to_remove = []
             for idx, instr in enumerate(block.instructions):
-                if not self._is_pure(instr.op) or isinstance(instr, IRPhi):
+                if not self._is_pure(instr.op, instr.result.type if isinstance(instr.result, SSAValue) else None) or isinstance(instr, IRPhi):
                     continue
                 h = hash_instr(instr)
                 if h in vn_table:
@@ -1246,7 +1252,7 @@ class IROptimizer:
                             if instr in v.users:
                                 v.users.remove(instr)
                         changed = True
-                elif isinstance(instr.result, SSAValue) and not instr.result.users and self._is_pure(instr.op):
+                elif isinstance(instr.result, SSAValue) and not instr.result.users and self._is_pure(instr.op, instr.result.type if isinstance(instr.result, SSAValue) else None):
                         self._remove_instr(block, i)
                         changed = True
                 i -= 1
@@ -1413,7 +1419,7 @@ class IROptimizer:
                 i = 0
                 while i < len(block.instructions):
                     instr = block.instructions[i]
-                    if not self._is_pure(instr.op) or isinstance(instr, IRPhi):
+                    if not self._is_pure(instr.op, instr.result.type if isinstance(instr.result, SSAValue) else None) or isinstance(instr, IRPhi):
                         i += 1
                         continue
                     invariant = True

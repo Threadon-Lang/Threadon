@@ -377,7 +377,7 @@ class LLVMIRCompiler:
             return "i8"
         if isinstance(t, str) and t.startswith("List[") and t.endswith("]"):
             elem = self.to_llvm_type(t[5:-1])
-            return f"{{ i64, {elem}* }}"
+            return f"{{ i64, i64, {elem}* }}"
         if isinstance(t, str) and t.startswith("Dict[") and t.endswith("]"):
             inner = t[5:-1]
             comma_idx = None
@@ -1704,7 +1704,44 @@ class LLVMIRCompiler:
             return self._emit_union_retag(res, instr.args[0], instr.args[1])
 
         if op == "ref_copy":
-            return self._emit_identity(res, instr.args[0])
+            src = instr.args[0]
+            if src.type.startswith("List["):
+                src_llvm = self.to_llvm_type(src.type)
+                src_op = self.operand(src, materialize=False)
+                data = f"{res}_rc_data"
+                data_i8 = f"{res}_rc_i8"
+                self.used_gc = True
+                id_lines = self._emit_identity(res, src)
+                if isinstance(id_lines, str):
+                    id_lines = [id_lines]
+                return [
+                    f"{data} = extractvalue {src_llvm} {src_op}, 2",
+                    f"{data_i8} = bitcast {self.to_llvm_type(src.type[5:-1])}* {data} to i8*",
+                    f"call void @__threadon_gc_retain(i8* {data_i8})",
+                    *id_lines,
+                ]
+            if src.type.startswith("Dict["):
+                src_llvm = self.to_llvm_type(src.type)
+                src_op = self.operand(src, materialize=False)
+                k_ty, v_ty = self._parse_dict_kv_types(src.type)
+                k_llvm = self.to_llvm_type(k_ty)
+                v_llvm = self.to_llvm_type(v_ty)
+                kd = f"{res}_rc_kd"
+                vd = f"{res}_rc_vd"
+                self.used_gc = True
+                id_lines = self._emit_identity(res, src)
+                if isinstance(id_lines, str):
+                    id_lines = [id_lines]
+                return [
+                    f"{kd} = extractvalue {src_llvm} {src_op}, 1",
+                    f"{vd} = extractvalue {src_llvm} {src_op}, 2",
+                    f"{res}_rc_kd8 = bitcast {k_llvm}* {kd} to i8*",
+                    f"{res}_rc_vd8 = bitcast {v_llvm}* {vd} to i8*",
+                    f"call void @__threadon_gc_retain(i8* {res}_rc_kd8)",
+                    f"call void @__threadon_gc_retain(i8* {res}_rc_vd8)",
+                    *id_lines,
+                ]
+            return self._emit_identity(res, src)
 
         if op == "neg":
             if is_union_type(instr.args[0].type):
@@ -1903,6 +1940,33 @@ class LLVMIRCompiler:
         if rtype.startswith("%union"):
             return f"{res} = select i1 false, {rtype} undef, {rtype} undef"
         if rtype.startswith("{"):
+            # zero aggregate (list {i64,i64,T*} or dict {i64,K*,V*})
+            inner = rtype[1:-1]
+            parts = []
+            depth = 0
+            cur = []
+            for ch in inner:
+                if ch in "{[":
+                    depth += 1
+                elif ch in "]}":
+                    depth -= 1
+                if ch == "," and depth == 0:
+                    parts.append("".join(cur).strip())
+                    cur = []
+                else:
+                    cur.append(ch)
+            if cur:
+                parts.append("".join(cur).strip())
+            if len(parts) == 3:
+                f1 = "0" if parts[1] in ("i64", "i32", "i1") else "null"
+                f2 = "0" if parts[2] in ("i64", "i32", "i1") else "null"
+                v0 = f"{res}_z0"
+                v1 = f"{res}_z1"
+                return [
+                    f"{v0} = insertvalue {rtype} undef, i64 0, 0",
+                    f"{v1} = insertvalue {rtype} {v0}, {parts[1]} {f1}, 1",
+                    f"{res} = insertvalue {rtype} {v1}, {parts[2]} {f2}, 2",
+                ]
             return f"{res} = insertvalue {rtype} undef, i64 0, 0"
         if rtype in FLOAT_LLVM_TYPES:
             return f"{res} = fadd {rtype} 0.0, 0.0"
@@ -2844,7 +2908,7 @@ class LLVMIRCompiler:
 
     def _emit_list_str_helper(self, elem_t):
         elem_llvm = self.to_llvm_type(elem_t)
-        list_llvm = f"{{ i64, {elem_llvm}* }}"
+        list_llvm = f"{{ i64, i64, {elem_llvm}* }}"
         tag = re.sub(r"[^A-Za-z0-9]", "_", elem_t)
         buf_size = 4096
 
@@ -2857,7 +2921,8 @@ class LLVMIRCompiler:
         out.append(f"define i8* @__threadon_list_str_{tag}({list_llvm} %list) {{")
         out.append("entry:")
         out.append(f"  %len = extractvalue {list_llvm} %list, 0")
-        out.append(f"  %data = extractvalue {list_llvm} %list, 1")
+        out.append(f"  %cap = extractvalue {list_llvm} %list, 1")
+        out.append(f"  %data = extractvalue {list_llvm} %list, 2")
         out.append(f"  %buf = alloca [{buf_size} x i8], align 8")
         out.append(f"  %bufp = getelementptr inbounds [{buf_size} x i8], [{buf_size} x i8]* %buf, i64 0, i64 0")
         out.append(f"  %f1 = getelementptr inbounds [2 x i8], [2 x i8]* {bracket_open}, i64 0, i64 0")
@@ -3443,8 +3508,10 @@ class LLVMIRCompiler:
                 lines.append(f"store {elem_llvm} {val}, {elem_llvm}* {ptr}")
                 lines.extend(self._gc_barrier_lines(ptr, elem_llvm, "gcbli"))
         v0 = f"{res}_v0"
+        v1 = f"{res}_v1"
         lines.append(f"{v0} = insertvalue {rtype} undef, i64 {n}, 0")
-        lines.append(f"{res} = insertvalue {rtype} {v0}, {elem_llvm}* {data}, 1")
+        lines.append(f"{v1} = insertvalue {rtype} {v0}, i64 {n}, 1")
+        lines.append(f"{res} = insertvalue {rtype} {v1}, {elem_llvm}* {data}, 2")
         return lines
 
     def _emit_list_access_lines(self, res, instr):
@@ -3459,10 +3526,12 @@ class LLVMIRCompiler:
         idx_llvm = self.to_llvm_type(idx.type)
 
         lenv = f"{res}_len"
+        capv = f"{res}_cap"
         data = f"{res}_data"
         lines = [
             f"{lenv} = extractvalue {llvm_type} {obj_op}, 0",
-            f"{data} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{capv} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{data} = extractvalue {llvm_type} {obj_op}, 2",
         ]
 
         if idx_llvm == "i64":
@@ -3518,6 +3587,25 @@ class LLVMIRCompiler:
         gep = f"{res}_gep"
         lines.append(f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {idx64}")
         lines.append(f"{res} = load {elem_llvm}, {elem_llvm}* {gep}")
+        obj = instr.args[0]
+        elem_type = obj.type[5:-1]
+        if elem_type.startswith("List["):
+            self.used_gc = True
+            ed = f"{res}_ed"
+            lines.append(f"{ed} = extractvalue {elem_llvm} {res}, 2")
+            lines.append(f"{res}_ed8 = bitcast {self.to_llvm_type(elem_type[5:-1])}* {ed} to i8*")
+            lines.append(f"call void @__threadon_gc_retain(i8* {res}_ed8)")
+        elif elem_type.startswith("Dict["):
+            self.used_gc = True
+            k_ty, v_ty = self._parse_dict_kv_types(elem_type)
+            kd = f"{res}_kd"
+            vd = f"{res}_vd"
+            lines.append(f"{kd} = extractvalue {elem_llvm} {res}, 1")
+            lines.append(f"{vd} = extractvalue {elem_llvm} {res}, 2")
+            lines.append(f"{res}_kd8 = bitcast {self.to_llvm_type(k_ty)}* {kd} to i8*")
+            lines.append(f"{res}_vd8 = bitcast {self.to_llvm_type(v_ty)}* {vd} to i8*")
+            lines.append(f"call void @__threadon_gc_retain(i8* {res}_kd8)")
+            lines.append(f"call void @__threadon_gc_retain(i8* {res}_vd8)")
         return lines
 
     def _emit_list_set(self, res, instr):
@@ -3526,8 +3614,37 @@ class LLVMIRCompiler:
         lines, elem_llvm, lenv, data = self._emit_list_access_lines(res, instr)
         idx64 = f"{res}_idx64"
         llvm_type = self.to_llvm_type(obj.type)
+        obj_op = self.operand(obj)
         self.used_gc = True
 
+        pred = self._current_label()
+        fast = f"{res.lstrip('%')}_setfast"
+        slow = f"{res.lstrip('%')}_setslow"
+        done = f"{res.lstrip('%')}_setdone"
+        data_i8 = f"{res}_data_i8"
+        uniq = f"{res}_uniq"
+        lines.append(f"{data_i8} = bitcast {elem_llvm}* {data} to i8*")
+        lines.append(f"{uniq} = call i64 @__threadon_gc_is_unique(i8* {data_i8})")
+        lines.append(f"{res}_uniq_bool = icmp ne i64 {uniq}, 0")
+        lines.append(f"br i1 {res}_uniq_bool, label %{fast}, label %{slow}")
+
+        # Fast path: mutate in place when the backing buffer is unique.
+        lines.append(f"{fast}:")
+        fgep = f"{res}_fgep"
+        lines.append(f"{fgep} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {idx64}")
+        lines.append(f"store {elem_llvm} {self.operand(val, materialize=False)}, {elem_llvm}* {fgep}")
+        lines.extend(self._gc_barrier_lines(fgep, elem_llvm, "gcbls"))
+        fv0 = f"{res}_fv0"
+        fv1 = f"{res}_fv1"
+        lines.append(f"{fv0} = insertvalue {llvm_type} {obj_op}, i64 {lenv}, 0")
+        lines.append(f"{fv1} = insertvalue {llvm_type} {fv0}, i64 {lenv}, 1")
+        fres = f"{res}_fast"
+        lines.append(f"{fres} = insertvalue {llvm_type} {fv1}, {elem_llvm}* {data}, 2")
+        lines.append(f"br label %{done}")
+
+        # Slow path: COW copy.
+        lines.append(f"{slow}:")
+        self._advance_label(slow)
         size = self._llvm_sizeof(elem_llvm)
         total = f"{res}_tot"
         lines.append(f"{total} = mul i64 {lenv}, {size}")
@@ -3536,9 +3653,8 @@ class LLVMIRCompiler:
         new_data = f"{res}_ndata"
         lines.append(f"{new_data} = bitcast i8* {raw} to {elem_llvm}*")
 
-        pred = self._current_label()
-        copy_lines, _ = self._emit_copy_range_lines(
-            res, "setcp", pred, data, new_data, lenv, elem_llvm
+        copy_lines, copy_end = self._emit_copy_range_lines(
+            res, "setcp", slow, data, new_data, lenv, elem_llvm
         )
         lines.extend(copy_lines)
 
@@ -3547,8 +3663,19 @@ class LLVMIRCompiler:
         lines.append(f"store {elem_llvm} {self.operand(val, materialize=False)}, {elem_llvm}* {gep}")
         lines.extend(self._gc_barrier_lines(gep, elem_llvm, "gcbls"))
         v0 = f"{res}_v0"
+        v1 = f"{res}_v1"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {lenv}, 0")
-        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {new_data}, 1")
+        lines.append(f"{v1} = insertvalue {llvm_type} {v0}, i64 {lenv}, 1")
+        sres = f"{res}_slow"
+        lines.append(f"{sres} = insertvalue {llvm_type} {v1}, {elem_llvm}* {new_data}, 2")
+        slow_end = copy_end if copy_end else slow
+        lines.append(f"br label %{done}")
+
+        lines.append(f"{done}:")
+        self._advance_label(done)
+        lines.append(
+            f"{res} = phi {llvm_type} [ {fres}, %{fast} ], [ {sres}, %{slow_end} ]"
+        )
         return lines
 
     def _emit_slice_bound_lines(self, res, tag, lines, idx, len_reg):
@@ -3678,9 +3805,11 @@ class LLVMIRCompiler:
         self.used_gc = True
         lines = []
         len_reg = f"{res}_len"
+        cap_reg = f"{res}_cap"
         lines.append(f"{len_reg} = extractvalue {llvm_type} {obj_op}, 0")
+        lines.append(f"{cap_reg} = extractvalue {llvm_type} {obj_op}, 1")
         data = f"{res}_data"
-        lines.append(f"{data} = extractvalue {llvm_type} {obj_op}, 1")
+        lines.append(f"{data} = extractvalue {llvm_type} {obj_op}, 2")
 
         s_reg = self._emit_slice_bound_lines(res, "ls", lines, start, len_reg)
         if s_reg is None:
@@ -3715,8 +3844,10 @@ class LLVMIRCompiler:
         )
         lines.extend(copy_lines)
         v0 = f"{res}_v0"
+        v1 = f"{res}_v1"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {cnt}, 0")
-        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {ndata}, 1")
+        lines.append(f"{v1} = insertvalue {llvm_type} {v0}, i64 {cnt}, 1")
+        lines.append(f"{res} = insertvalue {llvm_type} {v1}, {elem_llvm}* {ndata}, 2")
         return lines
 
     def _emit_idx64_lines(self, res, tag, idx, lines):
@@ -3782,37 +3913,89 @@ class LLVMIRCompiler:
         self.used_gc = True
 
         lenv = f"{res}_len"
+        capv = f"{res}_cap"
         data = f"{res}_data"
         lines = [
             f"{lenv} = extractvalue {llvm_type} {obj_op}, 0",
-            f"{data} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{capv} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{data} = extractvalue {llvm_type} {obj_op}, 2",
         ]
         new_len = f"{res}_nlen"
         lines.append(f"{new_len} = add i64 {lenv}, 1")
+
+        fast = f"{res.lstrip('%')}_appfast"
+        slow = f"{res.lstrip('%')}_appslow"
+        done = f"{res.lstrip('%')}_appdone"
+        data_i8 = f"{res}_data_i8"
+        uniq = f"{res}_uniq"
+        has_cap = f"{res}_hascap"
+        can_fast = f"{res}_canfast"
+        lines.append(f"{data_i8} = bitcast {elem_llvm}* {data} to i8*")
+        lines.append(f"{uniq} = call i64 @__threadon_gc_is_unique(i8* {data_i8})")
+        lines.append(f"{res}_uniq_bool = icmp ne i64 {uniq}, 0")
+        lines.append(f"{has_cap} = icmp ult i64 {lenv}, {capv}")
+        lines.append(f"{can_fast} = and i1 {res}_uniq_bool, {has_cap}")
+        lines.append(f"br i1 {can_fast}, label %{fast}, label %{slow}")
+
+        # Fast path: unique buffer with spare capacity.
+        lines.append(f"{fast}:")
+        fgep = f"{res}_fgep"
+        lines.append(f"{fgep} = getelementptr {elem_llvm}, {elem_llvm}* {data}, i64 {lenv}")
+        lines.append(f"store {elem_llvm} {val_op}, {elem_llvm}* {fgep}")
+        lines.extend(self._gc_barrier_lines(fgep, elem_llvm, "gcbla"))
+        fv0 = f"{res}_fv0"
+        fv1 = f"{res}_fv1"
+        lines.append(f"{fv0} = insertvalue {llvm_type} {obj_op}, i64 {new_len}, 0")
+        lines.append(f"{fv1} = insertvalue {llvm_type} {fv0}, i64 {capv}, 1")
+        fres = f"{res}_fast"
+        lines.append(f"{fres} = insertvalue {llvm_type} {fv1}, {elem_llvm}* {data}, 2")
+        lines.append(f"br label %{done}")
+
+        # Slow path: COW with amortized growth.
+        lines.append(f"{slow}:")
+        self._advance_label(slow)
+        grow = f"{res}_grow"
+        cap2 = f"{res}_cap2"
+        cap4 = f"{res}_cap4"
+        use_grow = f"{res}_usegrow"
+        final_cap = f"{res}_fcap"
+        lines.append(f"{grow} = mul i64 {capv}, 2")
+        lines.append(f"{cap2} = icmp ugt i64 {grow}, {new_len}")
+        lines.append(f"{cap4} = select i1 {cap2}, i64 {grow}, i64 {new_len}")
+        lines.append(f"{use_grow} = icmp ult i64 {cap4}, 4")
+        lines.append(f"{final_cap} = select i1 {use_grow}, i64 4, i64 {cap4}")
         size = self._llvm_sizeof(elem_llvm)
         total = f"{res}_tot"
-        lines.append(f"{total} = mul i64 {new_len}, {size}")
+        lines.append(f"{total} = mul i64 {final_cap}, {size}")
         raw = f"{res}_raw"
         lines.append(f"{raw} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
         new_data = f"{res}_ndata"
         lines.append(f"{new_data} = bitcast i8* {raw} to {elem_llvm}*")
 
-        pred = self._current_label()
-        copy_lines, _ = self._emit_copy_range_lines(
-            res, "copy", pred, data, new_data, lenv, elem_llvm
+        copy_lines, copy_end = self._emit_copy_range_lines(
+            res, "copy", slow, data, new_data, lenv, elem_llvm
         )
         lines.extend(copy_lines)
 
         gep = f"{res}_gep"
-        lines.append(
-            f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {new_data}, i64 {lenv}"
-        )
+        lines.append(f"{gep} = getelementptr {elem_llvm}, {elem_llvm}* {new_data}, i64 {lenv}")
         lines.append(f"store {elem_llvm} {val_op}, {elem_llvm}* {gep}")
         lines.extend(self._gc_barrier_lines(gep, elem_llvm, "gcbla"))
 
         v0 = f"{res}_v0"
+        v1 = f"{res}_v1"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {new_len}, 0")
-        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {new_data}, 1")
+        lines.append(f"{v1} = insertvalue {llvm_type} {v0}, i64 {final_cap}, 1")
+        sres = f"{res}_slow"
+        lines.append(f"{sres} = insertvalue {llvm_type} {v1}, {elem_llvm}* {new_data}, 2")
+        slow_end = copy_end if copy_end else slow
+        lines.append(f"br label %{done}")
+
+        lines.append(f"{done}:")
+        self._advance_label(done)
+        lines.append(
+            f"{res} = phi {llvm_type} [ {fres}, %{fast} ], [ {sres}, %{slow_end} ]"
+        )
         return lines
 
     def _emit_list_pop(self, res, args):
@@ -3824,10 +4007,12 @@ class LLVMIRCompiler:
         obj_op = self.operand(obj)
 
         lenv = f"{res}_len"
+        capv = f"{res}_cap"
         data = f"{res}_data"
         lines = [
             f"{lenv} = extractvalue {llvm_type} {obj_op}, 0",
-            f"{data} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{capv} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{data} = extractvalue {llvm_type} {obj_op}, 2",
         ]
 
         if self.debug_mode:
@@ -3850,12 +4035,30 @@ class LLVMIRCompiler:
             lines.append(f"call void @__threadon_debug_error(i8* {emsg}, i8* {ctx})")
             lines.append("unreachable")
             lines.append(f"{ok}:")
+            self._advance_label(ok)
 
         new_len = f"{res}_nlen"
         lines.append(f"{new_len} = sub i64 {lenv}, 1")
+        self.used_gc = True
+        size = self._llvm_sizeof(elem_llvm)
+        total = f"{res}_tot"
+        lines.append(f"{total} = mul i64 {new_len}, {size}")
+        raw = f"{res}_raw"
+        lines.append(f"{raw} = call i8* @__threadon_gc_alloc(i64 {total}, i64 0)")
+        new_data = f"{res}_ndata"
+        lines.append(f"{new_data} = bitcast i8* {raw} to {elem_llvm}*")
+        pred = self._current_label()
+        copy_lines, copy_end = self._emit_copy_range_lines(
+            res, "popcp", pred, data, new_data, new_len, elem_llvm
+        )
+        lines.extend(copy_lines)
         v0 = f"{res}_v0"
+        v1 = f"{res}_v1"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {new_len}, 0")
-        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {data}, 1")
+        lines.append(f"{v1} = insertvalue {llvm_type} {v0}, i64 {new_len}, 1")
+        lines.append(f"{res} = insertvalue {llvm_type} {v1}, {elem_llvm}* {new_data}, 2")
+        if copy_end:
+            self._advance_label(copy_end)
         return lines
 
     def _emit_list_insert(self, res, args):
@@ -3868,10 +4071,12 @@ class LLVMIRCompiler:
         val_op = self.operand(val, materialize=False)
 
         lenv = f"{res}_len"
+        capv = f"{res}_cap"
         data = f"{res}_data"
         lines = [
             f"{lenv} = extractvalue {llvm_type} {obj_op}, 0",
-            f"{data} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{capv} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{data} = extractvalue {llvm_type} {obj_op}, 2",
         ]
         idx64 = self._emit_idx64_lines(res, "ins", idx, lines)
 
@@ -3934,8 +4139,10 @@ class LLVMIRCompiler:
         lines.extend(copy2)
 
         v0 = f"{res}_v0"
+        v1 = f"{res}_v1"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {new_len}, 0")
-        lines.append(f"{res} = insertvalue {llvm_type} {v0}, {elem_llvm}* {new_data}, 1")
+        lines.append(f"{v1} = insertvalue {llvm_type} {v0}, i64 {new_len}, 1")
+        lines.append(f"{res} = insertvalue {llvm_type} {v1}, {elem_llvm}* {new_data}, 2")
         return lines
 
     def _emit_list_remove(self, res, args):
@@ -3948,10 +4155,12 @@ class LLVMIRCompiler:
         val_op = self.operand(val, materialize=False)
 
         lenv = f"{res}_len"
+        capv = f"{res}_cap"
         data = f"{res}_data"
         lines = [
             f"{lenv} = extractvalue {llvm_type} {obj_op}, 0",
-            f"{data} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{capv} = extractvalue {llvm_type} {obj_op}, 1",
+            f"{data} = extractvalue {llvm_type} {obj_op}, 2",
         ]
 
         base = res.lstrip('%')
@@ -4059,10 +4268,12 @@ class LLVMIRCompiler:
         )
         lines.extend(copy2)
         v0 = f"{res}_flv"
+        v1f = f"{res}_flv1"
         lines.append(f"{v0} = insertvalue {llvm_type} undef, i64 {new_len}, 0")
+        lines.append(f"{v1f} = insertvalue {llvm_type} {v0}, i64 {new_len}, 1")
         res_f = f"{res}_flr"
         lines.append(
-            f"{res_f} = insertvalue {llvm_type} {v0}, {elem_llvm}* {new_data}, 1"
+            f"{res_f} = insertvalue {llvm_type} {v1f}, {elem_llvm}* {new_data}, 2"
         )
         lines.append(f"br label %{merge}")
         lines.append(f"{merge}:")
