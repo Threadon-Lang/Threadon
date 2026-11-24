@@ -10,7 +10,7 @@ from .builtins import (
     is_union_type,
     union_members,
 )
-from .to_high_ir import SSAValue
+from .to_high_ir import SSAValue, IRPhi
 
 FLOAT_LLVM_TYPES = ("half", "float", "double")
 
@@ -433,6 +433,10 @@ class LLVMIRCompiler:
         self.current_func = func
         self.current_func_name = func.name
         self.current_func_entry_label = func.blocks[0].label if func.blocks else None
+        try:
+            self._release_plan = self._compute_release_plan(func)
+        except Exception:
+            self._release_plan = {}
 
         for block in func.blocks:
             self.emit_block(block, dry=True)
@@ -570,6 +574,189 @@ class LLVMIRCompiler:
         label is emitted by a codegen helper)."""
         self._current_block_label = label
 
+    def _emit_release_lines(self, val, idx):
+        if not isinstance(val, SSAValue):
+            return []
+        llvm_t = self.to_llvm_type(val.type)
+        vop = val.name
+        tag = f"{vop.lstrip('%')}_rel{idx}"
+        self.used_gc = True
+        lines = []
+        if val.type.startswith("List["):
+            elem_llvm = self.to_llvm_type(val.type[5:-1])
+            data = f"%{tag}_d"
+            data8 = f"%{tag}_d8"
+            lines.append(f"{data} = extractvalue {llvm_t} {vop}, 2")
+            lines.append(f"{data8} = bitcast {elem_llvm}* {data} to i8*")
+            lines.append(f"call void @__threadon_gc_release(i8* {data8})")
+        elif val.type.startswith("Dict["):
+            k_ty, v_ty = self._parse_dict_kv_types(val.type)
+            k_llvm = self.to_llvm_type(k_ty)
+            v_llvm = self.to_llvm_type(v_ty)
+            kd = f"%{tag}_kd"
+            vd = f"%{tag}_vd"
+            lines.append(f"{kd} = extractvalue {llvm_t} {vop}, 1")
+            lines.append(f"{vd} = extractvalue {llvm_t} {vop}, 2")
+            lines.append(f"%{tag}_kd8 = bitcast {k_llvm}* {kd} to i8*")
+            lines.append(f"%{tag}_vd8 = bitcast {v_llvm}* {vd} to i8*")
+            lines.append(f"call void @__threadon_gc_release(i8* %{tag}_kd8)")
+            lines.append(f"call void @__threadon_gc_release(i8* %{tag}_vd8)")
+        return lines
+
+    def _compute_release_plan(self, func):
+        """Compute safe last-use releases for List/Dict SSA values.
+
+        Conservative: releases only when we can prove the value does not escape
+        and is not needed after its last use. This avoids stale refcounts that
+        block in-place COW, while keeping value semantics correct.
+        """
+        func.build_cfg()
+        try:
+            dom = func.compute_dominators()
+        except Exception:
+            dom = {}
+
+        # Loop blocks via natural-loop backedges.
+        loop_blocks = set()
+        for block in func.blocks:
+            t = block.terminator
+            if not t:
+                continue
+            targets = []
+            if t.op == "br":
+                targets = [t.args[0]]
+            elif t.op == "cond_br":
+                targets = [t.args[1], t.args[2]]
+            for tgt in targets:
+                if tgt in dom.get(block.label, set()):
+                    stack = [block.label]
+                    while stack:
+                        b = stack.pop()
+                        if b in loop_blocks:
+                            continue
+                        loop_blocks.add(b)
+                        if b == tgt:
+                            continue
+                        bb = func.block_map.get(b)
+                        if not bb:
+                            continue
+                        for pred in bb.predecessors:
+                            if pred not in loop_blocks:
+                                stack.append(pred)
+                    loop_blocks.add(tgt)
+
+        def is_managed(val):
+            return isinstance(val, SSAValue) and (
+                val.type.startswith("List[") or val.type.startswith("Dict[")
+            )
+
+        # Def block for SSA values.
+        def_block = {}
+        param_ids = set()
+        for block in func.blocks:
+            for instr in block.instructions:
+                r = getattr(instr, "result", None)
+                if is_managed(r):
+                    def_block[id(r)] = block.label
+                if instr.op == "param" and isinstance(r, SSAValue):
+                    param_ids.add(id(r))
+
+        escaping = set()
+        phi_used = set()
+        last_use = {}
+        use_count = {}
+
+        def record_use(val, key, escapes=False):
+            if not is_managed(val):
+                return
+            k = id(val)
+            use_count[k] = use_count.get(k, 0) + 1
+            last_use[k] = key
+            if escapes:
+                escaping.add(k)
+
+        for block in func.blocks:
+            for ii, instr in enumerate(block.instructions):
+                if isinstance(instr, IRPhi):
+                    for _, val in instr.incoming:
+                        if is_managed(val):
+                            phi_used.add(id(val))
+                            record_use(val, (block.label, "term"), escapes=True)
+                    continue
+
+                op = instr.op
+                args = instr.args
+                esc_positions = set()
+                if op in ("struct_init", "list_init", "tuple_new", "dict_init"):
+                    esc_positions = set(range(len(args)))
+                elif op == "store_field":
+                    esc_positions = {2}
+                elif op == "list_set":
+                    esc_positions = {2}
+                elif op == "list_append":
+                    esc_positions = {1}
+                elif op == "list_insert":
+                    esc_positions = {2}
+                elif op == "dict_set":
+                    esc_positions = {1, 2}
+                elif op == "global_store":
+                    esc_positions = {1}
+                elif op == "thread_spawn":
+                    esc_positions = set(range(3, len(args)))
+
+                for ai, arg in enumerate(args):
+                    record_use(arg, (block.label, ii), escapes=(ai in esc_positions))
+
+            t = block.terminator
+            if t:
+                op = t.op
+                if op == "ret":
+                    for a in t.args:
+                        record_use(a, (block.label, "term"), escapes=True)
+                elif op == "cond_br":
+                    if t.args:
+                        record_use(t.args[0], (block.label, "term"), escapes=False)
+                elif op == "br":
+                    pass
+                else:
+                    for a in t.args:
+                        record_use(a, (block.label, "term"), escapes=False)
+
+        plan = {}
+        for block in func.blocks:
+            in_loop = block.label in loop_blocks
+            for ii, instr in enumerate(block.instructions):
+                if isinstance(instr, IRPhi) or instr.op == "param":
+                    continue
+                op = instr.op
+                if op in ("struct_init", "store_field", "list_set", "list_append",
+                          "list_insert", "dict_set", "global_store", "thread_spawn",
+                          "list_init", "dict_init", "tuple_new"):
+                    continue
+                for arg in instr.args:
+                    if not is_managed(arg):
+                        continue
+                    k = id(arg)
+                    if k in param_ids or k in phi_used or k in escaping:
+                        continue
+                    if last_use.get(k) != (block.label, ii):
+                        continue
+                    # In loops, only release if defined in same block (fresh per iteration).
+                    if in_loop and def_block.get(k) != block.label:
+                        continue
+                    plan.setdefault((block.label, ii), []).append(arg)
+
+        for key, vals in plan.items():
+            seen = set()
+            uniq = []
+            for v in vals:
+                vid = id(v)
+                if vid not in seen:
+                    seen.add(vid)
+                    uniq.append(v)
+            plan[key] = uniq
+        return plan
+
     def emit_block(self, block, dry=False):
         if dry:
             old_out = self.out
@@ -583,7 +770,7 @@ class LLVMIRCompiler:
                 ("__threadon_check_depth", "__threadon_decrement_depth")):
             self.out.append("  call void @__threadon_check_depth()")
 
-        for instr in block.instructions:
+        for ii, instr in enumerate(block.instructions):
             if instr.op == "param":
                 continue
             lines = self.emit_instr(instr)
@@ -599,6 +786,10 @@ class LLVMIRCompiler:
                 ):
                     last_label = stripped[:-1]
                     self._current_block_label = last_label
+            if not dry:
+                for val in self._release_plan.get((block.label, ii), []):
+                    for rline in self._emit_release_lines(val, ii):
+                        self.out.append(f"  {rline}")
 
         self.block_end_label[block.label] = last_label
 
