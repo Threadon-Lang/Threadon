@@ -60,7 +60,10 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
             )
             IROptimizer(inline_threshold=inline_threshold, debug_mode=debug_mode).optimize(module)
     except BaseException as e:
-        raise RuntimeError(f"compiler error:\n{buf.getvalue()}") from e
+        msg = buf.getvalue()
+        if not msg.strip():
+            msg = str(e)
+        raise RuntimeError(f"compiler error:\n{msg}") from e
 
     warnings = buf.getvalue()
     if warnings:

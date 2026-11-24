@@ -912,6 +912,11 @@ class LLVMIRCompiler:
         l = self.operand(left)
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
+        if ltype.startswith("%struct") or ltype.startswith("{") or ltype.startswith("%union"):
+            raise Exception(
+                f"Error: operator '{op}' is not supported for "
+                f"'{left.type}' and '{right.type}'"
+            )
         is_float = ltype in FLOAT_LLVM_TYPES
         unsigned = self._is_unsigned(left.type)
 
@@ -1598,6 +1603,10 @@ class LLVMIRCompiler:
         l = self.operand(left)
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
+        if ltype.startswith("%struct") or ltype.startswith("{") or ltype.startswith("%union"):
+            raise Exception(
+                f"Error: operator '{op}' is not supported for '{left.type}' and '{right.type}'"
+            )
         unsigned = self._is_unsigned(left.type)
         
         if self.debug_mode and op in ("shl", "shr"):
@@ -2008,6 +2017,8 @@ class LLVMIRCompiler:
     def _emit_unary(self, res, op, operand):
         src = self.operand(operand)
         src_type = self.to_llvm_type(operand.type)
+        if src_type.startswith("%struct") or src_type.startswith("{") or src_type.startswith("%union"):
+            raise Exception(f"Error: unary operator '{op}' is not supported for '{operand.type}'")
         if op == "neg":
             if src_type in FLOAT_LLVM_TYPES:
                 return f"{res} = fsub {src_type} 0.0, {src}"
@@ -2095,6 +2106,10 @@ class LLVMIRCompiler:
         l = self.operand(left)
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
+        if ltype.startswith("%struct") or ltype.startswith("{") or ltype.startswith("%union"):
+            raise Exception(
+                f"Error: operator '{op}' is not supported for '{left.type}' and '{right.type}'"
+            )
         if ltype == "i8*" and left.type == "String" and right.type == "String":
             self.used_c_runtime.add("strcmp")
             seq = f"{res}_seq"

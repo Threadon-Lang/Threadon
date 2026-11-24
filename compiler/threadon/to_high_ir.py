@@ -3345,6 +3345,15 @@ class SSABuilder:
 
             if op.startswith("cmp_"):
                 vtype = "Bool"
+            elif op in ("and", "or"):
+                if left.type != "Bool" or right.type != "Bool":
+                    lineno = getattr(expr, "lineno", None)
+                    loc = f" at line {lineno}" if lineno else ""
+                    raise Exception(
+                        f"Error: operator '{expr.op}' is not supported for "
+                        f"'{left.type}' and '{right.type}'{loc}"
+                    )
+                vtype = "Bool"
             elif is_union_type(left.type) or is_union_type(right.type):
                 lms = union_members(left.type) if is_union_type(left.type) else [left.type]
                 rms = union_members(right.type) if is_union_type(right.type) else [right.type]
@@ -3357,7 +3366,15 @@ class SSABuilder:
                 else:
                     vtype = union_str(result_members)
             else:
-                vtype = left.type
+                numeric = set(ALL_INT_TYPES) | set(FLOAT_TYPES) | {"Bool"}
+                if left.type not in numeric or right.type not in numeric:
+                    lineno = getattr(expr, "lineno", None)
+                    loc = f" at line {lineno}" if lineno else ""
+                    raise Exception(
+                        f"Error: operator '{expr.op}' is not supported for "
+                        f"'{left.type}' and '{right.type}'{loc}"
+                    )
+                vtype = common_numeric_type(left.type, right.type)
 
             v = self.new_temp(vtype)
 

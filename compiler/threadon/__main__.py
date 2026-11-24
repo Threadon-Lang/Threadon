@@ -521,14 +521,23 @@ def main(argv=None):
     for include in args.include:
         importer.add_search_path(include)
 
-    llvm = compile_file(
-        path,
-        importer=importer,
-        inline_threshold=args.inline_threshold,
-        debug_mode=args.debug,
-        flag_inf=args.flag_inf,
-        test_filter=args.test_name,
-    )
+    try:
+        llvm = compile_file(
+            path,
+            importer=importer,
+            inline_threshold=args.inline_threshold,
+            debug_mode=args.debug,
+            flag_inf=args.flag_inf,
+            test_filter=args.test_name,
+        )
+    except Exception as e:
+        msg = str(e)
+        if msg.startswith("compiler error:\n"):
+            msg = msg[len("compiler error:\n"):]
+        if not msg.strip():
+            msg = str(e.__cause__ or e)
+        print(msg, file=sys.stderr)
+        return 1
 
     if args.output:
         Path(args.output).write_text(llvm)
