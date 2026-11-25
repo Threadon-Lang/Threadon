@@ -3399,14 +3399,23 @@ class SSABuilder:
             )
 
             if params is not None:
+                if len(expr.args) > len(params):
+                    lineno = getattr(expr, "lineno", None)
+                    loc = f" at line {lineno}" if lineno else ""
+                    raise Exception(
+                        f"Error: too many arguments for "
+                        f"'{expr.func_name}': expected {len(params)}, "
+                        f"got {len(expr.args)}{loc}"
+                    )
                 for _, _, default in params[
                     len(expr.args):
                 ]:
                     if default is None:
+                        lineno = getattr(expr, "lineno", None)
+                        loc = f" at line {lineno}" if lineno else ""
                         raise Exception(
-                            f"Missing argument for "
-                            f"call to "
-                            f"'{expr.func_name}'"
+                            f"Error: missing argument for "
+                            f"'{expr.func_name}'{loc}"
                         )
 
                     args.append(

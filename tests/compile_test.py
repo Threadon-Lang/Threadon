@@ -2620,3 +2620,37 @@ def main() -> Int32
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "2\n"
+
+
+def test_cannot_redefine_builtin_collect():
+    with pytest.raises(RuntimeError) as excinfo:
+        compile_source(
+            """
+def collect() -> NoneType:
+    print("lol")
+    return None
+
+def main() -> Int32
+    collect()
+    return 0
+""",
+            importer=Importer(),
+        )
+    assert "Cannot redefine builtin/standard library function 'collect'" in str(excinfo.value)
+
+
+def test_cannot_redefine_builtin_input():
+    with pytest.raises(RuntimeError) as excinfo:
+        compile_source(
+            """
+def input() -> NoneType:
+    print("lol 2")
+    return None
+
+def main() -> Int32
+    x: String = input("test")
+    return 0
+""",
+            importer=Importer(),
+        )
+    assert "Cannot redefine builtin/standard library function 'input'" in str(excinfo.value)

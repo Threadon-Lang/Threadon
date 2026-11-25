@@ -1,4 +1,5 @@
 from .nodes import RefExpr
+from .builtins import BUILTIN_SIGS
 
 
 def iter_functions(ast):
@@ -297,6 +298,10 @@ class DuplicateChecker:
         return None
 
     def visit_function(self, func):
+        if func.name in BUILTIN_SIGS:
+            self.error(
+                f"Cannot redefine builtin/standard library function '{func.name}'"
+            )
         if func.name in self.global_functions:
             self.error(f"Duplicate function '{func.name}'")
 

@@ -61,8 +61,11 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
             IROptimizer(inline_threshold=inline_threshold, debug_mode=debug_mode).optimize(module)
     except BaseException as e:
         msg = buf.getvalue()
+        err = str(e)
         if not msg.strip():
-            msg = str(e)
+            msg = err
+        elif err and err not in msg:
+            msg = msg.rstrip() + "\n" + err
         raise RuntimeError(f"compiler error:\n{msg}") from e
 
     warnings = buf.getvalue()
