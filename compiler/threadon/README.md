@@ -79,6 +79,28 @@ include paths and the stdlib — from anywhere below the project, not just the
 compiler directory. `pip install .` also compiles and runs the bundled
 `stdlib` suites as a self-test (disable with `THREADON_SKIP_INSTALL_TESTS=1`).
 
+## Diagnostics
+
+All compiler errors and warnings go through `compiler/threadon/errors.py`.
+Diagnostics have a single format:
+
+```
+Error: <message> at line <n>
+Warning: <message>
+```
+
+The CLI prints compiler diagnostics to stderr and toolchain failures with the
+same `Error:` prefix, so user code never sees a raw Python traceback or LLVM IR
+message. Colors are enabled by default and can be turned off with `NO_COLOR=1`;
+`FORCE_COLOR=0` has the same effect.
+
+Users cannot redefine builtins or standard-library functions such as `collect`
+and `input`; doing so fails with:
+
+```
+Error: Cannot redefine builtin/standard library function 'collect'
+```
+
 ## TODO's
 
 ### adding libraries:

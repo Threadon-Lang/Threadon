@@ -4,6 +4,7 @@ import math
 import sys
 import os
 
+from .errors import abort, compile_error
 from .builtins import (
     BUILTIN_SIGS,
     common_numeric_type,
@@ -33,7 +34,7 @@ class LLVMIRCompiler:
     def __init__(self,debug_mode=False,max_stack_depth=10_000,flag_inf=False):
 
         if max_stack_depth > 500_000:
-            raise Exception("Current stack depth is to big")
+            raise compile_error("Current stack depth is to big")
 
         self.module = None
         self.struct_field_indices = {}
@@ -1104,9 +1105,9 @@ class LLVMIRCompiler:
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
         if ltype.startswith("%struct") or ltype.startswith("{") or ltype.startswith("%union"):
-            raise Exception(
-                f"Error: operator '{op}' is not supported for "
-                f"'{left.type}' and '{right.type}'"
+            raise compile_error(
+                f"operator '{op}' is not supported for "
+                f"'{left.type}' and '{self._operand_type_name(right)}'"
             )
         is_float = ltype in FLOAT_LLVM_TYPES
         unsigned = self._is_unsigned(left.type)
@@ -1621,7 +1622,7 @@ class LLVMIRCompiler:
                     f"{sel} = select i1 {src_op}, i8* {t_global}, i8* {f_global}",
                     f"{res} = getelementptr i8, i8* {sel}, i64 0"
                 ]
-            raise Exception(f"Cannot cast {src.type} to String")
+            raise compile_error(f"Cannot cast {src.type} to String")
 
         if src_type in INT_LLVM_BITS and rtype in INT_LLVM_BITS:
             sb, tb = INT_LLVM_BITS[src_type], INT_LLVM_BITS[rtype]
@@ -1779,7 +1780,7 @@ class LLVMIRCompiler:
                 return f"{res} = fcmp une {src_type} {src_op}, 0.0"
             if src_type == "i1":
                 return f"{res} = xor i1 {src_op}, false"
-            raise Exception(f"Cannot cast {src.type} to Bool")
+            raise compile_error(f"Cannot cast {src.type} to Bool")
 
         if src_type == "i1" and rtype in INT_LLVM_BITS:
             return f"{res} = zext i1 {src_op} to {rtype}"
@@ -1787,7 +1788,7 @@ class LLVMIRCompiler:
         if src_type == "i1" and rtype in FLOAT_LLVM_TYPES:
             return f"{res} = uitofp i1 {src_op} to {rtype}"
 
-        raise Exception(f"Unsupported cast from {src_type} to {rtype}")
+        raise compile_error(f"Unsupported cast from {src_type} to {rtype}")
 
 
     def _emit_bitwise(self, res, op, left, right):
@@ -1795,8 +1796,8 @@ class LLVMIRCompiler:
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
         if ltype.startswith("%struct") or ltype.startswith("{") or ltype.startswith("%union"):
-            raise Exception(
-                f"Error: operator '{op}' is not supported for '{left.type}' and '{right.type}'"
+            raise compile_error(
+                f"operator '{op}' is not supported for '{left.type}' and '{self._operand_type_name(right)}'"
             )
         unsigned = self._is_unsigned(left.type)
         
@@ -2070,8 +2071,12 @@ class LLVMIRCompiler:
         ]
 
     def _error(self, msg):
-        print(f"\033[91m\033[1mError:\033[0m {msg}", file=sys.stderr)
-        raise SystemExit(1)
+        abort(msg, file=sys.stderr)
+
+    @staticmethod
+    def _operand_type_name(value):
+        """Type name for diagnostics, even when an operand is a literal."""
+        return getattr(value, "type", "<literal>")
 
     def _f64_hex(self, fval):
         return format(struct.unpack('<Q', struct.pack('<d', fval))[0], '016X')
@@ -2209,7 +2214,7 @@ class LLVMIRCompiler:
         src = self.operand(operand)
         src_type = self.to_llvm_type(operand.type)
         if src_type.startswith("%struct") or src_type.startswith("{") or src_type.startswith("%union"):
-            raise Exception(f"Error: unary operator '{op}' is not supported for '{operand.type}'")
+            raise compile_error(f"unary operator '{op}' is not supported for '{operand.type}'")
         if op == "neg":
             if src_type in FLOAT_LLVM_TYPES:
                 return f"{res} = fsub {src_type} 0.0, {src}"
@@ -2298,8 +2303,8 @@ class LLVMIRCompiler:
         r = self.operand(right)
         ltype = self.to_llvm_type(left.type)
         if ltype.startswith("%struct") or ltype.startswith("{") or ltype.startswith("%union"):
-            raise Exception(
-                f"Error: operator '{op}' is not supported for '{left.type}' and '{right.type}'"
+            raise compile_error(
+                f"operator '{op}' is not supported for '{left.type}' and '{self._operand_type_name(right)}'"
             )
         if ltype == "i8*" and left.type == "String" and right.type == "String":
             self.used_c_runtime.add("strcmp")
@@ -2328,7 +2333,7 @@ class LLVMIRCompiler:
         }
         pred = pred_map[op]
         if not is_float and ltype not in ("i1", "i8", "i16", "i32", "i64", "i128", "i256"):
-            raise Exception(f"Comparison '{op}' is not supported for LLVM type {ltype}")
+            raise compile_error(f"Comparison '{op}' is not supported for LLVM type {ltype}")
         cmp_op = "fcmp" if is_float else "icmp"
         return f"{res} = {cmp_op} {pred} {ltype} {l}, {r}"
     def _emit_call(self, res, instr):
@@ -2578,7 +2583,7 @@ class LLVMIRCompiler:
                     f"{stmp} = call i8* @__threadon_struct_str_{tag}({atype} {val})"
                 )
             return "%s", f"i8* {stmp}"
-        raise Exception(f"print: unsupported type {atype}")
+        raise compile_error(f"print: unsupported type {atype}")
 
     def _emit_union_print(self, res, args):
         base = res.lstrip("%")
@@ -2847,7 +2852,7 @@ class LLVMIRCompiler:
             out.append(f"  {ff} = getelementptr inbounds [3 x i8], [3 x i8]* {f_str}, i64 0, i64 0")
             out.append(f"  {fc} = call i32 (i8*, i64, i8*, ...) @snprintf(i8* {ptr}, i64 {buf_size}, i8* {ff}, i8* {es})")
         else:
-            raise Exception(f"struct print: unsupported field type '{ftype}'")
+            raise compile_error(f"struct print: unsupported field type '{ftype}'")
 
     def _emit_input(self, res, arg):
         self.used_c_runtime.update(["printf", "fflush", "fgets", "strcspn"])
@@ -3236,7 +3241,7 @@ class LLVMIRCompiler:
             out.append(f"  %f = getelementptr inbounds [3 x i8], [3 x i8]* {self._string_global('%s')}, i64 0, i64 0")
             out.append(f"  %c = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %pe, i64 {buf_size}, i8* %f, i8* {es})")
         else:
-            raise Exception(f"list print: unsupported element type '{elem_t}'")
+            raise compile_error(f"list print: unsupported element type '{elem_t}'")
 
         out.append("  %inc = add i64 %i, 1")
         out.append("  %newoff = call i64 @strlen(i8* %bufp)")
@@ -3648,7 +3653,7 @@ class LLVMIRCompiler:
             name = llvm_type[len("%struct."):]
             fields = self.module.types.get(name)
             if fields is None:
-                raise Exception(f"Cannot determine layout of unknown struct '{name}'")
+                raise compile_error(f"Cannot determine layout of unknown struct '{name}'")
             size = 0
             max_align = 1
             for ftype in fields.values():
@@ -3672,7 +3677,7 @@ class LLVMIRCompiler:
         if llvm_type.startswith("%__thread_closure_"):
             fields = self._closure_types.get(llvm_type)
             if fields is None:
-                raise Exception(f"Unknown closure type '{llvm_type}'")
+                raise compile_error(f"Unknown closure type '{llvm_type}'")
             size = 0
             max_align = 1
             for ftype in fields:
@@ -3682,7 +3687,7 @@ class LLVMIRCompiler:
                 max_align = max(max_align, fa)
             size = (size + max_align - 1) // max_align * max_align
             return (size, max_align)
-        raise Exception(f"Cannot determine size of LLVM type '{llvm_type}'")
+        raise compile_error(f"Cannot determine size of LLVM type '{llvm_type}'")
 
     def _llvm_sizeof(self, llvm_type):
         size, _ = self._size_and_align(llvm_type)
@@ -3751,7 +3756,7 @@ class LLVMIRCompiler:
             idx64 = f"{res}_idx64"
             lines.append(f"{idx64} = {ext} {idx_llvm} {idx_op} to i64")
         else:
-            raise Exception(f"list index must be an integer, got {idx.type}")
+            raise compile_error(f"list index must be an integer, got {idx.type}")
 
         if self.debug_mode:
             self.used_c_runtime.add("exit")
@@ -4069,7 +4074,7 @@ class LLVMIRCompiler:
                 f"{idx64} = {ext} {idx_llvm} {self.operand(idx)} to i64"
             )
         else:
-            raise Exception(
+            raise compile_error(
                 f"list mutator index must be an integer, got {idx.type}"
             )
         return idx64
@@ -4413,7 +4418,7 @@ class LLVMIRCompiler:
                 eq = f"{res}_fle"
                 lines.append(f"{eq} = icmp eq {elem_llvm} {ld}, {val_op}")
         else:
-            raise Exception(
+            raise compile_error(
                 f"'remove' is not supported for list element type {elem_type}"
             )
         lines.append(f"br i1 {eq}, label %{found}, label %{nxt}")

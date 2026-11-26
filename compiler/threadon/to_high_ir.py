@@ -10,6 +10,7 @@ from .builtins import (
     union_str,
 )
 from .comptime_eval import eval_comptime
+from .errors import abort, compile_error
 from .nodes import (
     Assign,
     AttrDecl,
@@ -228,7 +229,7 @@ class IRBlock:
 
     def set_terminator(self, instr):
         if self.terminator is not None:
-            raise Exception(
+            raise compile_error(
                 f"Block '{self.label}' already has "
                 f"a terminator: {self.terminator}"
             )
@@ -257,7 +258,7 @@ class IRFunction:
 
     def add_block(self, block):
         if block.label in self.block_map:
-            raise Exception(
+            raise compile_error(
                 f"Duplicate block label: {block.label}"
             )
 
@@ -280,7 +281,7 @@ class IRFunction:
                 target = args[0]
 
                 if target not in self.block_map:
-                    raise Exception(
+                    raise compile_error(
                         f"Unknown branch target "
                         f"'{target}' from '{block.label}'"
                     )
@@ -294,13 +295,13 @@ class IRFunction:
                 _, t1, t2 = args
 
                 if t1 not in self.block_map:
-                    raise Exception(
+                    raise compile_error(
                         f"Unknown branch target "
                         f"'{t1}' from '{block.label}'"
                     )
 
                 if t2 not in self.block_map:
-                    raise Exception(
+                    raise compile_error(
                         f"Unknown branch target "
                         f"'{t2}' from '{block.label}'"
                     )
@@ -522,7 +523,7 @@ class SSABuilder:
 
     def pop_env(self):
         if not self.env_stack:
-            raise Exception("Environment stack underflow")
+            raise compile_error("Environment stack underflow")
 
         self.env_stack.pop()
 
@@ -562,7 +563,7 @@ class SSABuilder:
             if name in env:
                 return env[name]
 
-        raise Exception(
+        raise compile_error(
             f"Unknown variable {name}"
         )
 
@@ -606,7 +607,7 @@ class SSABuilder:
             return
 
         if not self.env_stack:
-            raise Exception(
+            raise compile_error(
                 "No environment available"
             )
 
@@ -716,11 +717,10 @@ class SSABuilder:
             elif tn == "ComptimeStmt":
                 self._eval_comptime(node)
             elif tn not in allowed_top:
-                print(
-                    "Error: Statements are not allowed at module level"
+                abort(
+                    "Statements are not allowed at module level"
                     " (only variable declarations, functions, structs, classes, and threads)"
                 )
-                raise SystemExit
 
         self.module_var_names = {name for name, _, _ in self.module.module_vars}
 
@@ -814,8 +814,7 @@ class SSABuilder:
                 self.module.class_bases,
             )
         except Exception as e:
-            print(f"Error evaluating comptime '{node.name}': {e}")
-            raise SystemExit(1)
+            abort(f"Error evaluating comptime '{node.name}': {e}")
 
         # Register as module variable with the computed value
         self.module.module_vars.append((node.name, node.var_type, value))
@@ -2412,7 +2411,7 @@ class SSABuilder:
 
     def emit_break(self):
         if not self.loop_stack:
-            raise Exception(
+            raise compile_error(
                 "SSA error: 'break' outside of a loop"
             )
 
@@ -2488,7 +2487,7 @@ class SSABuilder:
 
     def emit_continue(self):
         if not self.loop_stack:
-            raise Exception(
+            raise compile_error(
                 "SSA error: 'continue' outside of a loop"
             )
 
@@ -2732,7 +2731,7 @@ class SSABuilder:
         if var in env:
             return env[var]
 
-        raise Exception(
+        raise compile_error(
             f"SSA error: loop variable '{var}' "
             f"has no value on back-edge from "
             f"block '{block.label}'"
@@ -3002,7 +3001,7 @@ class SSABuilder:
 
             for _, _, default in params[len(args):]:
                 if default is None:
-                    raise Exception(
+                    raise compile_error(
                         f"Missing argument for call to '{func_name}'"
                     )
 
@@ -3347,11 +3346,10 @@ class SSABuilder:
                 vtype = "Bool"
             elif op in ("and", "or"):
                 if left.type != "Bool" or right.type != "Bool":
-                    lineno = getattr(expr, "lineno", None)
-                    loc = f" at line {lineno}" if lineno else ""
-                    raise Exception(
-                        f"Error: operator '{expr.op}' is not supported for "
-                        f"'{left.type}' and '{right.type}'{loc}"
+                    raise compile_error(
+                        f"operator '{expr.op}' is not supported for "
+                        f"'{left.type}' and '{right.type}'",
+                        line=getattr(expr, "lineno", None),
                     )
                 vtype = "Bool"
             elif is_union_type(left.type) or is_union_type(right.type):
@@ -3368,11 +3366,10 @@ class SSABuilder:
             else:
                 numeric = set(ALL_INT_TYPES) | set(FLOAT_TYPES) | {"Bool"}
                 if left.type not in numeric or right.type not in numeric:
-                    lineno = getattr(expr, "lineno", None)
-                    loc = f" at line {lineno}" if lineno else ""
-                    raise Exception(
-                        f"Error: operator '{expr.op}' is not supported for "
-                        f"'{left.type}' and '{right.type}'{loc}"
+                    raise compile_error(
+                        f"operator '{expr.op}' is not supported for "
+                        f"'{left.type}' and '{right.type}'",
+                        line=getattr(expr, "lineno", None),
                     )
                 vtype = common_numeric_type(left.type, right.type)
 
@@ -3400,22 +3397,18 @@ class SSABuilder:
 
             if params is not None:
                 if len(expr.args) > len(params):
-                    lineno = getattr(expr, "lineno", None)
-                    loc = f" at line {lineno}" if lineno else ""
-                    raise Exception(
-                        f"Error: too many arguments for "
-                        f"'{expr.func_name}': expected {len(params)}, "
-                        f"got {len(expr.args)}{loc}"
+                    raise compile_error(
+                        f"too many arguments for '{expr.func_name}': "
+                        f"expected {len(params)}, got {len(expr.args)}",
+                        line=getattr(expr, "lineno", None),
                     )
                 for _, _, default in params[
                     len(expr.args):
                 ]:
                     if default is None:
-                        lineno = getattr(expr, "lineno", None)
-                        loc = f" at line {lineno}" if lineno else ""
-                        raise Exception(
-                            f"Error: missing argument for "
-                            f"'{expr.func_name}'{loc}"
+                        raise compile_error(
+                            f"Missing argument for call to '{expr.func_name}'",
+                            line=getattr(expr, "lineno", None),
                         )
 
                     args.append(
@@ -3747,7 +3740,7 @@ class SSABuilder:
 
             return v
 
-        raise Exception(
+        raise compile_error(
             f"Unknown expr type: "
             f"{type(expr).__name__}"
         )

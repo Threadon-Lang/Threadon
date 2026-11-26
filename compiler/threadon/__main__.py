@@ -30,6 +30,7 @@ import shlex
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from .compiler import compile_file
+from .errors import report_error, tool_error
 from .importer import Importer
 from .test_harness import find_test_functions
 
@@ -75,7 +76,7 @@ def require_main(llvm):
     extra harness is needed.
     """
     if not re.search(r"define\s+[^\s(]+\s+@main\(", llvm):
-        raise SystemExit("error: no function 'main' found in the compiled module")
+        tool_error("no function 'main' found in the compiled module")
 
 
 def patch_llvm(llvm):
@@ -161,9 +162,9 @@ def build_native_shared_libs(modules, output_dir):
     libs = []
     for mod in modules:
         if mod.toolchain is None:
-            raise SystemExit(f"error: module '{mod.name}' has no registered toolchain")
+            tool_error(f"module '{mod.name}' has no registered toolchain")
         if mod.native_source is None or not mod.native_source.is_file():
-            raise SystemExit(f"error: native module '{mod.name}' has no source file")
+            tool_error(f"native module '{mod.name}' has no source file")
         existing = Path(mod.manifest_dir) / f"{mod.name}.so"
         if existing.is_file():
             libs.append(existing)
@@ -182,8 +183,8 @@ def build_native_shared_libs(modules, output_dir):
             text=True,
         )
         if result.returncode != 0:
-            raise SystemExit(
-                f"error: {tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
+            tool_error(
+                f"{tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
             )
         libs.append(so)
     return libs
@@ -230,18 +231,18 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
             text=True,
         )
         if result.returncode != 0:
-            raise SystemExit(f"error: {llc} failed:\n{result.stderr}")
+            tool_error(f"{llc} failed:\n{result.stderr}")
         objs = [str(obj)]
         link_flags = []
         linker = cc
         link_extra = []
         for mod in native:
                     if mod.toolchain is None:
-                        raise SystemExit(f"error: module '{mod.name}' has no registered toolchain")
+                        tool_error(f"module '{mod.name}' has no registered toolchain")
                     for lib in mod.links:
                         link_flags.append(f"-l{lib}")
                     if mod.native_source is None or not mod.native_source.is_file():
-                        raise SystemExit(f"error: native module '{mod.name}' has no source file")
+                        tool_error(f"native module '{mod.name}' has no source file")
                     tc = mod.toolchain
                     if tc.cxx:
                         linker = "g++"
@@ -255,8 +256,8 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
                         text=True,
                     )
                     if result.returncode != 0:
-                        raise SystemExit(
-                            f"error: {tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
+                        tool_error(
+                            f"{tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
                         )
                     objs.append(str(mod_obj))
         result = subprocess.run(
@@ -265,7 +266,7 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
             text=True,
         )
         if result.returncode != 0:
-            raise SystemExit(f"error: {linker} failed:\n{result.stderr}")
+            tool_error(f"{linker} failed:\n{result.stderr}")
 
 
 _PROJECT_MARKERS = (
@@ -531,12 +532,14 @@ def main(argv=None):
             test_filter=args.test_name,
         )
     except Exception as e:
+        if getattr(e, "printed", False):
+            return 1
         msg = str(e)
         if msg.startswith("compiler error:\n"):
             msg = msg[len("compiler error:\n"):]
         if not msg.strip():
             msg = str(e.__cause__ or e)
-        print(msg, file=sys.stderr)
+        report_error(msg, file=sys.stderr)
         return 1
 
     if args.output:

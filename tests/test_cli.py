@@ -99,6 +99,7 @@ def test_require_main_and_patch_llvm_and_dedupe():
 
 def test_run_llvm_builds_command_and_sets_env(monkeypatch):
     calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
@@ -111,7 +112,7 @@ def test_run_llvm_builds_command_and_sets_env(monkeypatch):
     )
     assert result.returncode == 3
     cmd, kwargs = calls[0]
-    assert cmd[:4] == ["lli", "-load", "/tmp/a.so", "-load"]
+    assert cmd[:5] == ["lli", "-O2", "-load", "/tmp/a.so", "-load"]
     assert cmd[-1].endswith(".ll")
     assert kwargs["capture_output"] is True and kwargs["text"] is True
     env = kwargs["env"]
@@ -121,6 +122,7 @@ def test_run_llvm_builds_command_and_sets_env(monkeypatch):
 
 def test_run_llvm_without_capture_and_no_libs(monkeypatch):
     calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
@@ -209,6 +211,7 @@ def test_build_native_shared_libs_python_and_errors(monkeypatch, tmp_path):
 
 def test_build_executable_full_path(monkeypatch, tmp_path):
     src = tmp_path / "native.cpp"
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     src.write_text("//")
     native = make_mod(
         "native", toolchain=fake_toolchain("cpp", cxx=True), source=src,

@@ -83,15 +83,14 @@ COMPILE_BROKEN = {
     ("examples.html", 12): ("ef84c0ed", "PyAdd native module not present in this checkout"),
     ("examples.html", 14): ("3b8adbc6", "PyVec3 native module not present in this checkout"),
     ("functions.html", 0): ("8ee0a3de", "calls undefined add()"),
+    ("functions.html", 4): ("56ecfd7e", "union shl is rejected as an unsupported operator"),
     ("modules.html", 0): ("730223df", "math.clamp does not exist"),
     ("structs.html", 0): ("9a396abe", "snippet references Point without defining it"),
+    ("unions.html", 8): ("2310b3ff", "union shl is rejected as an unsupported operator"),
 }
 
 # Examples that compile but fail while running, usually due to a compiler bug.
-RUNTIME_BROKEN = {
-    ("functions.html", 4): ("56ecfd7e", "union arithmetic emits invalid LLVM shl"),
-    ("unions.html", 8): ("2310b3ff", "union arithmetic emits invalid LLVM shl"),
-}
+RUNTIME_BROKEN = {}
 
 # Examples that run but print something different from the documented output.
 OUTPUT_BROKEN = {

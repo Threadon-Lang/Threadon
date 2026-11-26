@@ -1,5 +1,6 @@
-from .nodes import RefExpr
 from .builtins import BUILTIN_SIGS
+from .errors import abort, report_warning
+from .nodes import RefExpr
 
 
 def iter_functions(ast):
@@ -19,8 +20,7 @@ class UnreachableChecker:
         self.errors = []
 
     def error(self, msg):
-        print(f"\033[91m\033[1mError:\033[0m {msg}")
-        raise SystemExit(1)
+        abort(msg)
 
     def check(self, ast):
         for func in iter_functions(ast):
@@ -202,8 +202,7 @@ class ShadowChecker:
         self.errors = []
 
     def error(self, msg):
-        print(f"\033[91m\033[1mError:\033[0m {msg}")
-        raise SystemExit(1)
+        abort(msg)
 
     def check(self, ast):
         self.visit_block(ast, scope={})
@@ -250,8 +249,7 @@ class DuplicateChecker:
         self.global_vars = {}
 
     def error(self, msg):
-        print(f"\033[91m\033[1mError:\033[0m {msg}")
-        raise SystemExit(1)
+        abort(msg)
 
     def check(self, ast):
         for node in ast:
@@ -368,7 +366,7 @@ class UnusedVariableChecker:
         self.warnings = []
 
     def warn(self, msg):
-        print(f"\033[33m\033[1mWarning:\033[0m {msg}")
+        report_warning(msg)
 
     def check(self, ast):
         global_decl = set()
@@ -543,7 +541,7 @@ class DeadStoreChecker:
         self.warnings = []
 
     def warn(self, msg):
-        print(f"\033[33m\033[1mWarning:\033[0m {msg}")
+        report_warning(msg)
 
     def check(self, ast):
         for func in iter_functions(ast):
@@ -714,8 +712,7 @@ class MissingReturnChecker:
         pass
 
     def error(self, msg):
-        print(f"\033[91m\033[1mError:\033[0m {msg}")
-        raise SystemExit(1)
+        abort(msg)
 
     def check(self, ast):
         for func in iter_functions(ast):
@@ -758,8 +755,7 @@ class AliasChecker:
         self.aliases = {}
 
     def error(self, msg):
-        print(f"\033[91m\033[1mError:\033[0m {msg}")
-        raise SystemExit(1)
+        abort(msg)
 
     def check(self, ast):
         for func in iter_functions(ast):
@@ -863,8 +859,7 @@ class PurityChecker:
         self.locals = set()
 
     def error(self, msg):
-        print(f"\033[91m\033[1mError:\033[0m {msg}")
-        raise SystemExit(1)
+        abort(msg)
 
     def check(self, ast):
         self.global_vars |= {

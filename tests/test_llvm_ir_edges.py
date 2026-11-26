@@ -97,7 +97,7 @@ def test_type_mapping_edges_and_float_predicate():
     c = LLVMIRCompiler()
     c.compile(m)
     assert c.to_llvm_type(None) == "void"
-    assert c.to_llvm_type("Dict[String,List[Int32]]") == "{ i64, i8**, { i64, i32* }* }"
+    assert c.to_llvm_type("Dict[String,List[Int32]]") == "{ i64, i8**, { i64, i64, i32* }* }"
     assert c.to_llvm_type("Dict[Int32]") == "{ i64, i32*, i32* }"
     assert c.to_llvm_type("Wrapper.Point") == "%struct.Point"
     assert c.to_llvm_type("some.Point*") == "%struct.Point*"
@@ -135,7 +135,7 @@ def test_identity_lowering_for_scalar_pointer_aggregate_and_union_sources():
     assert "%p2 = getelementptr %struct.Point, %struct.Point* %p, i32 0" in llvm
     assert "store %struct.Point %st, %struct.Point* %st2_ptr" in llvm
     assert "store %union0 %u, %union0* %u2_ptr" in llvm
-    assert "store { i64, i32* } %l, { i64, i32* }* %l2_ptr" in llvm
+    assert "store { i64, i64, i32* } %l, { i64, i64, i32* }* %l2_ptr" in llvm
     assert "%struct.Point = type { i32, i32 }" in llvm
     assert "%union0 = type { i8, float, i32 }" in llvm
 
@@ -213,7 +213,8 @@ def test_undef_lowering_for_pointers_unions_and_aggregates():
     )
     assert "%p = bitcast i8* null to %struct.Point*" in llvm
     assert "%u = select i1 false, %union0 undef, %union0 undef" in llvm
-    assert "%l = insertvalue { i64, i32* } undef, i64 0, 0" in llvm
+    assert "%l_z0 = insertvalue { i64, i64, i32* } undef, i64 0, 0" in llvm
+    assert "%l = insertvalue { i64, i64, i32* } %l_z1, i32* null, 2" in llvm
     assert "%b = xor i1 false, false" in llvm
     assert "%i = add i32 0, 0" in llvm
 
@@ -539,7 +540,7 @@ def test_string_module_var_is_unsupported():
 def test_nested_dict_type_parsing_and_dict_kv_helper():
     c = LLVMIRCompiler()
     c.compile(IRModule())
-    assert c.to_llvm_type("Dict[List[Int32],String]") == "{ i64, { i64, i32* }*, i8** }"
+    assert c.to_llvm_type("Dict[List[Int32],String]") == "{ i64, { i64, i64, i32* }*, i8** }"
     assert c._parse_dict_kv_types("Dict[List[Int32],String]") == ("List[Int32]", "String")
     assert c._parse_dict_kv_types("Dict[Int32]") == ("Unknown", "Unknown")
 

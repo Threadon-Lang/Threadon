@@ -5,6 +5,7 @@ import sysconfig
 import os
 import re
 
+from .errors import ThreadonError, error_text
 from .nodes import (
     ClassDef, FunctionDef, VarDecl,
 )
@@ -14,8 +15,11 @@ MANIFEST_FILENAME = "manifest"
 STDLIB_DIR = Path(__file__).resolve().parent.parent / "stdlib"
 
 
-class ImporterError(Exception):
-    pass
+class ImporterError(ThreadonError):
+    """Manifest/import problem rendered through the central diagnostics."""
+
+    def __init__(self, message):
+        super().__init__(error_text(message))
 
 
 class Toolchain:

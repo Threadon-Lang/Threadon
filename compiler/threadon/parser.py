@@ -16,6 +16,7 @@ from .builtins import (
     union_members,
     union_str,
 )
+from .errors import abort
 from .importer import Importer, ImporterError
 from .lexer import Token, TokenType, lex_lines
 from .nodes import *
@@ -266,27 +267,19 @@ class Parser:
         self._for_seq = 0
         self._loop_depth = 0
     def give_error(self, msg, line_num=None, col=None):
-        RED = "\033[91m"
-        BOLD = "\033[1m"
-        RESET = "\033[0m"
-
-        print(f"{RED}{BOLD}Error:{RESET} {msg}",end="")
-
         if line_num is None:
             line_num = self.current_line_number or self.line_number
-        print(f" at line {line_num}")
 
-        if 0 <= line_num - 1 < len(self.original_lines):
-            line = self.original_lines[line_num - 1]
-            print(f"  {line}")
+        source_line = None
+        if line_num is not None and 0 <= line_num - 1 < len(self.original_lines):
+            source_line = self.original_lines[line_num - 1]
 
-            if col is not None:
-                caret_pos = max(0, col - 1)
-            else:
-                caret_pos = len(line) - len(line.lstrip(" "))
-            print("  " + " " * caret_pos + "^")
-
-        raise SystemExit
+        abort(
+            msg,
+            line=line_num,
+            col=col,
+            source_line=source_line,
+        )
 
     def apply_indent(self, indent, dedent, col=None):
         if col is None:

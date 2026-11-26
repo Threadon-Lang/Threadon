@@ -4,6 +4,13 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from .checker import CombinedChecker
+from .errors import (
+    ThreadonDiagnostic,
+    ThreadonError,
+    capture_diagnostics,
+    error_text,
+    flush_diagnostics,
+)
 from .importer import Importer
 from .optimalise_ir import IROptimizer
 from .test_harness import generate_test_harness
@@ -11,13 +18,20 @@ from .to_high_ir import SSABuilder
 from .to_llvm_ir import LLVMIRCompiler
 
 
+def _flush_stray_output(buf):
+    """Forward any legacy raw prints to stderr instead of stdout."""
+    text = buf.getvalue().rstrip()
+    if text:
+        sys.stderr.write(text + "\n")
+
+
 def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, flag_inf=False):
     """Compile a Threadon source string (plus its imports) to LLVM IR."""
     importer = importer or Importer()
-    buf = io.StringIO()
+    stray = io.StringIO()
 
     try:
-        with redirect_stdout(buf):
+        with capture_diagnostics() as diagnostics, redirect_stdout(stray):
             ast = importer.load_main(source)
             merged = ast + [
                 node
@@ -59,22 +73,34 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
                 merged, native_sigs=native_sigs, native_types=native_types
             )
             IROptimizer(inline_threshold=inline_threshold, debug_mode=debug_mode).optimize(module)
+    except ThreadonDiagnostic as e:
+        # abort() already rendered this through the central diagnostics.
+        flush_diagnostics(diagnostics)
+        _flush_stray_output(stray)
+        raise ThreadonError(error_text(str(e)), printed=True) from e
     except BaseException as e:
-        msg = buf.getvalue()
-        err = str(e)
+        flush_diagnostics(diagnostics, severities=("warning", "note"))
+        _flush_stray_output(stray)
+        msg = str(e)
         if not msg.strip():
-            msg = err
-        elif err and err not in msg:
-            msg = msg.rstrip() + "\n" + err
-        raise RuntimeError(f"compiler error:\n{msg}") from e
+            msg = str(e.__cause__ or e)
+        raise ThreadonError(error_text(msg)) from e
 
-    warnings = buf.getvalue()
-    if warnings:
-        sys.stderr.write(warnings)
+    flush_diagnostics(diagnostics)
+    _flush_stray_output(stray)
 
-    return LLVMIRCompiler(debug_mode=debug_mode, flag_inf=flag_inf).compile(
-        module, native_exports=native_exports
-    )
+    try:
+        return LLVMIRCompiler(debug_mode=debug_mode, flag_inf=flag_inf).compile(
+            module, native_exports=native_exports
+        )
+    except ThreadonDiagnostic:
+        # _error() rendered this already through the central diagnostics.
+        raise
+    except BaseException as e:
+        msg = str(e)
+        if not msg.strip():
+            msg = str(e.__cause__ or e)
+        raise ThreadonError(error_text(msg)) from e
 
 
 def compile_file(path, importer=None, inline_threshold=0, debug_mode=False, flag_inf=False, test_filter=None):
