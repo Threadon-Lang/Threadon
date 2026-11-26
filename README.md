@@ -20,6 +20,39 @@ Threadon is a Python module that drives LLVM
 
 With no options, the compiler prints LLVM IR to standard output.
 
+Projects
+--------
+
+A directory with a `threadon.toml` is a project. Create one with:
+
+    python3 -m threadon init myapp
+    cd myapp
+    python3 -m threadon run
+
+The generated config looks like this:
+
+```toml
+[project]
+name = "myapp"
+version = "0.1.0"
+main = "src/main.th"
+
+[dependencies]
+
+[paths]
+include = ["src"]
+test = ["tests"]
+```
+
+Dependencies are local directories; there is no registry or network fetch:
+
+    python3 -m threadon add util ../util
+
+`build`, `run`, `test`, `clean` and `cache path|list|clear` all use the
+nearest `threadon.toml`. Include paths and dependencies are added to the import
+search path automatically; the standard library is always implicit. Set
+`THREADON_CACHE_DIR` to override `~/.cache/threadon/modules`.
+
 Flags
 -----
 

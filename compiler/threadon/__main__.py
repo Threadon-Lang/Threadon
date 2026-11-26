@@ -29,6 +29,7 @@ import shlex
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from . import project
 from .compiler import compile_file
 from .errors import report_error, tool_error
 from .importer import Importer
@@ -270,6 +271,7 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
 
 
 _PROJECT_MARKERS = (
+    project.CONFIG_FILENAME,
     "pyproject.toml",
     "setup.py",
     "setup.cfg",
@@ -444,7 +446,231 @@ def run_test_suite(targets, include_paths, cwd, inline_threshold, debug_mode, fl
     return 1 if n_failed else 0
 
 
+PROJECT_COMMANDS = {
+    "init", "add", "build", "run", "test", "clean", "cache",
+}
+
+
+def _add_project_compile_args(parser):
+    parser.add_argument("file", metavar="FILE.th", nargs="*")
+    parser.add_argument("-o", "--output", metavar="FILE")
+    parser.add_argument("--exe", metavar="FILE")
+    parser.add_argument("-I", "--include", action="append", default=[], metavar="DIR")
+    parser.add_argument("-O", "--inline-threshold", type=int, default=0, metavar="N")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--flag-inf", action="store_true")
+    parser.add_argument("-k", "--test-name", metavar="PATTERN")
+
+
+def _project_command_parser(command):
+    parser = argparse.ArgumentParser(
+        prog=f"threadon {command}",
+        description=f"Threadon project command: {command}",
+    )
+    if command == "init":
+        parser.add_argument("name", nargs="?", help="project name (default: directory name)")
+        parser.add_argument("--force", action="store_true", help="overwrite threadon.toml")
+        parser.add_argument("--dir", default=".", metavar="DIR")
+    elif command == "add":
+        parser.add_argument("name", help="dependency name")
+        parser.add_argument("path", help="local directory containing the dependency")
+    elif command in ("build", "run"):
+        _add_project_compile_args(parser)
+    elif command == "test":
+        parser.add_argument("file", metavar="FILE.th", nargs="*")
+        parser.add_argument("-I", "--include", action="append", default=[], metavar="DIR")
+        parser.add_argument("-O", "--inline-threshold", type=int, default=0, metavar="N")
+        parser.add_argument("-k", "--test-name", metavar="PATTERN")
+        parser.add_argument("--debug", action="store_true")
+        parser.add_argument("--flag-inf", action="store_true")
+    elif command == "clean":
+        parser.add_argument("--modules", action="store_true", help="also clear the user module cache")
+    elif command == "cache":
+        parser.add_argument("action", choices=("path", "list", "clear"))
+    else:  # pragma: no cover - guarded by PROJECT_COMMANDS
+        parser.error(f"unknown project command '{command}'")
+    return parser
+
+
+def _report_project_failure(exc):
+    if getattr(exc, "printed", False):
+        return 1
+    message = str(exc)
+    if message.startswith("compiler error:\n"):
+        message = message[len("compiler error:\n"):]
+    if not message.strip():
+        message = str(exc.__cause__ or exc)
+    report_error(message, file=sys.stderr)
+    return 1
+
+
+def _project_context(cwd, extra_includes=None):
+    config = project.load_project(cwd, required=True)
+    includes = project.importer_paths(config, [Path(p) for p in (extra_includes or [])])
+    return config, includes
+
+
+def _project_compile_options(source, args, test_filter=None):
+    return {
+        "source": str(Path(source).resolve()),
+        "inline_threshold": args.inline_threshold,
+        "debug": args.debug,
+        "flag_inf": args.flag_inf,
+        "test_filter": test_filter,
+    }
+
+
+def _project_importer(config, includes):
+    importer = Importer()
+    project.apply_to_importer(config, importer, includes)
+    return importer
+
+
+def _compile_project_source(config, source, includes, options, test_filter=None):
+    """Compile (or reuse cached) LLVM IR for a project source file."""
+    key = project.compile_key([source, *includes], options)
+    cached_llvm = project.load_compile_cache(config.root, config.name, key)
+    importer = _project_importer(config, includes)
+    if cached_llvm is not None:
+        return cached_llvm, importer, True
+
+    llvm = compile_file(
+        source,
+        importer=importer,
+        inline_threshold=options.get("inline_threshold", 0),
+        debug_mode=options.get("debug", False),
+        flag_inf=options.get("flag_inf", False),
+        test_filter=test_filter,
+    )
+    mods = native_modules(importer)
+    if mods:
+        # Native modules are built outside the IR cache; stale IR must not be
+        # reused when a project switches to (or away from) native modules.
+        llvm_path, meta_path = project.compile_cache_files(config.root, config.name)
+        for path in (llvm_path, meta_path):
+            if path.exists():
+                path.unlink()
+    else:
+        project.save_compile_cache(config.root, config.name, key, llvm)
+    return llvm, importer, False
+
+
+def _run_project_llvm(llvm, importer, from_cache):
+    require_main(llvm)
+    final = dedupe_decls(patch_llvm(llvm))
+    mods = [] if from_cache else native_modules(importer)
+    if mods:
+        with tempfile.TemporaryDirectory() as td:
+            libs = build_native_shared_libs(mods, output_dir=td)
+            result = run_llvm(
+                final, loads=libs, library_dirs=native_library_dirs(mods)
+            )
+    else:
+        result = run_llvm(final)
+    return result.returncode
+
+
+def _project_main(argv):
+    """Dispatch ``threadon <project-command>`` before the compiler CLI."""
+    command = argv[0]
+    args = _project_command_parser(command).parse_args(argv[1:])
+
+    try:
+        if command == "init":
+            root = Path(args.dir).expanduser().resolve()
+            config = project.init_project(root, args.name, force=args.force)
+            print(f"initialized {config.name} in {config.root}")
+            print(f"config: {config.root / project.CONFIG_FILENAME}")
+            return 0
+
+        if command == "add":
+            config = project.load_project(Path.cwd(), required=True)
+            config, cached = project.add_dependency(config, args.name, Path(args.path))
+            print(f"added dependency {args.name} -> {config.dependencies[args.name]}")
+            print(f"cached at {cached}")
+            return 0
+
+        if command in ("build", "run"):
+            config, includes = _project_context(Path.cwd(), args.include)
+            source = Path(args.file[0]).resolve() if args.file else config.main_path
+            if not source.is_file():
+                raise project.ProjectError(f"source file not found: {source}")
+            options = _project_compile_options(source, args, args.test_name)
+            llvm, importer, from_cache = _compile_project_source(
+                config, source, includes, options, test_filter=args.test_name
+            )
+            cache_path, _ = project.compile_cache_files(config.root, config.name)
+
+            if command == "run":
+                return _run_project_llvm(llvm, importer, from_cache)
+
+            if args.output:
+                Path(args.output).write_text(llvm)
+                print(f"wrote {args.output}")
+            if from_cache:
+                print(f"cached {cache_path}")
+            elif native_modules(importer):
+                print(f"built {source} (native modules, IR cache skipped)")
+            else:
+                print(f"built {cache_path}")
+            if args.exe:
+                require_main(llvm)
+                final = dedupe_decls(patch_llvm(llvm))
+                build_executable(
+                    final, args.exe,
+                    native=[] if from_cache else native_modules(importer),
+                )
+                print(f"executable: {args.exe}")
+            return 0
+
+        if command == "test":
+            config, includes = _project_context(Path.cwd(), args.include)
+            targets = [Path(f) for f in args.file] or config.test_paths
+            return run_test_suite(
+                targets, includes, Path.cwd(), args.inline_threshold,
+                args.debug, args.flag_inf, test_filter=args.test_name,
+            )
+
+        if command == "clean":
+            config = project.load_project(Path.cwd(), required=True)
+            removed = project.clear_compile_cache(config.root)
+            base = project.build_cache_dir(config.root)
+            print(f"cleaned {base}" if removed else f"nothing to clean in {base}")
+            if args.modules:
+                module_removed = project.clear_module_cache()
+                module_base = project.module_cache_dir()
+                print(
+                    f"cleaned {module_base}" if module_removed
+                    else f"nothing to clean in {module_base}"
+                )
+            return 0
+
+        if command == "cache":
+            if args.action == "path":
+                print(project.module_cache_dir())
+            elif args.action == "list":
+                entries = project.list_cached_modules()
+                if not entries:
+                    print("(empty)")
+                else:
+                    for entry in entries:
+                        print(f"{entry['name']} {entry.get('source', '')}")
+            else:
+                removed = project.clear_module_cache()
+                base = project.module_cache_dir()
+                print(f"cleaned {base}" if removed else f"nothing to clean in {base}")
+            return 0
+    except Exception as exc:
+        return _report_project_failure(exc)
+
+    return 1  # pragma: no cover - all commands are handled above
+
+
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in PROJECT_COMMANDS:
+        return _project_main(argv)
+
     parser = argparse.ArgumentParser(
         prog="threadon",
         description="Compile a Threadon (.th) file (with its imports) to LLVM IR.",
@@ -500,10 +726,22 @@ def main(argv=None):
     
     args = parser.parse_args(argv)
 
+    try:
+        config = project.load_project(Path.cwd(), required=False)
+    except Exception as exc:
+        return _report_project_failure(exc)
+
+    if config is not None:
+        includes = project.importer_paths(config, [Path(p) for p in args.include])
+    else:
+        includes = list(args.include)
+
     if args.run_tests:
         targets = [Path(f) for f in args.file]
+        if not targets and config is not None:
+            targets = config.test_paths
         return run_test_suite(
-            targets, args.include, Path.cwd(),
+            targets, includes, Path.cwd(),
             args.inline_threshold, args.debug, args.flag_inf,
             test_filter=args.test_name,
         )
@@ -517,10 +755,25 @@ def main(argv=None):
     if not path.is_file():
         parser.error(f"file not found: {path}")
 
+    try:
+        source_config = project.load_project(path.parent, required=False)
+    except Exception as exc:
+        return _report_project_failure(exc)
+    config = source_config
+    if config is not None:
+        includes = project.importer_paths(
+            config, [Path(p) for p in args.include]
+        )
+    else:
+        includes = list(args.include)
+
     importer = Importer()
+    if config is not None:
+        project.apply_to_importer(config, importer, includes)
+    else:
+        for include in includes:
+            importer.add_search_path(include)
     importer.add_search_path(path.parent)
-    for include in args.include:
-        importer.add_search_path(include)
 
     try:
         llvm = compile_file(
