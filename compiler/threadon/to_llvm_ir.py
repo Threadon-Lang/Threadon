@@ -4,7 +4,7 @@ import math
 import sys
 import os
 
-from .errors import abort, compile_error
+from .errors import ThreadonError, abort, compile_error
 from .builtins import (
     BUILTIN_SIGS,
     common_numeric_type,
@@ -436,8 +436,15 @@ class LLVMIRCompiler:
         self.current_func_entry_label = func.blocks[0].label if func.blocks else None
         try:
             self._release_plan = self._compute_release_plan(func)
-        except Exception:
-            self._release_plan = {}
+        except ThreadonError:
+            raise
+        except Exception as exc:
+            # A broken ownership plan used to silently become "no releases",
+            # hiding leaks and compiler bugs behind valid-looking IR.
+            self._error(
+                f"internal error while computing the release plan for "
+                f"'{func.name}': {exc}"
+            )
 
         for block in func.blocks:
             self.emit_block(block, dry=True)
@@ -448,8 +455,22 @@ class LLVMIRCompiler:
         self.out.append("")
         
     def _emit_threading_runtime(self):
+        msg = "Error: too many threads (limit 1024)\n"
+        msg_global = self._string_global(msg)
+        msg_size = len(msg.encode("utf-8")) + 1
+        ctx_global = self._string_global("Thread.spawn")
         self.out.append("define internal void @__threadon_thread_register(i64 %tid) {")
         self.out.append("  %old = atomicrmw add i64* @__threadon_thread_count, i64 1 seq_cst")
+        self.out.append("  %full = icmp uge i64 %old, 1024")
+        self.out.append("  br i1 %full, label %too_many_threads, label %register_ok")
+        self.out.append("too_many_threads:")
+        self.out.append(
+            f"  %err = getelementptr inbounds [{msg_size} x i8], "
+            f"[{msg_size} x i8]* {msg_global}, i64 0, i64 0"
+        )
+        self.out.append(f"  call void @__threadon_debug_error(i8* %err, i8* {ctx_global})")
+        self.out.append("  unreachable")
+        self.out.append("register_ok:")
         self.out.append("  %idx = getelementptr inbounds [1024 x i64], [1024 x i64]* @__threadon_thread_handles, i64 0, i64 %old")
         self.out.append("  store i64 %tid, i64* %idx")
         self.out.append("  ret void")
@@ -4226,27 +4247,29 @@ class LLVMIRCompiler:
             f"{data} = extractvalue {llvm_type} {obj_op}, 2",
         ]
 
-        if self.debug_mode:
-            self.used_c_runtime.add("exit")
-            msg = "Error: pop on empty list\n"
-            msg_global = self._string_global(msg)
-            msg_size = len(msg.encode("utf-8")) + 1
-            ctx = self._string_global(f"List.pop on {obj_type}")
-            bad = f"{res.lstrip('%')}_oob"
-            ok = f"{res.lstrip('%')}_ok"
-            oob = f"{res}_oobc"
-            emsg = f"{res}_emsg"
-            lines.append(f"{oob} = icmp eq i64 {lenv}, 0")
-            lines.append(f"br i1 {oob}, label %{bad}, label %{ok}")
-            lines.append(f"{bad}:")
-            lines.append(
-                f"{emsg} = getelementptr inbounds "
-                f"[{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0"
-            )
-            lines.append(f"call void @__threadon_debug_error(i8* {emsg}, i8* {ctx})")
-            lines.append("unreachable")
-            lines.append(f"{ok}:")
-            self._advance_label(ok)
+        # Empty-list pop must be checked in every build: without this guard
+        # ``len - 1`` becomes -1 and is passed to the allocator as an unsigned
+        # size, which can corrupt memory in release builds.
+        self.used_c_runtime.add("exit")
+        msg = "Error: pop on empty list\n"
+        msg_global = self._string_global(msg)
+        msg_size = len(msg.encode("utf-8")) + 1
+        ctx = self._string_global(f"List.pop on {obj_type}")
+        bad = f"{res.lstrip('%')}_oob"
+        ok = f"{res.lstrip('%')}_ok"
+        oob = f"{res}_oobc"
+        emsg = f"{res}_emsg"
+        lines.append(f"{oob} = icmp eq i64 {lenv}, 0")
+        lines.append(f"br i1 {oob}, label %{bad}, label %{ok}")
+        lines.append(f"{bad}:")
+        lines.append(
+            f"{emsg} = getelementptr inbounds "
+            f"[{msg_size} x i8], [{msg_size} x i8]* {msg_global}, i64 0, i64 0"
+        )
+        lines.append(f"call void @__threadon_debug_error(i8* {emsg}, i8* {ctx})")
+        lines.append("unreachable")
+        lines.append(f"{ok}:")
+        self._advance_label(ok)
 
         new_len = f"{res}_nlen"
         lines.append(f"{new_len} = sub i64 {lenv}, 1")

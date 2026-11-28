@@ -49,11 +49,10 @@ class UnreachableChecker:
 
         current = entry
 
-        for stmt in func.body:
+        for idx, stmt in enumerate(func.body):
             current = self.process_stmt(stmt, current, blocks)
 
             if current is None:
-                idx = func.body.index(stmt)
                 for s in func.body[idx+1:]:
                     self.error(f"Unreachable statement in function '{func.name}'")
                 break
@@ -1065,6 +1064,20 @@ class PurityChecker:
                 self._check_expr(item)
 
 
+class EntryPointChecker:
+    """Validate ``main`` before lowering rewrites its signature."""
+
+    def check(self, ast):
+        for node in ast:
+            if type(node).__name__ != "FunctionDef" or node.name != "main":
+                continue
+            if node.params or node.var_arg or node.kw_arg:
+                abort(
+                    "function 'main' cannot take parameters: the program entry "
+                    "point is always called without arguments"
+                )
+
+
 class CombinedChecker:
     def __init__(self):
         self.unreachable_checker = UnreachableChecker()
@@ -1077,6 +1090,7 @@ class CombinedChecker:
         self.purity_checker = PurityChecker()
 
     def run_all(self, ast, native_functions=None, global_vars=None):
+        EntryPointChecker().check(ast)
         self.duplicate_checker.check(ast)
         self.shadow_checker.check(ast)
         self.unreachable_checker.check(ast)

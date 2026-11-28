@@ -78,7 +78,7 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
         flush_diagnostics(diagnostics)
         _flush_stray_output(stray)
         raise ThreadonError(error_text(str(e)), printed=True) from e
-    except BaseException as e:
+    except Exception as e:
         flush_diagnostics(diagnostics, severities=("warning", "note"))
         _flush_stray_output(stray)
         msg = str(e)
@@ -96,7 +96,7 @@ def compile_source(source, importer=None, inline_threshold=0, debug_mode=False, 
     except ThreadonDiagnostic:
         # _error() rendered this already through the central diagnostics.
         raise
-    except BaseException as e:
+    except Exception as e:
         msg = str(e)
         if not msg.strip():
             msg = str(e.__cause__ or e)

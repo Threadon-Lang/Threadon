@@ -229,8 +229,10 @@ def test_cli_init_and_duplicate_error(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "initialized demo" in out
     assert "threadon.toml" in out
+    assert (tmp_path / "demo" / "threadon.toml").is_file()
 
-    assert cli.main(["init", "again"]) == 1
+    # A second init of the same name fails because the project exists.
+    assert cli.main(["init", "demo"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.count("Error:") == 1

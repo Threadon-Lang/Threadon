@@ -89,10 +89,11 @@ Error: <message> at line <n>
 Warning: <message>
 ```
 
-The CLI prints compiler diagnostics to stderr and toolchain failures with the
-same `Error:` prefix, so user code never sees a raw Python traceback or LLVM IR
-message. Colors are enabled by default and can be turned off with `NO_COLOR=1`;
-`FORCE_COLOR=0` has the same effect.
+The CLI prints compiler diagnostics and toolchain failures to stderr with the
+same `Error:` prefix; missing tools such as `lli` or `llc` get an install hint
+instead of a raw Python traceback. Colors are enabled on interactive terminals
+only: `FORCE_COLOR=1` turns them on in pipes, `NO_COLOR=1` turns them off
+everywhere.
 
 Users cannot redefine builtins or standard-library functions such as `collect`
 and `input`; doing so fails with:

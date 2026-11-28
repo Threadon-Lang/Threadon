@@ -21,6 +21,8 @@ from compiler.threadon.compiler import compile_source
 from compiler.threadon.importer import Importer
 
 DOCS = Path(__file__).resolve().parents[2] / "Threadon-Lang.github.io"
+if not DOCS.is_dir():
+    pytest.skip("documentation site checkout is not available", allow_module_level=True)
 BLOCK_RE = re.compile(r"<pre><code>(.*?)</code></pre>", re.S)
 OUT_RE = re.compile(r'\s*<div class="out">(.*?)</div>', re.S)
 

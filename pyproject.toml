@@ -9,6 +9,14 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "GPL-2.0" }
 
+[tool.pytest.ini_options]
+# Tests import compiler.threadon.* from the checkout, not the installed wheel.
+pythonpath = ["."]
+addopts = "--strict-markers"
+markers = [
+    "integration: requires external tools such as lli/llc/gcc",
+]
+
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta:__legacy__"

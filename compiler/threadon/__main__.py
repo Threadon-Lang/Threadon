@@ -110,6 +110,17 @@ def dedupe_decls(llvm):
     return "\n".join(out)
 
 
+def _run_tool(cmd, **kwargs):
+    """Run an external tool, turning a missing binary into a clean diagnostic."""
+    try:
+        return subprocess.run(cmd, **kwargs)
+    except FileNotFoundError:
+        tool_error(
+            f"'{cmd[0]}' was not found. Install the LLVM toolchain "
+            "(lli, llc, opt) and a C compiler (gcc) to use this feature."
+        )
+
+
 def run_llvm(llvm, capture=False, loads=None, library_dirs=None):
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -119,7 +130,7 @@ def run_llvm(llvm, capture=False, loads=None, library_dirs=None):
         run_path = ir_path
         if opt_cmd:
             opt_path = td / "main.opt.ll"
-            r = subprocess.run(
+            r = _run_tool(
                 [opt_cmd, "-O2", "-S", str(ir_path), "-o", str(opt_path)],
                 capture_output=True,
                 text=True,
@@ -142,7 +153,7 @@ def run_llvm(llvm, capture=False, loads=None, library_dirs=None):
             cmd.append("-load")
             cmd.append(libatomic)
         cmd.append(str(run_path))
-        return subprocess.run(cmd, env=env, **kwargs)
+        return _run_tool(cmd, env=env, **kwargs)
 
 
 def native_library_dirs(modules):
@@ -167,7 +178,11 @@ def build_native_shared_libs(modules, output_dir):
         if mod.native_source is None or not mod.native_source.is_file():
             tool_error(f"native module '{mod.name}' has no source file")
         existing = Path(mod.manifest_dir) / f"{mod.name}.so"
-        if existing.is_file():
+        sources = [mod.native_source] + list(mod.extra_sources or [])
+        if existing.is_file() and all(
+            source.is_file() and source.stat().st_mtime <= existing.stat().st_mtime
+            for source in sources
+        ):
             libs.append(existing)
             continue
         tc = mod.toolchain
@@ -177,7 +192,7 @@ def build_native_shared_libs(modules, output_dir):
         includes = _python_includes() if is_python else []
         link_extra = _python_link_flags() if is_python else []
         sources = [str(mod.native_source)] + [str(s) for s in (mod.extra_sources or [])]
-        result = subprocess.run(
+        result = _run_tool(
             [tc.compiler, *tc.shared_args, *includes, *flags,
              "-o", str(so), *sources, *link_extra],
             capture_output=True,
@@ -219,14 +234,14 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
         ir.write_text(llvm)
         opt_cmd = shutil.which("opt") or shutil.which("opt-19")
         if opt_cmd:
-            result = subprocess.run(
+            result = _run_tool(
                 [opt_cmd, "-O2", "-S", str(ir), "-o", str(opt_ir)],
                 capture_output=True,
                 text=True,
             )
             if result.returncode == 0 and opt_ir.exists():
                 ir = opt_ir
-        result = subprocess.run(
+        result = _run_tool(
             [llc, "-O2", "-filetype=obj", "-o", str(obj), str(ir)],
             capture_output=True,
             text=True,
@@ -240,7 +255,7 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
         for mod in native:
                     if mod.toolchain is None:
                         tool_error(f"module '{mod.name}' has no registered toolchain")
-                    for lib in mod.links:
+                    for lib in mod.links or []:
                         link_flags.append(f"-l{lib}")
                     if mod.native_source is None or not mod.native_source.is_file():
                         tool_error(f"native module '{mod.name}' has no source file")
@@ -251,8 +266,11 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
                     flags = mod.flags or []
                     includes = _python_includes() if tc.name == "python" else []
                     link_extra = _python_link_flags() if tc.name == "python" else []
-                    result = subprocess.run(
-                        [tc.compiler, *tc.object_args, *includes, *flags, "-o", str(mod_obj), str(mod.native_source)],
+                    sources = [str(mod.native_source)] + [
+                        str(extra) for extra in (mod.extra_sources or [])
+                    ]
+                    result = _run_tool(
+                        [tc.compiler, *tc.object_args, *includes, *flags, "-o", str(mod_obj), *sources],
                         capture_output=True,
                         text=True,
                     )
@@ -261,7 +279,7 @@ def build_executable(llvm, out_path, llc="llc", cc="gcc", native=None):
                             f"{tc.compiler} failed compiling {mod.name} ({tc.name}):\n{result.stderr}"
                         )
                     objs.append(str(mod_obj))
-        result = subprocess.run(
+        result = _run_tool(
             [linker, *objs, "-o", str(out_path), "-no-pie", "-lm", *link_flags, *link_extra],
             capture_output=True,
             text=True,
@@ -470,7 +488,8 @@ def _project_command_parser(command):
     if command == "init":
         parser.add_argument("name", nargs="?", help="project name (default: directory name)")
         parser.add_argument("--force", action="store_true", help="overwrite threadon.toml")
-        parser.add_argument("--dir", default=".", metavar="DIR")
+        parser.add_argument("--dir", default=".", metavar="DIR", help="parent directory for the new project")
+        parser.add_argument("--here", action="store_true", help="initialize in the current directory instead of a NAME/ subdirectory")
     elif command == "add":
         parser.add_argument("name", help="dependency name")
         parser.add_argument("path", help="local directory containing the dependency")
@@ -577,7 +596,11 @@ def _project_main(argv):
 
     try:
         if command == "init":
-            root = Path(args.dir).expanduser().resolve()
+            # ``init NAME`` creates ./NAME so that the documented
+            # ``python -m threadon init myapp && cd myapp`` flow works.
+            # ``--here`` keeps the older in-place behaviour available.
+            parent = Path(args.dir).expanduser().resolve()
+            root = parent / args.name if args.name and not args.here else parent
             config = project.init_project(root, args.name, force=args.force)
             print(f"initialized {config.name} in {config.root}")
             print(f"config: {config.root / project.CONFIG_FILENAME}")
@@ -674,6 +697,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="threadon",
         description="Compile a Threadon (.th) file (with its imports) to LLVM IR.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "project commands:\n"
+            "  init NAME       create a new project in ./NAME\n"
+            "  add NAME PATH   add a local dependency\n"
+            "  build | run     compile / compile and run the project\n"
+            "  test            run the project's test.th suites\n"
+            "  clean           remove compile caches (--modules for module cache)\n"
+            "  cache           path | list | clear the module cache\n\n"
+            "Use 'threadon <command> --help' for command-specific options."
+        ),
     )
     parser.add_argument("file", metavar="FILE.th", nargs="*", help="the Threadon source file (or one or more test files/dirs with --run-tests)")
     parser.add_argument(

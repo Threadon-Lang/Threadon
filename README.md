@@ -4,11 +4,14 @@ Threadon
 ===
 Installation
 ---
-Install threadon using pip
+Install Threadon with pip (Python 3.9 or newer):
 ```bash
-sudo apt install llvm
+sudo apt install llvm gcc   # provides lli, llc and the linker
 pip3 install threadon
 ```
+
+`lli` is needed for `--run`, while `--exe` also needs `llc` and `gcc`. The
+compiler reports a clear error with install hints when one of them is missing.
 
 
 Usage
@@ -48,10 +51,13 @@ Dependencies are local directories; there is no registry or network fetch:
 
     python3 -m threadon add util ../util
 
-`build`, `run`, `test`, `clean` and `cache path|list|clear` all use the
-nearest `threadon.toml`. Include paths and dependencies are added to the import
-search path automatically; the standard library is always implicit. Set
-`THREADON_CACHE_DIR` to override `~/.cache/threadon/modules`.
+`init NAME` creates a `NAME/` directory; pass `--here` to initialize the
+current directory instead. `add`, `build`, `run`, `test`, `clean` and
+`cache path|list|clear` all use the nearest `threadon.toml`. Include paths and
+dependencies are added to the import search path automatically; the standard
+library is always implicit. Set `THREADON_CACHE_DIR` to override
+`~/.cache/threadon/modules`. Run `python3 -m threadon --help` for the full flag
+list and the project-command overview.
 
 Flags
 -----
@@ -82,6 +88,8 @@ Optimizer inline threshold. Default `0` = no inlining.
 
 `--debug`
 
+Enable runtime checks (out-of-bounds indexing, empty-list `pop`, division by
+zero, etc.). The empty-list `pop` and thread-limit checks are always on.
 
 `--flag-inf`
 

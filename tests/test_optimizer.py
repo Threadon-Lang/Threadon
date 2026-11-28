@@ -409,11 +409,24 @@ def f(x: Int32) -> Int32
     assert f.block_map["entry"].terminator.args[0].name == "%t0"
 
 
-def test_algebraic_mod_zero_left():
+def test_algebraic_mod_zero_left_keeps_unknown_divisor():
+    # 0 % 0 traps, so an unknown divisor must never be folded away.
     module = optimize(
         """
 def f(x: Int32) -> Int32
     a: Int32 = 0 % x
+    return a
+"""
+    )
+    f = module.funcs[0]
+    assert "mod" in block_ops(f, "entry")
+
+
+def test_algebraic_mod_zero_left_with_nonzero_constant_divisor():
+    module = optimize(
+        """
+def f() -> Int32
+    a: Int32 = 0 % 2
     return a
 """
     )

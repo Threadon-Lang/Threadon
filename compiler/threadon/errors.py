@@ -30,12 +30,18 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def use_color(color: Optional[bool] = None) -> bool:
-    """Return whether diagnostics should use ANSI colors."""
+    """Return whether diagnostics should use ANSI colors.
+
+    Colors are enabled for interactive terminals only; ``FORCE_COLOR=1`` can
+    turn them on in pipes and ``NO_COLOR=1`` turns them off everywhere.
+    """
     if color is not None:
         return color
     if _env_flag("NO_COLOR", False):
         return False
-    return _env_flag("FORCE_COLOR", True)
+    if _env_flag("FORCE_COLOR", False):
+        return True
+    return sys.stderr.isatty()
 
 
 RED = "\033[91m"
@@ -204,7 +210,9 @@ def emit_diagnostic(
     file: Optional[TextIO] = None,
     color: Optional[bool] = None,
 ) -> None:
-    """Print one diagnostic. Compiler diagnostics default to stdout."""
+    """Print one diagnostic. The compile pipeline flushes to stderr; direct
+    parser/checker calls keep the historical stdout default for compatibility.
+    """
     diagnostic = Diagnostic(severity, message, line, col, source_line)
     rendered = diagnostic.render(color)
     if _active_sink is not None:

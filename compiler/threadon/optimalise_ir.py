@@ -76,10 +76,13 @@ class IROptimizer:
             result_type.startswith("List[") or result_type.startswith("Dict[")
         ):
             return False
+        # Integer div/mod/pow can trap (division by zero, overflow); moving or
+        # deleting them changes program behaviour.  Only add/sub/mul are safe
+        # for DCE/CSE/LICM/if-conversion without further proof.
         return op in {
             "const", "neg", "pos", "not",
             "cmp_lt", "cmp_gt", "cmp_le", "cmp_ge", "cmp_eq", "cmp_ne",
-            "add", "sub", "mul", "div", "floordiv", "pow", "mod",
+            "add", "sub", "mul",
             "field", "ref_copy", "undef", "select",
         }
 
@@ -652,7 +655,11 @@ class IROptimizer:
 
                 elif op == "mod":
                     left, right = instr.args
-                    if self._is_zero(left):
+                    right_const = self._get_const_value(right)
+                    right_number = self._to_number(right_const)
+                    # 0 % 0 traps, so the divisor must be a known non-zero
+                    # constant before this fold is valid.
+                    if self._is_zero(left) and right_number not in (None, 0):
                         old_args = instr.args
                         instr.op = "const"
                         instr.args = [0]
@@ -821,9 +828,18 @@ class IROptimizer:
                         c1 = self._to_number(self._get_const_value(lr))
                         c2 = self._to_number(self._get_const_value(right))
                         if c1 is not None and c2 is not None:
-                            new_c = self._make_const_instr(
-                                c1 + c2 if instr.op == "add" else c1 * c2,
-                                lr.type, block, i)
+                            if instr.op == "add":
+                                combined = c1 + c2
+                            elif instr.op == "mul":
+                                combined = c1 * c2
+                            elif instr.op == "bit_and":
+                                combined = int(c1) & int(c2)
+                            elif instr.op == "bit_or":
+                                combined = int(c1) | int(c2)
+                            else:  # bit_xor
+                                combined = int(c1) ^ int(c2)
+                            result_type = getattr(instr.result, "type", None) or getattr(lr, "type", None)
+                            new_c = self._make_const_instr(combined, result_type, block, i)
                             instr.args = [ll, new_c]
                             for old in (left, right):
                                 while instr in old.users:
@@ -1122,6 +1138,12 @@ class IROptimizer:
                 continue
             t_instr = t_block.instructions[0]
             f_instr = f_block.instructions[0]
+            # Both instructions are moved into the merge block, where they run
+            # unconditionally.  Only pure, non-trapping operations may move.
+            if not self._is_pure(t_instr.op, getattr(t_instr.result, "type", None)):
+                continue
+            if not self._is_pure(f_instr.op, getattr(f_instr.result, "type", None)):
+                continue
             for phi in merge.instructions:
                 if not isinstance(phi, IRPhi):
                     continue

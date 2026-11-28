@@ -3,7 +3,11 @@ import importlib.util
 import shutil
 from pathlib import Path
 
+import pytest
+
 GEN_DOCS_PATH = Path(__file__).resolve().parents[2] / "gen_docs.py"
+if not GEN_DOCS_PATH.is_file():
+    pytest.skip("docs generator fixture (../gen_docs.py) is not available", allow_module_level=True)
 SPEC = importlib.util.spec_from_file_location("threadon_gen_docs_test", GEN_DOCS_PATH)
 gen_docs = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gen_docs)
@@ -123,3 +127,53 @@ def test_patch_existing_warns_when_insertion_markers_are_missing(tmp_path, monke
     warnings = capsys.readouterr().out
     assert "WARN: index cards marker not found" in warnings
     assert "WARN: builtins collect marker not found" in warnings
+
+
+def test_generator_removes_legacy_source_browser(tmp_path, monkeypatch):
+    source_docs = gen_docs.DOCS
+    for page in source_docs.glob("*.html"):
+        shutil.copy(page, tmp_path / page.name)
+    index = tmp_path / "index.html"
+    text = index.read_text()
+    stale_card = (
+        '    <div class="card">\n'
+        '      <h3><a href="source.html">Source</a></h3>\n'
+        '      <p>Line-numbered compiler, library, benchmark and test sources '
+        'generated from this checkout.</p>\n'
+        '    </div>\n'
+    )
+    marker = '  </div>\n</section>\n\n<section id="setup">'
+    assert marker in text
+    index.write_text(text.replace(marker, stale_card + marker, 1))
+    (tmp_path / "source.html").write_text("old source hub")
+    (tmp_path / "src-compiler-old.html").write_text("old source page")
+
+    monkeypatch.setattr(gen_docs, "DOCS", tmp_path)
+    gen_docs.main()
+
+    assert not (tmp_path / "source.html").exists()
+    assert not list(tmp_path.glob("src-*.html"))
+    assert "source.html" not in index.read_text()
+    assert "source.html" not in (tmp_path / "nav.html").read_text()
+    assert "source.html" not in (tmp_path / "nav.js").read_text()
+    assert 'href="benchmarks.html">Benchmarks</a>' in (tmp_path / "nav.html").read_text()
+
+
+def test_generator_publishes_benchmark_results(tmp_path, monkeypatch):
+    source_docs = gen_docs.DOCS
+    for page in source_docs.glob("*.html"):
+        shutil.copy(page, tmp_path / page.name)
+    monkeypatch.setattr(gen_docs, "DOCS", tmp_path)
+
+    gen_docs.main()
+
+    bench = (tmp_path / "benchmarks.html").read_text()
+    assert "Headline results" in bench
+    assert "Earlier recorded ratios" in bench
+    assert "ulimit" not in bench
+    assert "MALLOC_ARENA_MAX" not in bench
+    for case in gen_docs.BENCHMARK_CASES:
+        assert f'id="case-{case["name"]}"' in bench
+        assert f'<code>{case["checksum"]}</code>' in bench
+    for name in ("performance.html", "cli.html", "limits.html", "index.html"):
+        assert 'href="benchmarks.html"' in (tmp_path / name).read_text()
